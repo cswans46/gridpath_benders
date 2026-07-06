@@ -113,6 +113,10 @@ def create_problem(
     dynamic_components = DynamicComponents()
 
     # Determine/load modules and dynamic components
+    # From what I can see here,
+    # One route would be to split the loaded modules
+    # into operational and investment variables (according to
+    # the split from Jacobson et al. and Pecci et al.).
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory, multi_stage=multi_stage
     )
@@ -182,6 +186,11 @@ def solve_problem(parsed_arguments, instance):
 
     return instance, results
 
+# Import benders' functions from auxiliary files.
+from gridpath.benders.algorithms import *
+from gridpath.benders.planning import *
+from gridpath.benders.regularization import *
+from gridpath.benders.subproblems import *
 
 def run_optimization_for_subproblem_stage(
     scenario_directory,
