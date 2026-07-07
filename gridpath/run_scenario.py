@@ -56,6 +56,7 @@ from gridpath.auxiliary.scenario_chars import (
 from gridpath.common_functions import (
     determine_scenario_directory,
     get_scenario_name_parser,
+    get_benders_flag_parser,
     get_required_e2e_arguments_parser,
     get_run_scenario_parser,
     create_logs_directory_if_not_exists,
@@ -112,22 +113,25 @@ def create_problem(
     model = AbstractModel()
     dynamic_components = DynamicComponents()
 
-    # Determine/load modules and dynamic components
-    # From what I can see here,
-    # One route would be to split the loaded modules
-    # into operational and investment variables (according to
-    # the split from Jacobson et al. and Pecci et al.).
+    """
+    Determine/load modules and dynamic components
+    From what I can see here,
+    One route would be to split the loaded modules
+    into operational and investment variables (according to
+    the split from Jacobson et al. and Pecci et al.).
+    """
+
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory, multi_stage=multi_stage
-    )
 
     # Create the abstract model; some components are initialized here
     if not parsed_arguments.quiet:
         print("Building model...")
+
     create_abstract_model(
         model,
         dynamic_components,
-        loaded_modules,
+        loaded_modules[i],
         scenario_directory,
         weather_iteration,
         hydro_iteration,
@@ -1554,7 +1558,7 @@ def save_duals(
         n += 1
 
 
-def set_up_gridpath_modules(scenario_directory, multi_stage):
+def set_up_gridpath_modules(scenario_directory, multi_stage,parsed_arguments):
     """
     :return: list of the names of the modules the scenario uses, list of the
         loaded modules, and the populated dynamic components for the scenario
@@ -1566,13 +1570,15 @@ def set_up_gridpath_modules(scenario_directory, multi_stage):
     modules_to_use = determine_modules(
         scenario_directory=scenario_directory, multi_stage=multi_stage
     )
-    loaded_modules = load_modules(modules_to_use)
+
+    loaded_modules = load_modules(modules_to_use,parsed_arguments.benders)
+    return modules_to_use, loaded_modules
+
     # Determine the dynamic components based on the needed modules and input
     # data
     # populate_dynamic_inputs(dynamic_components, loaded_modules,
     #                         scenario_directory, subproblem, stage)
 
-    return modules_to_use, loaded_modules
 
 
 # Parse run options
@@ -1587,6 +1593,7 @@ def parse_arguments(args):
     parser = argparse.ArgumentParser(
         add_help=True,
         parents=[
+            get_benders_flag_parser(),
             get_scenario_name_parser(),
             get_required_e2e_arguments_parser(),
             get_run_scenario_parser(),

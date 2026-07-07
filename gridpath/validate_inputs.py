@@ -436,7 +436,7 @@ def main(args=None):
         modules_to_use = determine_modules(
             features=feature_list, multi_stage=stages_flag
         )
-        loaded_modules = load_modules(modules_to_use=modules_to_use)
+        loaded_modules = load_modules(modules_to_use=modules_to_use,benders)
 
         # Read in inputs from db and validate inputs for loaded modules
         for (

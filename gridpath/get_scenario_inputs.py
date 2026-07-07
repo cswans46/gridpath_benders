@@ -205,7 +205,7 @@ def write_inputs(
     subscenarios,
     db_path,
 ):
-    loaded_modules = load_modules(modules_to_use=modules_to_use)
+    loaded_modules = load_modules(modules_to_use=modules_to_use,benders)
 
     inputs_directory = os.path.join(
         scenario_directory,

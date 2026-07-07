@@ -114,6 +114,30 @@ def get_scenario_name_parser():
 
     return parser
 
+def get_benders_flag_parser():
+    """
+    Create ArgumentParser object which has the common set of arguments for
+    getting the scenario name
+
+    We can then simply add 'parents=[get_scenario_names_parser()]' when we
+    create a parser for a script to inherit these common arguments.
+
+    Note that 'add_help' is set to 'False' to avoid multiple `-h/--help` options
+    (one for parent and one for each child), which will throw an error.
+    :return:
+    """
+
+    parser = ArgumentParser(add_help=False)
+    required = parser.add_argument_group("required arguments")
+    required.add_argument(
+        "--benders",
+        required=True,
+        type=int,
+        help="Flag to determine whether to run scenario with Bender's decomposition.",
+    )
+
+    return parser
+
 
 def get_db_parser():
     """

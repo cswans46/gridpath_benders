@@ -437,7 +437,7 @@ def main(args=None):
 
     # Go through modules
     modules_to_use = determine_modules(scenario_directory=scenario_directory)
-    loaded_modules = load_modules(modules_to_use)
+    loaded_modules = load_modules(modules_to_use,benders)
 
     # Import appropriate results into database
     import_scenario_results_into_database(

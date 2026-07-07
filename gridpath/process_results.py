@@ -101,7 +101,7 @@ def main(args=None):
 
     # Go through modules
     modules_to_use = determine_modules(scenario_directory=scenario_directory)
-    loaded_modules = load_modules(modules_to_use)
+    loaded_modules = load_modules(modules_to_use,benders)
 
     # Subscenarios
     subscenarios = SubScenarios(conn=conn, scenario_id=scenario_id)

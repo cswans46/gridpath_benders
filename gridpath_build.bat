@@ -2,6 +2,7 @@
 
 set scn_id=36
 set stem=C:\Users\SwansonC\ECD\gridpath\db
+set benders=1
 
 cd %stem%
 cd ./..
@@ -21,4 +22,4 @@ python db/utilities/scenario.py --database %stem%\database.db --csv_path %stem%\
 python gridpath/validate_inputs.py --database %stem%/database.db --scenario_id %scn_id%
 
 :run_end_to_end
-python gridpath/run_end_to_end.py --scenario_location C:/Users/SwansonC/ECD/gridpath/examples --database %stem%/database.db --scenario_id %scn_id% --solver gurobi
+python gridpath/run_end_to_end.py --scenario_location C:/Users/SwansonC/ECD/gridpath/examples --database %stem%/database.db --scenario_id %scn_id% --solver gurobi --benders %benders%
