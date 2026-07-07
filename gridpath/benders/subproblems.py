@@ -7,6 +7,9 @@ from pyomo.environ import (
     value,
     minimize,
     SolverFactory,
+    NonNegativeReals,
+    Reals,
+    Constraint,
 )
 
 def add_slacks_to_subproblem(model):
