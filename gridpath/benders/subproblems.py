@@ -12,6 +12,10 @@ from pyomo.environ import (
     Constraint,
 )
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import singledispatch
+from typing import Any, Dict, List, NamedTuple
+
 def add_slacks_to_subproblem(model):
 
     model.EQ_CONSTRAINTS = ConstraintList()
@@ -135,19 +139,65 @@ def solve_local_subproblems(subproblems, planning_sol, expect_feasible, solver):
 
     return results
 
-def solve_subproblems_parallel(subproblems, planning_sol, expect_feasible, solver):
+# ==========================================
+# 1. Define the Generic Base Function
+# ==========================================
+@singledispatch
+def solve_subproblems(m_subproblems, planning_sol: NamedTuple, expect_feasible_subproblems: bool):
+    """Base function signature that throws an error if an invalid type is passed."""
+    raise TypeError(f"Unsupported type for m_subproblems: {type(m_subproblems)}")
 
-    results = Parallel(n_jobs=-1)(
-        delayed(solve_local_subproblems)(
-            subproblems,
-            planning_sol,
-            expect_feasible,
-            solver,
-        )
-    )
 
-    merged = {}
-    for r in results:
-        merged.update(r)
+# ==========================================
+# 2. Method Variant A: For Standard Lists (Vector equivalent)
+# ==========================================
+@solve_subproblems.register(list)
+def _(m_subproblems: List[Dict[Any, Any]], planning_sol: NamedTuple, expect_feasible_subproblems: bool,solver) -> Dict[
+    Any, Any]:
+    # Single-threaded, local execution
+    sub_results = solve_local_subproblems(m_subproblems, planning_sol, expect_feasible_subproblems,solver)
+    return sub_results
 
-    return merged
+
+# ==========================================
+# 3. Method Variant B: For Distributed Layouts (DArray equivalent)
+# ==========================================
+# Python doesn't have an exact built-in DArray. We define a custom class
+# to mimic a distributed structure holding chunks of data for specific workers.
+class DistributedArrayMock:
+    def __init__(self, data_chunks: List[List[Dict[Any, Any]]], worker_ids: List[int]):
+        self.data_chunks = data_chunks  # A list of lists (the chunks)
+        self.worker_ids = worker_ids  # Analogous to workers()
+
+
+@solve_subproblems.register(DistributedArrayMock)
+def _(m_subproblems: DistributedArrayMock, planning_sol: NamedTuple, expect_feasible_subproblems: bool) -> Dict[
+    Any, Any]:
+    p_id = m_subproblems.worker_ids
+    np_id = len(p_id)
+
+    # Store parallel future objects
+    futures = {}
+
+    # ProcessPoolExecutor manages the worker processes pool (analogous to @sync/@async)
+    with ProcessPoolExecutor(max_workers=np_id) as executor:
+        for k in range(np_id):
+            # Isolate the worker's specific piece of data (localpart equivalent)
+            local_part = m_subproblems.data_chunks[k]
+
+            # Submit to the worker process (equivalent to @fetchfrom / @spawnat)
+            future = executor.submit(
+                solve_local_subproblems,
+                local_part,
+                planning_sol,
+                expect_feasible_subproblems
+            )
+            futures[future] = p_id[k]
+
+    # Combine results as they complete (equivalent to merge(sub_results...))
+    merged_results = {}
+    for future in as_completed(futures):
+        worker_result = future.result()  # Fetches the dictionary returned by the worker
+        merged_results.update(worker_result)  # Python dictionary merging/updating
+
+    return merged_results

@@ -3,12 +3,16 @@ from copy import deepcopy
 import math
 import time
 import logging
+import pyomo.environ as pyo
 from gridpath.benders.planning import add_approximate_variable_cost, solve_planning_problem
 from gridpath.benders.regularization import solve_int_level_set_problem
 from gridpath.benders.subproblems import solve_subproblem
 
 logger = logging.getLogger(__name__)
 
+from benders.subproblems import (
+    add_slacks_to_subproblems
+)
 
 @dataclass
 class BendersResult:
@@ -22,6 +26,9 @@ class BendersResult:
     cpu_time: list
     planning_sol_hist: list
 
+def all_variables(model) -> list:
+    """Returns a flat list of all variable data objects in the Pyomo model."""
+    return list(model.component_data_objects(pyo.Var, descend_into=True))
 
 def benders(
     planning_problem,
@@ -74,10 +81,10 @@ def benders(
         binary_vars = [v for v in planning_variables if v.is_binary()]
 
         for v in integer_vars:
-            unset_integer(v)
+            v.domain = pyo.Reals
 
         for v in binary_vars:
-            unset_binary(v)
+            v.domain = pyo.PercentFraction
 
         integer_routine = True
 
@@ -221,12 +228,12 @@ def benders(
                 if integer_investment and not integer_routine:
 
                     for v in integer_vars:
-                        unset_integer(v)
-                        fix(v, unst_planning_sol.values[v.name])
+                        v.domain = pyo.Reals
+                        v.fix(unst_planning_sol.values[v.name])
 
                     for v in binary_vars:
-                        unset_binary(v)
-                        fix(v, unst_planning_sol.values[v.name])
+                        v.domain = pyo.PercentFraction
+                        v.fix(unst_planning_sol.values[v.name])
 
                     planning_sol = solve_int_level_set_problem(
                         planning_problem,
@@ -238,12 +245,12 @@ def benders(
                     )
 
                     for v in integer_vars:
-                        unfix(v)
-                        set_integer(v)
+                        v.unfix()
+                        v.domain = pyo.Integers
 
                     for v in binary_vars:
-                        unfix(v)
-                        set_binary(v)
+                        v.unfix()
+                        v.domain = pyo.Binary
 
                 else:
 
@@ -272,6 +279,48 @@ def benders(
         planning_sol_hist=planning_sol_hist,
     )
 
+def update_planning_problem_multi_cuts(
+        planning_problem: pyo.ConcreteModel,
+        subop_sol: dict,
+        planning_sol: object,
+        linking_variables_sub: dict
+):
+    """
+    Adds dynamic multi-cut Benders optimality constraints to the Pyomo planning model.
+    """
+    # 1. Ensure a named ConstraintList exists on the model to hold our cuts
+    if not hasattr(planning_problem, "benders_cuts"):
+        planning_problem.benders_cuts = pyo.ConstraintList()
+
+    W = subop_sol.keys()
+
+    # 2. Re-create the Julia comprehension mapping over all scenarios w in W
+    for w in W:
+        sol_w = subop_sol[w]
+        linking_vars_w = linking_variables_sub[w]
+
+        # Build the dynamic sum() expression term
+        sum_terms = 0
+        for i in range(len(linking_vars_w)):
+            var_name = linking_vars_w[i]
+
+            # Find the actual Pyomo variable object inside the model by its string name
+            model_var = planning_problem.find_component(var_name)
+
+            if model_var is None:
+                raise KeyError(f"Variable '{var_name}' not found in the planning problem model.")
+
+            # Accumulate: lambda * (x_model - x_planning)
+            sum_terms += sol_w.lambda_[i] * (model_var - planning_sol.values[var_name])
+
+        # Left-hand side: subop_sol[w].theta_coeff * planning_problem.vTHETA[w]
+        # (Assumes your model initialization script created 'vTHETA' as an indexed Var)
+        lhs = sol_w.theta_coeff * planning_problem.vTHETA[w]
+        rhs = sol_w.op_cost + sum_terms
+
+        # 3. Append the greater-than-or-equal-to constraint directly to the model
+        planning_problem.benders_cuts.add(lhs >= rhs)
+
 def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 
     r = (UB_old - UB) / (UB_old - (LB + gamma * (UB_old - LB)))
@@ -294,25 +343,25 @@ def compute_upper_bound(model, planning_sol, subop_sol):
     if any(sp.theta_coeff == 0 for sp in subop_sol.values()):
         return math.inf
 
+    # for w, sp in subop_sol.items():
+    #
+    #     expr = (
+    #         sp.op_cost
+    #         + quicksum(
+    #             sp.lambda_[i]
+    #             * (
+    #                 model.getVarByName(linking_variables_sub[w][i])
+    #                 - planning_sol.values[linking_variables_sub[w][i]]
+    #             )
+    #             for i in range(len(linking_variables_sub[w]))
+    #         )
+    #     )
+    #
+    #     model.addConstr(
+    #         sp.theta_coeff * theta[w] >= expr
+    #     )
+
     return (
         planning_sol.planning_cost
         + sum(sp.op_cost for sp in subop_sol.values())
     )
-
-    for w, sp in subop_sol.items():
-
-        expr = (
-            sp.op_cost
-            + quicksum(
-                sp.lambda_[i]
-                * (
-                    model.getVarByName(linking_variables_sub[w][i])
-                    - planning_sol.values[linking_variables_sub[w][i]]
-                )
-                for i in range(len(linking_variables_sub[w]))
-            )
-        )
-
-        model.addConstr(
-            sp.theta_coeff * theta[w] >= expr
-        )
