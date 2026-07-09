@@ -123,7 +123,7 @@ def create_problem(
 
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory, multi_stage=multi_stage
-
+    )
     # Create the abstract model; some components are initialized here
     if not parsed_arguments.quiet:
         print("Building model...")

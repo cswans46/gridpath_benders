@@ -39,6 +39,7 @@ from gridpath.common_functions import (
     get_temporal_structure_csv_overwrite_parser,
     get_get_inputs_parser,
     ensure_empty_string,
+    get_benders_flag_parser
 )
 from gridpath.auxiliary.module_list import determine_modules, load_modules
 from gridpath.auxiliary.scenario_chars import (
@@ -52,6 +53,7 @@ from gridpath.auxiliary.scenario_chars import (
 
 
 def write_model_inputs(
+    parsed_arguments,
     scenario_directory,
     scenario_structure,
     modules_to_use,
@@ -64,6 +66,7 @@ def write_model_inputs(
     For each module, load the inputs from the database and write out the inputs
     into .tab files, which will be used to construct the optimization problem.
 
+    :param parsed_arguments: needed for benders flag
     :param scenario_directory: local scenario directory
     :param scenario_structure: ScenarioStructure object with info on the
         weather/hydro iterations and subproblem/stage structure
@@ -133,6 +136,7 @@ def write_model_inputs(
                             subproblem_str
                         ]:
                             write_inputs(
+                                parsed_arguments=parsed_arguments,
                                 scenario_directory=scenario_directory,
                                 weather_iteration_str=weather_iteration_str,
                                 hydro_iteration_str=hydro_iteration_str,
@@ -142,7 +146,7 @@ def write_model_inputs(
                                 modules_to_use=modules_to_use,
                                 scenario_id=scenario_id,
                                 subscenarios=subscenarios,
-                                db_path=db_path,
+                                db_path=db_path
                             )
     else:
         pool_data = []
@@ -194,6 +198,7 @@ def write_model_inputs(
 
 
 def write_inputs(
+    parsed_arguments,
     scenario_directory,
     weather_iteration_str,
     hydro_iteration_str,
@@ -203,9 +208,10 @@ def write_inputs(
     modules_to_use,
     scenario_id,
     subscenarios,
-    db_path,
+    db_path
 ):
-    loaded_modules = load_modules(modules_to_use=modules_to_use,benders)
+
+    loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
     inputs_directory = os.path.join(
         scenario_directory,
@@ -249,7 +255,7 @@ def write_inputs(
     conn.close()
 
 
-def get_inputs_for_subproblem_pool(pool_datum):
+def get_inputs_for_subproblem_pool(pool_datum,parsed_arguments):
     """
     Helper function to easily pass to pool.map if running subproblems in
     parallel
@@ -268,6 +274,7 @@ def get_inputs_for_subproblem_pool(pool_datum):
     ] = pool_datum
 
     write_inputs(
+        parsed_arguments=parsed_arguments,
         scenario_directory=scenario_directory,
         weather_iteration_str=weather_iteration_str,
         hydro_iteration_str=hydro_iteration_str,
@@ -277,7 +284,7 @@ def get_inputs_for_subproblem_pool(pool_datum):
         modules_to_use=modules_to_use,
         scenario_id=scenario_id,
         subscenarios=subscenarios,
-        db_path=db_path,
+        db_path=db_path
     )
 
 
@@ -328,6 +335,7 @@ def parse_arguments(args):
             get_required_e2e_arguments_parser(),
             get_temporal_structure_csv_overwrite_parser(),
             get_get_inputs_parser(),
+            get_benders_flag_parser()
         ],
     )
 
@@ -539,6 +547,7 @@ def main(args=None):
 
     # Get appropriate inputs from database and write the .tab file model inputs
     write_model_inputs(
+        parsed_arguments=parsed_arguments,
         scenario_directory=scenario_directory,
         scenario_structure=scenario_structure,
         modules_to_use=modules_to_use,

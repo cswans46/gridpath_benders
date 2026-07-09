@@ -750,6 +750,8 @@ def determine_modules(
 def load_modules(modules_to_use, parsed_arguments):
     """
     :param modules_to_use: a list of the names of the modules to use
+    :param parsed_arguments: parsed command-line arguments, including the
+        benders flag used to determine which modules to load
     :return: list of imported modules (Python <class 'module'> objects)
 
     Load the requested modules and return them as a list of Python module
@@ -759,22 +761,33 @@ def load_modules(modules_to_use, parsed_arguments):
 
     if parsed_arguments.benders:
         from gridpath.auxiliary.module_organisation import define_benders_modules
-        op_modules, inv_modules = define_benders_modules(modules_to_use)
+        modules_to_use = define_benders_modules(modules_to_use)
 
-        for op,inv in zip(op_modules,inv_modules):
-            try:
-                imported_op_module = import_module("." + op, package="gridpath")
-                imported_inv_module = import_module("." + inv, package="gridpath")
-                operational_modules.append(imported_op_module)
-                investment_modules.append(imported_inv_module)
-            except ImportError:
-                print("ERROR! Unable to import module " + str(m) + ".")
-                traceback.print_exc()
-                sys.exit(1)
-        return operational_modules, investment_modules
-
-    else:
-        for m in modules_to_use:
+        # for m in modules_to_use.values():
+        #     try:
+        #         imported_module = import_module("." + m, package="gridpath")
+        #         loaded_modules.append(imported_module)
+        #     except ImportError:
+        #         print("ERROR! Unable to import module " + str(m) + ".")
+        #         traceback.print_exc()
+        #         sys.exit(1)
+    #
+    #     for o,i in zip(op_modules,inv_modules):
+    #         try:
+    #             imported_op_module = import_module("." + o, package="gridpath")
+    #             imported_inv_module = import_module("." + i, package="gridpath")
+    #             operational_modules.append(imported_op_module)
+    #             investment_modules.append(imported_inv_module)
+    #         except ImportError:
+    #             print("ERROR! Unable to import module " + str(o) + ".")
+    #             print("ERROR! Unable to import module " + str(i) + ".")
+    #             traceback.print_exc()
+    #             sys.exit(1)
+    #     return operational_modules, investment_modules
+    #
+    # else:
+    for module_list in modules_to_use.values():
+        for m in module_list:
             try:
                 imported_module = import_module("." + m, package="gridpath")
                 loaded_modules.append(imported_module)
@@ -783,4 +796,4 @@ def load_modules(modules_to_use, parsed_arguments):
                 traceback.print_exc()
                 sys.exit(1)
 
-        return loaded_modules
+    return loaded_modules
