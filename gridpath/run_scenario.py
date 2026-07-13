@@ -122,7 +122,9 @@ def create_problem(
     """
 
     modules_to_use, loaded_modules = set_up_gridpath_modules(
-        scenario_directory=scenario_directory, multi_stage=multi_stage
+        scenario_directory=scenario_directory,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments
     )
     # Create the abstract model; some components are initialized here
     if not parsed_arguments.quiet:
@@ -131,7 +133,7 @@ def create_problem(
     create_abstract_model(
         model,
         dynamic_components,
-        loaded_modules[i],
+        loaded_modules,
         scenario_directory,
         weather_iteration,
         hydro_iteration,
@@ -663,9 +665,10 @@ def run_scenario(
                 "scenario. No parallelization possible."
             )
         n_parallel_subproblems = 1
-
+    print("Number of parallel subproblems",n_parallel_subproblems)
     # If parallelization is not requested, solve sequentially
     if n_parallel_subproblems == 1:
+
         objective_values = solve_sequentially(
             scenario_directory_structure=scenario_directory_structure,
             scenario_directory=scenario_directory,
@@ -852,10 +855,12 @@ def create_pass_through_inputs(
     weather_iteration_str,
     hydro_iteration_str,
     availability_iteration_str,
+    parsed_arguments
 ):
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory,
         multi_stage=scenario_structure.STAGE_FLAG,
+        parsed_arguments=parsed_arguments
     )
     pass_through_directory = os.path.join(
         scenario_directory,
@@ -1339,6 +1344,7 @@ def export_results(
     dynamic_components,
     export_rule,
     verbose,
+    parsed_arguments
 ):
     """
     :param scenario_directory:
@@ -1356,7 +1362,9 @@ def export_results(
     if export_rule:
         # Determine/load modules and dynamic components
         modules_to_use, loaded_modules = set_up_gridpath_modules(
-            scenario_directory=scenario_directory, multi_stage=multi_stage
+            scenario_directory=scenario_directory,
+            multi_stage=multi_stage,
+            parsed_arguments=parsed_arguments
         )
 
         n = 0
@@ -1389,6 +1397,7 @@ def export_summary_results(
     instance,
     dynamic_components,
     verbose,
+    parsed_arguments
 ):
     """
     :param scenario_directory:
@@ -1405,7 +1414,9 @@ def export_summary_results(
     """
     # Determine/load modules and dynamic components
     modules_to_use, loaded_modules = set_up_gridpath_modules(
-        scenario_directory=scenario_directory, multi_stage=multi_stage
+        scenario_directory=scenario_directory,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments
     )
 
     n = 0
@@ -1437,6 +1448,7 @@ def export_pass_through_inputs(
     multi_stage,
     instance,
     verbose,
+    parsed_arguments
 ):
     """
     :param scenario_directory:
@@ -1450,7 +1462,9 @@ def export_pass_through_inputs(
     """
     # Determine/load modules and dynamic components
     modules_to_use, loaded_modules = set_up_gridpath_modules(
-        scenario_directory=scenario_directory, multi_stage=multi_stage
+        scenario_directory=scenario_directory,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments
     )
 
     n = 0
@@ -1521,6 +1535,7 @@ def save_duals(
     instance,
     dynamic_components,
     verbose,
+    parsed_arguments
 ):
     """
     :param scenario_directory:
@@ -1535,7 +1550,9 @@ def save_duals(
     """
     # Determine/load modules and dynamic components
     modules_to_use, loaded_modules = set_up_gridpath_modules(
-        scenario_directory=scenario_directory, multi_stage=multi_stage
+        scenario_directory=scenario_directory,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments
     )
 
     instance.constraint_indices = {}
@@ -1571,7 +1588,7 @@ def set_up_gridpath_modules(scenario_directory, multi_stage,parsed_arguments):
         scenario_directory=scenario_directory, multi_stage=multi_stage
     )
 
-    loaded_modules = load_modules(modules_to_use,parsed_arguments.benders)
+    loaded_modules = load_modules(modules_to_use,parsed_arguments)
     return modules_to_use, loaded_modules
 
     # Determine the dynamic components based on the needed modules and input

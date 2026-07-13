@@ -28,6 +28,7 @@ import os.path
 import pandas as pd
 import sys
 import warnings
+from functools import partial
 
 from db.common_functions import connect_to_database
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
@@ -193,7 +194,11 @@ def write_model_inputs(
 
         # Pool must use spawn to work properly on Linux
         pool = get_context("spawn").Pool(n_parallel_subproblems)
-        pool.map(get_inputs_for_subproblem_pool, pool_data)
+        worker = partial(
+            get_inputs_for_subproblem_pool,
+            parsed_arguments=parsed_arguments,
+        )
+        pool.map(worker, pool_data)
         pool.close()
 
 

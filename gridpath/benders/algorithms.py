@@ -10,9 +10,7 @@ from gridpath.benders.subproblems import solve_subproblem
 
 logger = logging.getLogger(__name__)
 
-from benders.subproblems import (
-    add_slacks_to_subproblems
-)
+from gridpath.benders.subproblems import add_slacks_to_subproblem
 
 @dataclass
 class BendersResult:
@@ -48,7 +46,7 @@ def benders(
     if expect_feasible:
         logger.info("Skipping feasibility cuts.")
     else:
-        add_slacks_to_subproblems(subproblems)
+        add_slacks_to_subproblem(subproblems)
 
     add_approximate_variable_cost(
         planning_problem,

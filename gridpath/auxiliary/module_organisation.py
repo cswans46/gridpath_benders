@@ -195,6 +195,8 @@ def define_benders_modules(modules_to_use):
     ]
 
     inv_module = [
+        "project",
+        "transmission",
         "geography.prm_zones",
         "geography.local_capacity_zones",
         "temporal.finalize",
@@ -202,8 +204,6 @@ def define_benders_modules(modules_to_use):
         "project.consolidate_results",
         "temporal.investment.periods",
         "temporal.investment.superperiods",
-        "transmission",
-        "project",
         "project.capacity",
         "project.capacity.capacity_types",
         "project.capacity.capacity",
@@ -258,8 +258,8 @@ def define_benders_modules(modules_to_use):
     inv_modules = list(set(inv_module) & set(modules_to_use))
 
     benders_modules = {
-        "Operational": op_modules,
-        "Investment": inv_modules
+        "Investment": inv_modules,
+        "Operational": op_modules
     }
 
     print(benders_modules)
