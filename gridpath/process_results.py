@@ -29,6 +29,7 @@ from gridpath.common_functions import (
     determine_scenario_directory,
     get_db_parser,
     get_required_e2e_arguments_parser,
+    get_benders_flag_parser
 )
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
 from gridpath.auxiliary.module_list import determine_modules, load_modules
@@ -59,8 +60,12 @@ def parse_arguments(args):
     Parse the known arguments.
     """
     parser = ArgumentParser(
-        add_help=True, parents=[get_db_parser(), get_required_e2e_arguments_parser()]
+        add_help=True, parents=[get_db_parser(),
+                                get_required_e2e_arguments_parser(),
+                                get_benders_flag_parser()
+                                ]
     )
+
     parsed_arguments = parser.parse_known_args(args=args)[0]
 
     return parsed_arguments

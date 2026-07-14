@@ -52,7 +52,7 @@ def add_model_components(
     """
     First, we iterate over all required *capacity_types* modules (this is the
     set of distinct project capacity types in the list of projects specified
-    by the user) and add the components specific to the respective
+    by the user) and add the componentés specific to the respective
     *capacity_type* module. We do this by calling the
     *add_model_components* method of the capacity_type module if
     the method exists.

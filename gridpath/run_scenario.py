@@ -665,7 +665,6 @@ def run_scenario(
                 "scenario. No parallelization possible."
             )
         n_parallel_subproblems = 1
-    print("Number of parallel subproblems",n_parallel_subproblems)
     # If parallelization is not requested, solve sequentially
     if n_parallel_subproblems == 1:
 
@@ -693,7 +692,6 @@ def run_scenario(
             )
             objective_values = solve_sequentially(
                 scenario_directory_structure=scenario_directory_structure,
-                subproblem_stage_directory_strings=subproblem_stage_directory_strings,
                 scenario_directory=scenario_directory,
                 scenario_structure=scenario_structure,
                 parsed_arguments=parsed_arguments,
@@ -969,6 +967,7 @@ def save_results(
             dynamic_components=dynamic_components,
             export_rule=export_rule,
             verbose=parsed_arguments.verbose,
+            parsed_arguments=parsed_arguments
         )
 
         if parsed_arguments.results_export_summary_rule is None:
@@ -994,6 +993,7 @@ def save_results(
                 instance=instance,
                 dynamic_components=dynamic_components,
                 verbose=parsed_arguments.verbose,
+                parsed_arguments=parsed_arguments
             )
 
         export_pass_through_inputs(
@@ -1006,6 +1006,7 @@ def save_results(
             multi_stage=multi_stage,
             instance=instance,
             verbose=parsed_arguments.verbose,
+            parsed_arguments=parsed_arguments
         )
 
         save_objective_function_value(
@@ -1029,6 +1030,7 @@ def save_results(
             instance=instance,
             dynamic_components=dynamic_components,
             verbose=parsed_arguments.verbose,
+            parsed_arguments=parsed_arguments
         )
 
         # Force garbage collection to release file descriptors immediately
@@ -1081,7 +1083,6 @@ def create_abstract_model(
     added to the model.
     """
     for m in loaded_modules:
-        if hasattr(m, "add_model_components"):
             m.add_model_components(
                 model,
                 dynamic_components,
@@ -1092,7 +1093,6 @@ def create_abstract_model(
                 subproblem,
                 stage,
             )
-
 
 def load_scenario_data(
     model,

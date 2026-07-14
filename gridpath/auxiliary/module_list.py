@@ -761,7 +761,18 @@ def load_modules(modules_to_use, parsed_arguments):
 
     if parsed_arguments.benders:
         from gridpath.auxiliary.module_organisation import define_benders_modules
-        modules_to_use = define_benders_modules(modules_to_use)
+        # Must ensure that the original order of modules_to_use is preserved (for interdependencies).
+        benders_modules = define_benders_modules(modules_to_use)
+
+        all_benders_modules = (
+                benders_modules["Investment"]
+                + benders_modules["Operational"]
+                + benders_modules["Sets"]
+        )
+
+        modules_to_use = [
+            x for x in modules_to_use if x in all_benders_modules
+        ]
 
         # for m in modules_to_use.values():
         #     try:
@@ -786,14 +797,13 @@ def load_modules(modules_to_use, parsed_arguments):
     #     return operational_modules, investment_modules
     #
     # else:
-    for module_list in modules_to_use.values():
-        for m in module_list:
-            try:
-                imported_module = import_module("." + m, package="gridpath")
-                loaded_modules.append(imported_module)
-            except ImportError:
-                print("ERROR! Unable to import module " + str(m) + ".")
-                traceback.print_exc()
-                sys.exit(1)
+    for m in modules_to_use:
+        try:
+            imported_module = import_module("." + m, package="gridpath")
+            loaded_modules.append(imported_module)
+        except ImportError:
+            print("ERROR! Unable to import module " + str(m) + ".")
+            traceback.print_exc()
+            sys.exit(1)
 
     return loaded_modules

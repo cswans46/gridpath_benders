@@ -140,23 +140,23 @@ def define_benders_modules(modules_to_use):
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
         "objective.min_op_costs",
-        "project.operations.carbon_emissions",
+        "project.fuels",
+        "project.operations",
+        "project.operations.operational_types",
         "project.operations.power_output_groups",
+        "project.operations.carbon_emissions",
         "project.operations.instantaneous_penetration_contributions",
-        "temporal.operations.timepoints",
+        "project.operations.fuel_burn",
         "transmission.operations.hurdle_costs_by_timepoint",
         "system.markets.prices",
         "transmission.operations.carbon_emissions",
         "system.water.water_flows",
         "system.water.powerhouses",
         "system.water.water_system_params",
-        "project.operations",
         "system.water.water_node_inflows_outflows",
         "project.operations.cycle_select",
-        "project.fuels",
         "project.operations.carbon_cap",
         "project.operations.carbon_tax",
-        "project.operations.operational_types",
         "project.operations.power",
         "project.operations.performance_standard",
         "project.operations.cap_factor_limits",
@@ -164,7 +164,6 @@ def define_benders_modules(modules_to_use):
         "project.operations.costs",
         "project.operations.energy_target_contributions",
         "project.operations.carbon_credits",
-        "project.operations.fuel_burn",
         "project.operations.tuning_costs",
         "transmission.operations.simultaneous_flow_limits",
         "project.operations.fix_commitment",
@@ -172,38 +171,46 @@ def define_benders_modules(modules_to_use):
         "system.water.reservoirs",
         "system.water.water_nodes",
         "system.water.water_node_balance",
+        "objective.project.aggregate_operational_costs",
+        "objective.project.aggregate_operational_tuning_costs",
+        "objective.transmission.aggregate_hurdle_costs",
+        "objective.transmission.aggregate_tx_tuning_costs",
+    ]
+
+    set_definitions = [
+        "temporal.operations.timepoints",
+        "temporal.investment.periods",
         "temporal.operations.horizons",
-        "geography.generic_policy",
-        "geography.regulation_up_balancing_areas",
-        "geography.inertia_reserves_balancing_areas",
-        "geography.carbon_credits_zones",
-        "geography.regulation_down_balancing_areas",
-        "geography.fuel_burn_limit_balancing_areas",
-        "geography.instantaneous_penetration_zones",
-        "geography.markets",
-        "geography.load_following_up_balancing_areas",
-        "geography.spinning_reserves_balancing_areas",
-        "geography.water_network",
-        "geography.frequency_response_balancing_areas",
-        "geography.transmission_target_zones",
-        "geography.performance_standard_zones",
-        "geography.carbon_tax_zones",
-        "geography.carbon_cap_zones",
+        "temporal.investment.superperiods",
+        "temporal.finalize",
         "geography.load_zones",
+        "geography.load_following_up_balancing_areas",
         "geography.load_following_down_balancing_areas",
-        "geography.energy_target_zones"
+        "geography.regulation_up_balancing_areas",
+        "geography.regulation_down_balancing_areas",
+        "geography.frequency_response_balancing_areas",
+        "geography.spinning_reserves_balancing_areas",
+        "geography.inertia_reserves_balancing_areas",
+        "geography.energy_target_zones",
+        "geography.instantaneous_penetration_zones",
+        "geography.transmission_target_zones",
+        "geography.carbon_cap_zones",
+        "geography.carbon_tax_zones",
+        "geography.performance_standard_zones",
+        "geography.carbon_credits_zones",
+        "geography.fuel_burn_limit_balancing_areas",
+        "geography.generic_policy",
+        "geography.prm_zones",
+        "geography.local_capacity_zones",
+        "geography.markets",
+        "geography.water_network",
     ]
 
     inv_module = [
         "project",
         "transmission",
-        "geography.prm_zones",
-        "geography.local_capacity_zones",
-        "temporal.finalize",
         "project.summary_results",
         "project.consolidate_results",
-        "temporal.investment.periods",
-        "temporal.investment.superperiods",
         "project.capacity",
         "project.capacity.capacity_types",
         "project.capacity.capacity",
@@ -242,11 +249,7 @@ def define_benders_modules(modules_to_use):
         "transmission.capacity.capacity_groups",
         "objective.project.aggregate_capacity_costs",
         "objective.project.aggregate_prm_group_costs",
-        "objective.project.aggregate_operational_costs",
-        "objective.project.aggregate_operational_tuning_costs",
         "objective.transmission.aggregate_capacity_costs",
-        "objective.transmission.aggregate_hurdle_costs",
-        "objective.transmission.aggregate_tx_tuning_costs",
         "objective.max_npv"
     ]
     """
@@ -254,15 +257,15 @@ def define_benders_modules(modules_to_use):
      in the Bender's scheme
     """
 
-    op_modules = list(set(op_module) & set(modules_to_use))
-    inv_modules = list(set(inv_module) & set(modules_to_use))
+    op_modules = [m for m in modules_to_use if m in op_module]
+    inv_modules = [m for m in modules_to_use if m in inv_module]
+    sets = [m for m in modules_to_use if m in set_definitions]
 
     benders_modules = {
+        "Sets": sets,
         "Investment": inv_modules,
         "Operational": op_modules
     }
-
-    print(benders_modules)
 
     return benders_modules
 

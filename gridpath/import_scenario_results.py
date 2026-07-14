@@ -35,6 +35,7 @@ from gridpath.common_functions import (
     get_required_e2e_arguments_parser,
     get_temporal_structure_csv_overwrite_parser,
     get_import_results_parser,
+    get_benders_flag_parser,
     ensure_empty_string,
 )
 from db.common_functions import connect_to_database, spin_on_database_lock
@@ -362,6 +363,7 @@ def parse_arguments(args):
         add_help=True,
         parents=[
             get_db_parser(),
+            get_benders_flag_parser(),
             get_required_e2e_arguments_parser(),
             get_temporal_structure_csv_overwrite_parser(),
             get_import_results_parser(),
@@ -437,7 +439,7 @@ def main(args=None):
 
     # Go through modules
     modules_to_use = determine_modules(scenario_directory=scenario_directory)
-    loaded_modules = load_modules(modules_to_use,benders)
+    loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
     # Import appropriate results into database
     import_scenario_results_into_database(
