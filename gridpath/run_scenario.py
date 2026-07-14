@@ -1083,6 +1083,7 @@ def create_abstract_model(
     added to the model.
     """
     for m in loaded_modules:
+        if hasattr(m, "add_model_components"):
             m.add_model_components(
                 model,
                 dynamic_components,
