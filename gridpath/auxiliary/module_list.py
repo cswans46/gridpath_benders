@@ -757,22 +757,25 @@ def load_modules(modules_to_use, parsed_arguments):
     Load the requested modules and return them as a list of Python module
     objects.
     """
-    loaded_modules = list()
 
     if parsed_arguments.benders:
+        loaded_modules = {}
         from gridpath.auxiliary.module_organisation import define_benders_modules
         # Must ensure that the original order of modules_to_use is preserved (for interdependencies).
         benders_modules = define_benders_modules(modules_to_use)
-
-        all_benders_modules = (
+        # Add the required sets to both investment and operational constraints
+        benders_modules["Investment"] = (
                 benders_modules["Investment"]
-                + benders_modules["Operational"]
                 + benders_modules["Sets"]
         )
 
-        modules_to_use = [
-            x for x in modules_to_use if x in all_benders_modules
-        ]
+        benders_modules["Operational"] = (
+                + benders_modules["Operational"]
+                + benders_modules["Sets"]
+        )
+        # Here, modules_to_use becomes a dictionary.
+        # TODO: Change code to allow for modules_to_use to be a dictionary in the case of benders.
+        modules_to_use = benders_modules
 
         # for m in modules_to_use.values():
         #     try:
@@ -796,14 +799,25 @@ def load_modules(modules_to_use, parsed_arguments):
     #             sys.exit(1)
     #     return operational_modules, investment_modules
     #
-    # else:
-    for m in modules_to_use:
-        try:
-            imported_module = import_module("." + m, package="gridpath")
-            loaded_modules.append(imported_module)
-        except ImportError:
-            print("ERROR! Unable to import module " + str(m) + ".")
-            traceback.print_exc()
-            sys.exit(1)
+        for name in modules_to_use.keys():
+            for m in modules_to_use[name]:
+                try:
+                    imported_module = import_module("." + m, package="gridpath")
+                    loaded_modules[name].append(imported_module)
+                except ImportError:
+                    print("ERROR! Unable to import module " + str(m) + ".")
+                    traceback.print_exc()
+                    sys.exit(1)
+    else:
+        loaded_modules = list()
+
+        for m in modules_to_use:
+            try:
+                imported_module = import_module("." + m, package="gridpath")
+                loaded_modules.append(imported_module)
+            except ImportError:
+                print("ERROR! Unable to import module " + str(m) + ".")
+                traceback.print_exc()
+                sys.exit(1)
 
     return loaded_modules
