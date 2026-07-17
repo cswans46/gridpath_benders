@@ -198,6 +198,7 @@ def write_model_inputs(
             get_inputs_for_subproblem_pool,
             parsed_arguments=parsed_arguments,
         )
+
         pool.map(worker, pool_data)
         pool.close()
 

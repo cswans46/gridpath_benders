@@ -759,7 +759,12 @@ def load_modules(modules_to_use, parsed_arguments):
     """
 
     if parsed_arguments.benders:
-        loaded_modules = {}
+        # Initialise loaded_modules for each abstract model and instance.
+        loaded_modules = {
+            "Investment": [],
+            "Operational": []
+        }
+
         from gridpath.auxiliary.module_organisation import define_benders_modules
         # Must ensure that the original order of modules_to_use is preserved (for interdependencies).
         benders_modules = define_benders_modules(modules_to_use)
@@ -770,9 +775,11 @@ def load_modules(modules_to_use, parsed_arguments):
         )
 
         benders_modules["Operational"] = (
-                + benders_modules["Operational"]
+                benders_modules["Operational"]
                 + benders_modules["Sets"]
         )
+
+        del benders_modules["Sets"]
         # Here, modules_to_use becomes a dictionary.
         # TODO: Change code to allow for modules_to_use to be a dictionary in the case of benders.
         modules_to_use = benders_modules
