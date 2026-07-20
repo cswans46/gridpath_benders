@@ -429,7 +429,6 @@ def write_tab_file_model_inputs(
     :param replace_nulls: Booolean, whether the replace Nulls with "."
     :return:
     """
-
     out_file = os.path.join(
         scenario_directory,
         weather_iteration,
@@ -440,6 +439,7 @@ def write_tab_file_model_inputs(
         "inputs",
         fname,
     )
+
     f_exists = os.path.isfile(out_file)
     append_mode = "a" if f_exists else "w"
 
@@ -448,7 +448,6 @@ def write_tab_file_model_inputs(
     if data_list:
         with open(out_file, append_mode, newline="") as f:
             writer = csv.writer(f, delimiter="\t", lineterminator="\n")
-
             # If file doesn't exist, write header first
             if not f_exists:
                 cols = [s[0] for s in data.description]

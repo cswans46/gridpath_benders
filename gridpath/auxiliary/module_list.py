@@ -770,13 +770,13 @@ def load_modules(modules_to_use, parsed_arguments):
         benders_modules = define_benders_modules(modules_to_use)
         # Add the required sets to both investment and operational constraints
         benders_modules["Investment"] = (
-                benders_modules["Investment"]
-                + benders_modules["Sets"]
+                benders_modules["Sets"]
+                + benders_modules["Investment"]
         )
 
         benders_modules["Operational"] = (
-                benders_modules["Operational"]
-                + benders_modules["Sets"]
+                benders_modules["Sets"]
+                + benders_modules["Operational"]
         )
 
         del benders_modules["Sets"]

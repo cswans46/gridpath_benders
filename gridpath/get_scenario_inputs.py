@@ -191,7 +191,6 @@ def write_model_inputs(
                             )
 
         pool_data = tuple(pool_data)
-
         # Pool must use spawn to work properly on Linux
         pool = get_context("spawn").Pool(n_parallel_subproblems)
         worker = partial(
@@ -242,8 +241,16 @@ def write_inputs(
     # dependent on the subproblem or stage. This simplifies the file
     # structure at the expense of unnecessarily duplicating
     # non-temporal input files such as projects.tab.
+
     conn = connect_to_database(db_path=db_path)
-    for m in loaded_modules:
+
+    loaded_modules_it = (
+        (item for sublist in loaded_modules.values() for item in sublist)
+        if parsed_arguments.benders
+        else loaded_modules
+    )
+
+    for m in loaded_modules_it:
         if hasattr(m, "write_model_inputs"):
             m.write_model_inputs(
                 scenario_directory=scenario_directory,

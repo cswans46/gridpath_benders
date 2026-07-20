@@ -146,6 +146,7 @@ def create_problem(
         # TODO: create benders_subproblems (recall that subproblems already exist).
         benders_problems = ["Investment","Operational"]
         for i in benders_problems:
+            print(i)
             create_abstract_model(
                 # Also have to create two separate models (operational and investment) to facilitate benders
                 # Because it implies a change to the optimisation structure.
