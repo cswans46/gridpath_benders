@@ -204,7 +204,8 @@ def define_benders_modules(modules_to_use):
         "geography.local_capacity_zones",
         "geography.markets",
         "geography.water_network",
-        "project"
+        "project",
+        "project.capacity.capacity_sets"
     ]
 
     inv_module = [

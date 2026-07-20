@@ -276,7 +276,6 @@ def spec_write_tab_file(
                     "fuel_storage_capacity_fixed_cost_per_fuelunit_yr",
                 ]
             )
-
             # Write input data
             write_from_query(spec_project_params=spec_project_params, writer=writer_w)
 

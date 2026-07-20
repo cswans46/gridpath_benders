@@ -28,9 +28,8 @@ from pyomo.environ import Set, Expression, value
 
 from gridpath.auxiliary.auxiliary import (
     get_required_subtype_modules,
-    join_sets,
 )
-from gridpath.auxiliary.dynamic_components import capacity_type_operational_period_sets
+
 from gridpath.common_functions import create_results_df
 from gridpath.project.capacity.common_functions import (
     load_project_capacity_type_modules,
@@ -154,36 +153,8 @@ def add_model_components(
     # Sets
     ###########################################################################
 
-    m.PRJ_OPR_PRDS = Set(
-        dimen=2,
-        within=m.PROJECTS * m.PERIODS,
-        initialize=lambda mod: join_sets(
-            mod,
-            getattr(d, capacity_type_operational_period_sets),
-        ),
-    )  # assumes capacity types model components are already added!
-
-    m.OPR_PRDS_BY_PRJ = Set(
-        m.PROJECTS,
-        initialize=lambda mod, project: operational_periods_by_project(
-            prj=project, project_operational_periods=mod.PRJ_OPR_PRDS
-        ),
-    )
-
-    m.PRJ_OPR_TMPS = Set(
-        dimen=2,
-        initialize=lambda mod: [
-            (g, tmp)
-            for g in mod.PROJECTS
-            for p in mod.OPR_PRDS_BY_PRJ[g]
-            for tmp in mod.TMPS_IN_PRD[p]
-        ],
-    )
-
-    m.OPR_PRJS_IN_TMP = Set(
-        m.TMPS,
-        initialize=op_gens_by_tmp,
-    )
+    # Now added in gridpath.project.capacity.capacity_sets.py and added to abstractmodel
+    # before gridpath.project.capacity.capacity.py.
 
     # Expressions
     ###########################################################################
@@ -279,38 +250,6 @@ def add_model_components(
     m.Fuel_Storage_Capacity_FuelUnit = Expression(
         m.PRJ_OPR_PRDS, rule=fuel_storage_capacity_rule
     )
-
-
-# Set Rules
-###############################################################################
-
-
-def op_gens_by_tmp(mod):
-    """
-    Figure out which generators are operational in each timepoint.
-    """
-    tmp_to_projects = {}
-    for g, tmp in mod.PRJ_OPR_TMPS:
-        tmp_to_projects.setdefault(tmp, set()).add(g)
-
-    for tmp in tmp_to_projects:
-        tmp_to_projects[tmp] = list(tmp_to_projects[tmp])
-
-    return tmp_to_projects
-
-
-def operational_periods_by_project(prj, project_operational_periods):
-    """ """
-    return sorted(
-        list(
-            set(
-                period
-                for (project, period) in project_operational_periods
-                if project == prj
-            )
-        )
-    )
-
 
 # Input-Output
 ###############################################################################

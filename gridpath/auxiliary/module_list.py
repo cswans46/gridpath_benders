@@ -78,6 +78,7 @@ def all_modules_list():
         "project",
         "project.capacity",
         "project.capacity.capacity_types",
+        "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
         "project.capacity.capacity_groups",
@@ -780,9 +781,19 @@ def load_modules(modules_to_use, parsed_arguments):
         )
 
         del benders_modules["Sets"]
+
+        # This code preserves the original order of modules_to_use in each of the sets of
+        # modules.
+        modules_to_use = {
+            key: [m for m in modules_to_use if m in values]
+            for key, values in benders_modules.items()
+        }
+
+        print(modules_to_use)
+
         # Here, modules_to_use becomes a dictionary.
         # TODO: Change code to allow for modules_to_use to be a dictionary in the case of benders.
-        modules_to_use = benders_modules
+        # modules_to_use = benders_modules
 
         # for m in modules_to_use.values():
         #     try:
