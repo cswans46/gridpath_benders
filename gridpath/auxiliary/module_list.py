@@ -789,8 +789,6 @@ def load_modules(modules_to_use, parsed_arguments):
             for key, values in benders_modules.items()
         }
 
-        print(modules_to_use)
-
         # Here, modules_to_use becomes a dictionary.
         # TODO: Change code to allow for modules_to_use to be a dictionary in the case of benders.
         # modules_to_use = benders_modules

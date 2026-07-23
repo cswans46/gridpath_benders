@@ -7,6 +7,9 @@ from gridpath.auxiliary.auxiliary import (
 from gridpath.project.capacity.common_functions import (
     load_project_capacity_type_modules,
 )
+from gridpath.project.capacity.capacity_types.common_methods import (
+    spec_determine_inputs
+)
 from gridpath.auxiliary.dynamic_components import (
     capacity_type_operational_period_sets)
 
@@ -20,6 +23,8 @@ def add_model_components(
     subproblem,
     stage,
 ):
+    m.GEN_SPEC_OPR_PRDS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
+    
     m.PRJ_OPR_PRDS = Set(
         dimen=2,
         within=m.PROJECTS * m.PERIODS,
@@ -51,6 +56,7 @@ def add_model_components(
         m.TMPS,
         initialize=op_gens_by_tmp,
     )
+
 
 # Set Rules
 ###############################################################################
@@ -91,6 +97,18 @@ def load_model_data(
     subproblem,
     stage,
 ):
+    project_period_list, spec_params_dict = spec_determine_inputs(
+        scenario_directory=scenario_directory,
+        weather_iteration=weather_iteration,
+        hydro_iteration=hydro_iteration,
+        availability_iteration=availability_iteration,
+        subproblem=subproblem,
+        stage=stage,
+        capacity_type="gen_spec",
+    )
+
+    data_portal.data()["GEN_SPEC_OPR_PRDS"] = project_period_list
+
     """ """
     required_capacity_modules = get_required_subtype_modules(
         scenario_directory=scenario_directory,

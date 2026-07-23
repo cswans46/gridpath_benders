@@ -1,6 +1,7 @@
 # Build script to output csv file that includes names of investment and operational modules.
 # TODO: further investigation into how these modules interact.
 import pandas as pd
+from collections import Counter
 
 def define_benders_modules(modules_to_use):
 
@@ -205,7 +206,14 @@ def define_benders_modules(modules_to_use):
         "geography.markets",
         "geography.water_network",
         "project",
-        "project.capacity.capacity_sets"
+        "project.capacity.capacity_sets",
+        "project.capacity",
+        "project.capacity.capacity_types",
+        "project.capacity.capacity",
+        "project.capacity.potential",
+        "project.capacity.capacity_groups",
+        "project.capacity.relative_capacity",
+        "project.capacity.costs",
     ]
 
     inv_module = [
@@ -258,9 +266,10 @@ def define_benders_modules(modules_to_use):
      in the Bender's scheme
     """
 
-    op_modules = [m for m in modules_to_use if m in op_module]
-    inv_modules = [m for m in modules_to_use if m in inv_module]
     sets = [m for m in modules_to_use if m in set_definitions]
+    # Need to filter out duplicates because sets will be added to the operational and investment models later.
+    op_modules = [m for m in modules_to_use if (m in op_module and m not in sets)]
+    inv_modules = [m for m in modules_to_use if (m in inv_module and m not in sets)]
 
     benders_modules = {
         "Sets": sets,
@@ -268,7 +277,5 @@ def define_benders_modules(modules_to_use):
         "Operational": op_modules
     }
 
+
     return benders_modules
-
-    # TODO: trial and testing to see if this decomposition is proper (as in are there constraints that are mismatched?).
-

@@ -100,7 +100,7 @@ def add_model_components(
     # Sets
     ###########################################################################
 
-    m.GEN_SPEC_OPR_PRDS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
+    # This goes in capacity_sets.py
 
     # Required Params
     ###########################################################################
