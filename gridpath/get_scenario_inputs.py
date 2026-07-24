@@ -252,6 +252,7 @@ def write_inputs(
 
     for m in loaded_modules_it:
         if hasattr(m, "write_model_inputs"):
+            print("Lookie here again: ", m)
             m.write_model_inputs(
                 scenario_directory=scenario_directory,
                 scenario_id=scenario_id,

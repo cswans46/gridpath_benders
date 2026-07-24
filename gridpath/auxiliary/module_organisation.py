@@ -176,6 +176,9 @@ def define_benders_modules(modules_to_use):
         "objective.project.aggregate_operational_tuning_costs",
         "objective.transmission.aggregate_hurdle_costs",
         "objective.transmission.aggregate_tx_tuning_costs",
+        "project.capacity",
+        "project.capacity.capacity_types",
+        "project.capacity.capacity",
     ]
 
     set_definitions = [
