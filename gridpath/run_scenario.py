@@ -146,7 +146,7 @@ def create_problem(
         # TODO: create benders_subproblems (recall that subproblems already exist).
         benders_problems = ["Investment","Operational"]
         for i in benders_problems:
-            print(i)
+            print("This is the benders iteration: ",i)
             create_abstract_model(
                 # Also have to create two separate models (operational and investment) to facilitate benders
                 # Because it implies a change to the optimisation structure.
@@ -182,6 +182,8 @@ def create_problem(
                 stage,
             )
 
+            # print("Scenario data: ",scenario_data.data())
+
             instance = {}
 
             if not parsed_arguments.quiet:
@@ -201,7 +203,7 @@ def create_problem(
                 loaded_modules[i],
             )
 
-        print("This is the model instance",instance)
+        # print("This is the model instance",instance)
 
         return dynamic_components, instance
 
@@ -237,6 +239,8 @@ def create_problem(
             subproblem,
             stage,
         )
+
+        # print("Scenario data: ", scenario_data.data())
 
         if not parsed_arguments.quiet:
             print("Creating problem instance...")
@@ -1204,6 +1208,7 @@ def load_scenario_data(
     """
     # Load data
     data_portal = DataPortal()
+    # print("These are the loaded_modules: ",loaded_modules)
     for m in loaded_modules:
         if hasattr(m, "load_model_data"):
             m.load_model_data(
@@ -1226,6 +1231,8 @@ def create_problem_instance(model, loaded_data):
     :param loaded_data: the DataPortal object with the data loaded in and
         linked to the relevant model components
     :return: the compiled problem instance
+
+    GEN_COMMIT_LIN_LINKED_TMPS
 
     Compile the problem based on the abstract model formulation and the data
     loaded into the model components.
