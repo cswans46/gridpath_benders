@@ -368,7 +368,6 @@ def write_model_inputs(
     # Write module-specific inputs
     for op_m in required_opchar_modules:
         if hasattr(imported_operational_modules[op_m], "write_model_inputs"):
-            print("Lookie here at the imported modules:",op_m)
             imported_operational_modules[op_m].write_model_inputs(
                 scenario_directory,
                 scenario_id,

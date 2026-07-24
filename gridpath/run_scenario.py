@@ -145,6 +145,7 @@ def create_problem(
     if parsed_arguments.benders:
         # TODO: create benders_subproblems (recall that subproblems already exist).
         benders_problems = ["Investment","Operational"]
+        instance = {}
         for i in benders_problems:
             print("This is the benders iteration: ",i)
             create_abstract_model(
@@ -184,8 +185,7 @@ def create_problem(
 
             # print("Scenario data: ",scenario_data.data())
 
-            instance = {}
-
+            print("Lookie at this here model: ",model)
             if not parsed_arguments.quiet:
                 print("Creating problem instance...")
             instance[i] = create_problem_instance(model[i], scenario_data)
@@ -204,6 +204,7 @@ def create_problem(
             )
 
         # print("This is the model instance",instance)
+        print("Lookie here at this here instance: ",instance)
 
         return dynamic_components, instance
 
@@ -450,10 +451,18 @@ def run_optimization_for_subproblem_stage(
                 )
                 if not os.path.exists(prob_sol_files_directory):
                     os.makedirs(prob_sol_files_directory)
-                with open(
-                    os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
-                ) as f_out:
-                    dill.dump(instance, f_out)
+                if parsed_arguments.benders:
+                    benders_problems = ["Operational","Investment"]
+                    for i in benders_problems:
+                        with open(
+                            os.path.join(prob_sol_files_directory, "instance_{}.pickle".format(i)), "wb"
+                        ) as f_out:
+                            dill.dump(instance[i],   f_out)
+                else:
+                    with open(
+                        os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
+                    ) as f_out:
+                        dill.dump(instance, f_out)
                 with open(
                     os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
                     "wb",
@@ -759,16 +768,14 @@ def run_scenario(
     elif n_parallel_subproblems > 1:
         # Check if the subproblems are linked, in which case
         # we can't parallelize and throw a warning, then solve
-        # sequentially if no Benders is desired.
-        # If Benders is desired and linked subproblems or no linked subproblems exist, then solve
-        # using parallisation
+        # sequentially.
         if os.path.exists(
             os.path.join(scenario_directory, "linked_subproblems_map.csv")
-        ) & (not parsed_arguments.benders):
+            ):
 
             warnings.warn(
-                "GridPath WARNING: subproblems are linked and Benders decomposition has not been invoked "
-                "so problem cannot be solved in parallel. Solving "
+                "GridPath WARNING: subproblems are linked."
+                "Problem cannot be solved in parallel. Solving "
                 "sequentially."
             )
             objective_values = solve_sequentially(
@@ -781,7 +788,7 @@ def run_scenario(
             return objective_values
 
         # If subproblems are independent, we create pool of subproblems
-        # and solve them in parallel
+        # and solve them in parallel (use benders for maximum efficiency with larger problems).
         else:
         #     Create dictionary with which we'll keep track
         #     of subproblem objective function values
@@ -1406,6 +1413,18 @@ def solve(instance, parsed_arguments):
         for opt in solver_options.keys():
             optimizer.options[opt] = solver_options[opt]
 
+    if parsed_arguments.benders:
+        print("Lookie at this here instance: ", instance)
+        linking_vars = define_linking_vars(instance["Investment"])
+        setup = {}
+        results = benders(
+            instance["Investment"],
+            instance["Operational"],
+            linking_vars,
+            setup
+        )
+
+    else:
         results = optimizer.solve(
             instance,
             tee=not parsed_arguments.mute_solver_output,
@@ -1420,6 +1439,14 @@ def solve(instance, parsed_arguments):
 
     return results
 
+
+def define_linking_vars(m):
+    linking_vars = ["Capacity_MW"]
+
+    for i in linking_vars:
+        model_linking_vars = getattr(m, i)
+
+    return model_linking_vars
 
 def export_results(
     scenario_directory,
