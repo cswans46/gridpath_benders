@@ -24,7 +24,7 @@ reliability constraints, etc.
 
 import os.path
 import pandas as pd
-from pyomo.environ import Set, Expression, value
+from pyomo.environ import Set, Expression, value, Var
 
 from gridpath.auxiliary.auxiliary import (
     get_required_subtype_modules,
@@ -294,6 +294,10 @@ def load_model_data(
                 subproblem,
                 stage,
             )
+            # Check to see what was added.
+            print("Variables added by", op_m)
+            for v in m.component_objects(Var, active=True):
+                print("  ", v.name)
 
 
 # TODO: move this to gridpath.project.capacity.__init__?

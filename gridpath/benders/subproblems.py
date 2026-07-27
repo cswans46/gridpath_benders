@@ -58,11 +58,11 @@ def fix_linking_variables(model, planning_sol, linking_vars):
         # mimic JuMP behavior
         var.domain = Reals
 
-def solve_subproblem(model, planning_sol, linking_vars, expect_feasible, solver):
+def solve_subproblem(model, planning_sol, linking_vars, expect_feasible, optimiser):
 
     fix_linking_variables(model, planning_sol, linking_vars)
 
-    results = solver.solve(model, tee=False)
+    results = optimiser.solve(model, tee=False)
 
     status = results.solver.status
     term = results.solver.termination_condition
@@ -72,7 +72,7 @@ def solve_subproblem(model, planning_sol, linking_vars, expect_feasible, solver)
     # ------------------------------------------------------------
     if term == "optimal":
 
-        op_cost = value(model.obj)
+        op_cost = value(model.NPV)
 
         duals = [
             model.dual[model.find_component(name)]

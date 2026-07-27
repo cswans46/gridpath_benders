@@ -4,6 +4,9 @@ import math
 import time
 import logging
 import pyomo.environ as pyo
+from pyomo.environ import (
+    SolverFactory
+)
 # from gridpath.benders.planning import add_approximate_variable_cost, solve_planning_problem
 # from gridpath.benders.regularization import solve_int_level_set_problem
 # from gridpath.benders.subproblems import solve_subproblem
@@ -34,17 +37,18 @@ def benders(
     subproblems,
     linking_variables_sub,
     setup,
-    reformat_logging=False,
+    parsed_arguments
 ):
     """
     Regularized Benders decomposition.
     """
-
+    print("Running Benders decomposition...")
     logger.info("Running Benders decomposition")
 
     expect_feasible = setup["ExpectFeasibleSubproblems"]
 
     if expect_feasible:
+        print("Skipping feasibility cuts.")
         logger.info("Skipping feasibility cuts.")
     else:
         add_slacks_to_subproblem(subproblems)
@@ -87,9 +91,19 @@ def benders(
 
         integer_routine = True
 
+    if parsed_arguments.solver_executable is not None:
+        optimiser = SolverFactory(
+            parsed_arguments.solver, executable=parsed_arguments.solver_executable
+        )
+        # Otherwise, only pass the solver name; Pyomo will look for the
+        # executable in the PATH
+    else:
+        optimiser = SolverFactory(parsed_arguments.solver)
+
     planning_sol, LB = solve_planning_problem(
         planning_problem,
         planning_variable_names,
+        optimiser
     )
 
     UB = math.inf
@@ -113,11 +127,12 @@ def benders(
         )
 
         start = time.time()
-
         subop_sol = solve_subproblem(
             subproblems,
             planning_sol,
-            expect_feasible
+            linking_variables_sub,
+            expect_feasible,
+            optimiser
         )
 
         logger.info(
@@ -146,6 +161,7 @@ def benders(
         unst_planning_sol, LB_new = solve_planning_problem(
             planning_problem,
             planning_variable_names,
+            optimiser
         )
 
         LB = max(LB, LB_new)
@@ -190,6 +206,7 @@ def benders(
                 planning_sol, LB = solve_planning_problem(
                     planning_problem,
                     planning_variable_names,
+                    optimiser
                 )
 
                 planning_sol_best = deepcopy(planning_sol)

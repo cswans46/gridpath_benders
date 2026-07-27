@@ -1,6 +1,6 @@
 @echo off
 
-set scn_id=89
+set scn_id=158
 set stem=C:\Users\SwansonC\ECD\gridpath_ana\db
 set benders=1
 set database_it=1

@@ -1334,8 +1334,6 @@ def add_model_components(
         ),
     )
 
-    print("Here is the gen_commit_lin_linked_commit: ", m.gen_commit_lin_linked_commit.pprint())
-
     setattr(
         m,
         "gen_commit_{}_linked_startup".format(bin_or_lin),
@@ -2027,8 +2025,6 @@ def add_model_components(
             # If this is the first timepoint of a linked horizon, set the
             # previous timepoint's commitment to that in the closest linked
             # timepoint (the linked timepoint with index 0)
-
-            print("Here is the gen_commit_lin_linked_commit: ", m.gen_commit_lin_linked_commit.pprint())
 
             if check_if_boundary_type_and_first_timepoint(
                 mod=mod,
@@ -3590,8 +3586,6 @@ def load_model_data(
         "inputs",
         "gen_commit_{}_linked_timepoint_params.tab".format(bin_or_lin),
     )
-
-    print("Lookie here: ",os.path.exists(linked_inputs_filename))
 
     if os.path.exists(linked_inputs_filename):
         data_portal.load(

@@ -39,7 +39,7 @@ from pyomo.environ import (
     SolverStatus,
     TerminationCondition,
 )
-
+from pyomo.core.expr.visitor import identify_variables
 # from pyomo.util.infeasible import log_infeasible_constraints
 from pyomo.common.timing import report_timing
 from pyomo.common.tempfiles import TempfileManager
@@ -184,8 +184,6 @@ def create_problem(
             )
 
             # print("Scenario data: ",scenario_data.data())
-
-            print("Lookie at this here model: ",model)
             if not parsed_arguments.quiet:
                 print("Creating problem instance...")
             instance[i] = create_problem_instance(model[i], scenario_data)
@@ -202,9 +200,6 @@ def create_problem(
                 stage,
                 loaded_modules[i],
             )
-
-        # print("This is the model instance",instance)
-        print("Lookie here at this here instance: ",instance)
 
         return dynamic_components, instance
 
@@ -1414,14 +1409,31 @@ def solve(instance, parsed_arguments):
             optimizer.options[opt] = solver_options[opt]
 
     if parsed_arguments.benders:
-        print("Lookie at this here instance: ", instance)
         linking_vars = define_linking_vars(instance["Investment"])
-        setup = {}
+        setup = {
+            # Real: Set the maximum number of iterations
+            "MaxIter": 10000,
+            # Real: Set the desired convergence tolerance between normalised upper and lower bound
+            "ConvTol": 1e-13,
+            # Real: Set the upper bound of time desired for each CPU to spend on solving a problem.
+            "MaxCpuTime":100000,
+            # Bool: Set to true if the subproblem solutions are expected to be feasible. Otherwise, slacks would be added to the constraints.
+            # While this option is kept, pyomo does not currently have the functionality to achieve this (only in JuMP in julia) so this should
+            # ALWAYS BE SET TO TRUE.
+            "ExpectFeasibleSubproblems": True,
+            # Bool: Select whether investment variables are binary or not.
+            "IntegerInvestment": False,
+            # Bool: Set to true if stabilisation is requested.
+            "StabDynamic": True,
+            # Real: Choose convergence parameter (\gamma \in (0,1)).
+            "StabParam": 0.9}
+
         results = benders(
             instance["Investment"],
             instance["Operational"],
             linking_vars,
-            setup
+            setup,
+            parsed_arguments,
         )
 
     else:
@@ -1441,12 +1453,31 @@ def solve(instance, parsed_arguments):
 
 
 def define_linking_vars(m):
-    linking_vars = ["Capacity_MW"]
+    expression_names = [
+        "Capacity_MW"
+    ]
 
-    for i in linking_vars:
-        model_linking_vars = getattr(m, i)
+    linking_vars = set()
 
-    return model_linking_vars
+    for expr_name in expression_names:
+        expr_component = getattr(m, expr_name)
+
+        # Handle scalar Expression
+        if expr_component.is_indexed() is False:
+            expressions = [expr_component.expr]
+
+        # Handle IndexedExpression
+        else:
+            expressions = [
+                expr_component[i].expr
+                for i in expr_component
+            ]
+
+        for expr in expressions:
+            for var in identify_variables(expr):
+                linking_vars.add(var.name)
+
+    return list(linking_vars)
 
 def export_results(
     scenario_directory,

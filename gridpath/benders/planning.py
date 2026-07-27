@@ -31,7 +31,7 @@ class PlanningSolution:
 # Solve the master/planning problem
 # -------------------------------------------------------------------------
 
-def solve_planning_problem(instance, planning_variables, solver):
+def solve_planning_problem(instance, planning_variables, optimiser):
     """
     Solve the planning (master) problem.
 
@@ -41,8 +41,7 @@ def solve_planning_problem(instance, planning_variables, solver):
         Instantiated Pyomo model.
     planning_variables : list[str]
         Names of the linking variables.
-    solver : SolverFactory
-        MOSEK solver object.
+    optimiser : SolverFactory solver predetermined in Benders
 
     Returns
     -------
@@ -51,7 +50,7 @@ def solve_planning_problem(instance, planning_variables, solver):
         (planning solution, lower bound)
     """
 
-    results = solver.solve(instance, tee=False)
+    results = optimiser.solve(instance, tee=False)
 
     status = results.solver.status
     termination = results.solver.termination_condition
