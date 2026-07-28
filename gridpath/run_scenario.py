@@ -263,11 +263,12 @@ def create_problem(
     if parsed_arguments.report_timing:
         report_timing()
 
-def solve_problem(parsed_arguments, instance):
+def solve_problem(prob_sol_files_directory,parsed_arguments, instance):
     # Solve
+    # If desired, produce an lp file of the abstract model (if only the .lp file is desired use the parsed argument --lp_
     if not parsed_arguments.quiet:
         print("Solving...")
-    results = solve(instance, parsed_arguments)
+    results = solve(prob_sol_files_directory,instance, parsed_arguments)
 
     return instance, results
 
@@ -410,21 +411,21 @@ def run_optimization_for_subproblem_stage(
         # TODO: incompatible options
         # If we are loading a solution, skip the compilation step; we'll use the saved
         # instance and dynamic components
-        if parsed_arguments.load_cplex_solution:
-            solved_instance, results, dynamic_components = load_cplex_xml_solution(
+        if parsed_arguments.load_solution:
+            solved_instance, results, dynamic_components = load_json_solution(
                 prob_sol_files_directory=prob_sol_files_directory,
-                solution_filename="cplex_solution.sol",
+                solution_filename="solution.json",
             )
-        elif parsed_arguments.load_gurobi_solution:
-            solved_instance, results, dynamic_components = load_gurobi_json_solution(
-                prob_sol_files_directory=prob_sol_files_directory,
-                solution_filename="gurobi_solution.json",
-            )
-        if parsed_arguments.load_highs_solution:
-            solved_instance, results, dynamic_components = load_highs_xml_solution(
-                prob_sol_files_directory=prob_sol_files_directory,
-                solution_filename="highs_solution.sol",
-            )
+        # elif parsed_arguments.load_gurobi_solution:
+        #     solved_instance, results, dynamic_components = load_gurobi_json_solution(
+        #         prob_sol_files_directory=prob_sol_files_directory,
+        #         solution_filename="gurobi_solution.json",
+        #     )
+        # if parsed_arguments.load_highs_solution:
+        #     solved_instance, results, dynamic_components = load_highs_xml_solution(
+        #         prob_sol_files_directory=prob_sol_files_directory,
+        #         solution_filename="highs_solution.sol",
+        #     )
         else:
             dynamic_components, instance = create_problem(
                 scenario_directory=scenario_directory,
@@ -436,56 +437,70 @@ def run_optimization_for_subproblem_stage(
                 multi_stage=multi_stage,
                 parsed_arguments=parsed_arguments,
             )
+            prob_sol_files_directory = os.path.join(
+                scenario_directory,
+                subproblem_directory,
+                stage_directory,
+                "prob_sol_files",
+            )
+            # Check to see if there exists already an .lp file and .pickle file for the model instance.
+            from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
+            saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
+            # If this is the case, then easily solve from the saved instance and .lp file.
+            if saved_instance:
+                solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
+                                                        pickle_file=saved_instance,
+                                                        parsed_arguments=parsed_arguments)
 
-            if parsed_arguments.create_lp_problem_file_only:
-                prob_sol_files_directory = os.path.join(
-                    scenario_directory,
-                    subproblem_directory,
-                    stage_directory,
-                    "prob_sol_files",
-                )
-                if not os.path.exists(prob_sol_files_directory):
-                    os.makedirs(prob_sol_files_directory)
-                if parsed_arguments.benders:
-                    benders_problems = ["Operational","Investment"]
-                    for i in benders_problems:
-                        with open(
-                            os.path.join(prob_sol_files_directory, "instance_{}.pickle".format(i)), "wb"
-                        ) as f_out:
-                            dill.dump(instance[i],   f_out)
-                else:
-                    with open(
-                        os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(instance, f_out)
-                with open(
-                    os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
-                    "wb",
-                ) as f_out:
-                    dill.dump(dynamic_components, f_out)
-
-                smap_id = write_problem_file(
-                    instance=instance, prob_sol_files_directory=prob_sol_files_directory
-                )
-                symbol_map = instance.solutions.symbol_map[smap_id]
-
-                symbol_cuid_pairs = tuple(
-                    (symbol, ComponentUID(var_weakref, cuid_buffer={}))
-                    for symbol, var_weakref in symbol_map.bySymbol.items()
-                )
-
-                with open(
-                    os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
-                ) as f_out:
-                    dill.dump(symbol_cuid_pairs, f_out)
-
-                print("Problem file written to {}".format(prob_sol_files_directory))
-                sys.exit()
             else:
-                solved_instance, results = solve_problem(
-                    parsed_arguments=parsed_arguments,
-                    instance=instance,
-                )
+                if parsed_arguments.create_lp_problem_file or parsed_arguments.create_lp_problem_file_only:
+                    if not os.path.exists(prob_sol_files_directory):
+                        os.makedirs(prob_sol_files_directory)
+                    if parsed_arguments.benders:
+                        benders_problems = ["Operational","Investment"]
+                        for i in benders_problems:
+                            with open(
+                                os.path.join(prob_sol_files_directory, "instance_{}.pickle".format(i)), "wb"
+                            ) as f_out:
+                                dill.dump(instance[i],   f_out)
+                    else:
+                        with open(
+                            os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
+                        ) as f_out:
+                            dill.dump(instance, f_out)
+                    with open(
+                        os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
+                        "wb",
+                    ) as f_out:
+                        dill.dump(dynamic_components, f_out)
+
+                    smap_id = write_problem_file(
+                        instance=instance, prob_sol_files_directory=prob_sol_files_directory
+                    )
+
+                    symbol_map = instance.solutions.symbol_map[smap_id]
+
+                    symbol_cuid_pairs = tuple(
+                        (symbol, ComponentUID(var_weakref, cuid_buffer={}))
+                        for symbol, var_weakref in symbol_map.bySymbol.items()
+                    )
+
+                    with open(
+                        os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
+                    ) as f_out:
+                        dill.dump(symbol_cuid_pairs, f_out)
+
+                    print("Problem file written to {}".format(prob_sol_files_directory))
+
+                    if parsed_arguments.create_lp_problem_file_only:
+                        sys.exit()
+
+                else:
+                    solved_instance, results = solve_problem(
+                        prob_sol_files_directory,
+                        parsed_arguments=parsed_arguments,
+                        instance=instance,
+                    )
 
         # Save the scenario results to disk
         save_results(
@@ -1297,12 +1312,12 @@ def view_loaded_data(loaded_modules, instance):
             m.view_loaded_data(instance)
 
 
-def solve(instance, parsed_arguments):
+def solve(prob_sol_files_directory,instance, parsed_arguments):
     """
     :param instance: the compiled problem instance
     :param parsed_arguments: the user-defined arguments (parsed)
     :return: the problem results
-
+    :param prob_sol_files_directory: str where solution file will be stored.
     Send the compiled problem instance to the solver and solve.
     """
     # Start with solver name specified on command line
@@ -1449,8 +1464,37 @@ def solve(instance, parsed_arguments):
     # of 1E-6.
     # log_infeasible_constraints(instance)
 
-    return results
+    # CODE TO OUTPUT SOLUTION FILE AND RELOAD IN THE CASE OF AN INFEASIBLE SOLUTION
+    # OR ONE THAT ITERATED/TIMED OUT
+    from gridpath.auxiliary.plugins.gurobi_solve import write_solution_json
+    # Write the solution
+    instance.solutions.load_from(results)
 
+    solution = write_solution_json(instance,os.path.join(prob_sol_files_directory,"solution.json"),results)
+
+    termination_condition = solution["metadata"]["termination_condition"]
+    has_solution = solution["metadata"]["has_solution"]
+
+    if termination_condition == "optimal":
+        # Already solved and json already written
+        return results
+
+    elif has_solution:
+        # Partial incumbent exists; restart from it
+        instance = load_json_solution(prob_sol_files_directory,instance)[0]
+
+        results = optimizer.solve(
+            instance,
+            warmstart=True,
+        )
+
+        return results
+
+    else:
+        # No usable solution exists
+        results = optimizer.solve(instance)
+
+        return results
 
 def define_linking_vars(m):
     expression_names = [
@@ -1958,14 +2002,15 @@ def load_cplex_xml_solution(
     return instance, results, dynamic_components
 
 
-def load_gurobi_json_solution(
-    prob_sol_files_directory, solution_filename="gurobi_solution.json"
+def load_json_solution(
+    prob_sol_files_directory, solution_filename="solution.json"
 ):
     """
     :param prob_sol_files_directory:
     :param solution_filename:
     :return:
     """
+
     print(
         "Loading results from solution file {}...".format(
             os.path.join(prob_sol_files_directory, solution_filename)
@@ -1983,26 +2028,18 @@ def load_gurobi_json_solution(
     with open(os.path.join(prob_sol_files_directory, solution_filename), "r") as f:
         solution = json.load(f)
 
-    # Variables
-    for v in solution["Vars"]:
-        var_id, value = v["VTag"][0], v["X"]
-        if not var_id == "ONE_VAR_CONSTANT":
-            symbol_map.bySymbol[var_id]().value = float(value)
-
-    # Constraints
-    for c in solution["Constrs"]:
-        constraint_id, dual = c["CTag"][0][4:], c["Pi"]
-        if not constraint_id == "ONE_VAR_CONSTAN":
-            instance.dual[symbol_map.bySymbol[constraint_id]()] = float(dual)
+    for var_name, value in solution["variables"].items():
+        if var_name in symbol_map.bySymbol:
+            symbol_map.bySymbol[var_name]().set_value(float(value))
 
     # Solver status
     # TODO: what are the types
-    termination_condition = (
-        "optimal" if solution["SolutionInfo"]["Status"] == 2 else "unknown"
-    )
-    solver_status = "ok" if solution["SolutionInfo"]["Status"] == 2 else "unknown"
+    termination_condition = solution["metadata"]["termination_condition"]
+    solver_status = solution["metadata"]["status"]
+
     results = Results(
-        solver_status=solver_status, termination_condition=termination_condition
+        solver_status=solver_status,
+        termination_condition=termination_condition,
     )
 
     return instance, results, dynamic_components

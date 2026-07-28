@@ -243,6 +243,12 @@ def get_run_scenario_parser():
         help="Skip solve and load results from a CPLEX solution file instead.",
     )
     parser.add_argument(
+        "--load_solution",
+        default=False,
+        action="store_true",
+        help="Skip solve and load results from a previous solution file instead.",
+    )
+    parser.add_argument(
         "--load_gurobi_solution",
         default=False,
         action="store_true",

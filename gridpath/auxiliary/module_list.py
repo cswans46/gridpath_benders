@@ -278,7 +278,7 @@ def all_modules_list():
         "objective.system.aggregate_market_revenue_and_costs",
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
-        "objective.min_op_costs",
+        # "objective.min_op_costs",
         "objective.max_npv",
     ]
     return all_modules
