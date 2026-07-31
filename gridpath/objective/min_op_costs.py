@@ -90,9 +90,13 @@ def add_model_components(
         "Total_Tx_Fixed_Costs"
     ]
 
+    operational_costs = [
+        c for c in getattr(d, cost_components)
+        if c not in capacity_costs
+    ]
+
     def cost_rule(mod):
-        return (sum(getattr(mod, c) for c in getattr(d, cost_components))
-                - sum(getattr(mod, i) for i in getattr(d, capacity_costs)))
+        return sum(getattr(mod, c) for c in operational_costs)
 
     m.OP_COSTS = m.Expression(initialize=cost_rule)
 

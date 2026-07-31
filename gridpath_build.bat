@@ -35,4 +35,9 @@ pause
 echo running end to end
 @echo off
 python gridpath/run_end_to_end.py --scenario_location C:\Users\SwansonC\ECD\gridpath_ana\examples --database %stem%/database%database_it%.db --scenario_id %scn_id% --solver gurobi --benders %benders% --n_parallel_get_inputs=%n_parallel_get_inputs% --n_parallel_solve=%n_parallel_get_inputs%
+@REM --load_gurobi_solution
+goto:eof
+:load_problem_file
+@REM python gridpath\auxiliary\plugins\gurobi_solve.py --problem_file_directory C:\Users\SwansonC\ECD\gridpath_ana\examples\single_stage_prod_cost_w_startup_limit\3\prob_sol_files\ --problem_file_name problem_file.lp
 pause
+:eof

@@ -132,7 +132,6 @@ def create_problem(
     into operational and investment variables (according to
     the split from Jacobson et al. and Pecci et al.).
     """
-    # TODO: need to make loaded_modules a dictionary when Benders is desired.
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory,
         multi_stage=multi_stage,
@@ -447,7 +446,7 @@ def run_optimization_for_subproblem_stage(
             from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
             saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
             # If this is the case, then easily solve from the saved instance and .lp file.
-            if saved_instance:
+            if saved_instance and parsed_arguments.load_instance:
                 solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
                                                         pickle_file=saved_instance,
                                                         parsed_arguments=parsed_arguments)
@@ -911,6 +910,24 @@ def run_scenario(
                                     )
                             else:
                                 # Add all stages if not filtering
+                                # If using Benders decomposition, each of the
+                                # planning problems should be identical (as they are
+                                # not subproblem dependent.
+                                # if parsed_arguments.benders:
+                                    # pool_data.append(
+                                    #     [
+                                    #         "scenario": scenario_directory,
+                                    #         "weather": weather_iteration_str,
+                                    #         "hydro": hydro_iteration_str,
+                                    #         "availability": availability_iteration_str,
+                                    #         "subproblem": subproblem_str,
+                                    #         "stage": stage_directories,
+                                    #         "availability": scenario_structure.STAGE_FLAG,
+                                    #         "availability": parsed_arguments,
+                                    #         "availability": objective_values,
+                                    #     ]
+                                    # )
+                                # else:
                                 pool_data.append(
                                     [
                                         scenario_directory,
@@ -924,7 +941,7 @@ def run_scenario(
                                         objective_values,
                                     ]
                                 )
-
+            print("try this data: ", pool_data)
             pool_data = tuple(pool_data)
 
             # Adjust pool size based on actual number of tasks
@@ -942,8 +959,17 @@ def run_scenario(
             # Pool must use spawn to work properly on Linux
             pool = get_context("spawn").Pool(n_parallel_subproblems)
 
-            pool.map(run_optimization_for_subproblem_pool, pool_data)
-            pool.close()
+            print("here is the data: ", pool_data)
+
+            if parsed_arguments.benders:
+
+                pool.map(run_optimization_for_subproblem_pool, pool_data)
+                pool.close()
+
+            else:
+
+                pool.map(run_optimization_for_subproblem_pool, pool_data)
+                pool.close()
 
             return objective_values
 
@@ -1424,6 +1450,13 @@ def solve(prob_sol_files_directory,instance, parsed_arguments):
             optimizer.options[opt] = solver_options[opt]
 
     if parsed_arguments.benders:
+        investment = instance["Investment"]
+
+        print("Var list",list(instance["Investment"].component_data_objects(pyo.Var)))
+        print("Expression list",list(instance["Investment"].component_data_objects(pyo.Expression)))
+
+        add_required_variables(instance["Investment"])
+
         linking_vars = define_linking_vars(instance["Investment"])
         setup = {
             # Real: Set the maximum number of iterations
@@ -1495,6 +1528,25 @@ def solve(prob_sol_files_directory,instance, parsed_arguments):
         results = optimizer.solve(instance)
 
         return results
+
+def add_variables(model):
+    for expr_name in model.component_data_objects(pyo.Expression, descend_into=True):
+        expr_component = getattr(m, expr_name)
+
+        # Handle scalar Expression
+        if expr_component.is_indexed() is False:
+            expressions = [expr_component.expr]
+
+        # Handle IndexedExpression
+        else:
+            expressions = [
+                expr_component[i].expr
+                for i in expr_component
+            ]
+
+        for expr in expressions:
+            for var in identify_variables(expr):
+                model.add(var.name)
 
 def define_linking_vars(m):
     expression_names = [

@@ -72,7 +72,7 @@ def solve_subproblem(model, planning_sol, linking_vars, expect_feasible, optimis
     # ------------------------------------------------------------
     if term == "optimal":
 
-        op_cost = value(model.NPV)
+        op_cost = value(model.MIN_OP_COSTS)
 
         duals = [
             model.dual[model.find_component(name)]

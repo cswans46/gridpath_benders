@@ -30,6 +30,12 @@ class BendersResult:
 
 def all_variables(model) -> list:
     """Returns a flat list of all variable data objects in the Pyomo model."""
+    print("What is the type",type(model))
+    print("What is the components",model.component_data_objects(pyo.Var, descend_into=True))
+    print("What is the list",list(model.component_data_objects(pyo.Var, descend_into=True)))
+    print("here is the model: ", model.pprint())
+    # Still returning an empty list of variables.
+
     return list(model.component_data_objects(pyo.Var, descend_into=True))
 
 def benders(
@@ -313,6 +319,7 @@ def update_planning_problem_multi_cuts(
     # 2. Re-create the Julia comprehension mapping over all scenarios w in W
     for w in W:
         sol_w = subop_sol[w]
+        print("This is the subproblem:",sol_w,w)
         linking_vars_w = linking_variables_sub[w]
 
         # Build the dynamic sum() expression term
@@ -355,8 +362,12 @@ def update_stab_param(gamma, UB, LB, UB_old, LB_old):
     return gamma
 
 def compute_upper_bound(model, planning_sol, subop_sol):
+    print("here is the subop_sol: ", subop_sol)
 
-    if any(sp.theta_coeff == 0 for sp in subop_sol.values()):
+    if isinstance(subop_sol, dict):
+        subop_sol = [subop_sol]
+
+    if any(sp["theta_coeff"] == 0 for sp in subop_sol):
         return math.inf
 
     # for w, sp in subop_sol.items():
@@ -379,5 +390,5 @@ def compute_upper_bound(model, planning_sol, subop_sol):
 
     return (
         planning_sol.planning_cost
-        + sum(sp.op_cost for sp in subop_sol.values())
+        + sum(sp["op_cost"] for sp in subop_sol)
     )
