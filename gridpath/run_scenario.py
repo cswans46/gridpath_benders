@@ -30,6 +30,8 @@ import json
 from multiprocessing import get_context, Manager
 import os.path
 import xml.etree.ElementTree as ET
+from itertools import product
+from dataclasses import dataclass
 
 from pyomo.environ import (
     AbstractModel,
@@ -141,12 +143,19 @@ def create_problem(
     if not parsed_arguments.quiet:
         print("Building model...")
 
+    @dataclass(frozen=True)
+    # If weather, hydro, availability iterations are not numeric, this needs to change to str.
+    class ScenarioKey:
+        weather: int | None
+        hydro: int | None
+        availability: int | None
+        subproblem: str
+
     if parsed_arguments.benders:
         # TODO: create benders_subproblems (recall that subproblems already exist).
         benders_problems = ["Investment","Operational"]
         instance = {}
         for i in benders_problems:
-            print("This is the benders iteration: ",i)
             create_abstract_model(
                 # Also have to create two separate models (operational and investment) to facilitate benders
                 # Because it implies a change to the optimisation structure.
@@ -167,38 +176,102 @@ def create_problem(
             # TODO: maybe this shouldn't always be needed
             model[i].dual = Suffix(direction=Suffix.IMPORT)
 
+            scenario_data = {}
+
             # Load the scenario data
             if not parsed_arguments.quiet:
                 print("Loading data...")
-            scenario_data = load_scenario_data(
-                model[i],
-                dynamic_components,
-                loaded_modules[i],
-                scenario_directory,
-                weather_iteration,
-                hydro_iteration,
-                availability_iteration,
-                subproblem,
-                stage,
-            )
+            if i=="Operational":
+                # Add part here to split out each of the subproblems into individual components. This
+                # can automatically be extended to include weather, hydro, and availability iterations
+                # if desired.
+                scenario_data_benders = {}
+                instance_benders = {}
+                # Include the possibility that weather_iteration can be none (for dictionary scenario_data).
+                weather_iters = weather_iteration or [None]
+                hydro_iters = hydro_iteration or [None]
+                availability_iters = availability_iteration or [None]
+                subproblem_list = subproblem
 
-            # print("Scenario data: ",scenario_data.data())
-            if not parsed_arguments.quiet:
-                print("Creating problem instance...")
-            instance[i] = create_problem_instance(model[i], scenario_data)
+                for weather, hydro, availability, subproblem in product(
+                        weather_iters,
+                        hydro_iters,
+                        availability_iters,
+                        subproblem_list,
+                ):
 
-            # Fix variables if modules request so
-            instance[i] = fix_variables(
-                instance[i],
-                dynamic_components,
-                scenario_directory,
-                weather_iteration,
-                hydro_iteration,
-                availability_iteration,
-                subproblem,
-                stage,
-                loaded_modules[i],
-            )
+                    key = ScenarioKey(weather, hydro, availability, subproblem)
+
+                    # Convert missing dimensions for filesystem compatibility
+                    weather_path = "" if weather is None else weather
+                    hydro_path = "" if hydro is None else hydro
+                    availability_path = "" if availability is None else availability
+                    subproblem_path = "" if subproblem is None else subproblem
+
+                    scenario_data_benders[key] = load_scenario_data(
+                        model[i],
+                        dynamic_components,
+                        loaded_modules[i],
+                        scenario_directory,
+                        weather_path,
+                        hydro_path,
+                        availability_path,
+                        # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
+                        subproblem_path,
+                        stage,
+                    )
+
+                    # print("Scenario data: ",scenario_data.data())
+                    if not parsed_arguments.quiet:
+                        print("Creating problem instance for operational subproblems...")
+                    instance_benders[key] = create_problem_instance(model[i], scenario_data_benders[key])
+
+                    # Fix variables if modules request so
+                    instance_benders[key] = fix_variables(
+                        instance_benders[key],
+                        dynamic_components,
+                        scenario_directory,
+                        weather,
+                        hydro,
+                        availability,
+                        subproblem,
+                        stage,
+                        loaded_modules[i],
+                    )
+
+                instance[i] = instance_benders
+
+            else:
+                # Add a part here where the investment variables/constraints are being added.
+                scenario_data = load_scenario_data(
+                    model[i],
+                    dynamic_components,
+                    loaded_modules[i],
+                    scenario_directory,
+                    weather_iteration,
+                    hydro_iteration,
+                    availability_iteration,
+                    # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
+                    subproblem,
+                    stage,
+                )
+                # print("Scenario data: ",scenario_data.data())
+                if not parsed_arguments.quiet:
+                    print("Creating problem instance for planning problem...")
+                instance[i] = create_problem_instance(model[i], scenario_data)
+
+                # Fix variables if modules request so
+                instance[i] = fix_variables(
+                    instance[i],
+                    dynamic_components,
+                    scenario_directory,
+                    weather_iteration,
+                    hydro_iteration,
+                    availability_iteration,
+                    subproblem,
+                    stage,
+                    loaded_modules[i],
+                )
 
         return dynamic_components, instance
 
@@ -436,6 +509,9 @@ def run_optimization_for_subproblem_stage(
                 multi_stage=multi_stage,
                 parsed_arguments=parsed_arguments,
             )
+
+            print("This is the instance after having disaggregated by subproblem: ", instance)
+
             prob_sol_files_directory = os.path.join(
                 scenario_directory,
                 subproblem_directory,
@@ -615,10 +691,7 @@ def run_optimization_for_subproblem_pool(pool_datum):
     """
     [
         scenario_directory,
-        weather_iteration_directory,
-        hydro_iteration_directory,
-        availability_iteration_directory,
-        subproblem_directory,
+        all_subproblem_data,
         stage_directories,
         multi_stage,
         parsed_arguments,
@@ -849,52 +922,152 @@ def run_scenario(
                             ] = manager.dict()
 
             pool_data = []
-            for weather_iteration_str in scenario_directory_structure.keys():
-                print("weather", weather_iteration_str)
-                for hydro_iteration_str in scenario_directory_structure[
-                    weather_iteration_str
-                ].keys():
-                    print("hydro", hydro_iteration_str)
-                    for availability_iteration_str in scenario_directory_structure[
-                        weather_iteration_str
-                    ][hydro_iteration_str]:
-                        print("availability", availability_iteration_str)
-                        # We may have passed "empty_string" to avoid actual empty
-                        # strings as dictionary keys; convert to actual empty
-                        # strings here to pass to the directory creation methods
-                        weather_iteration_str = ensure_empty_string(
-                            weather_iteration_str
-                        )
-                        hydro_iteration_str = ensure_empty_string(hydro_iteration_str)
-                        availability_iteration_str = ensure_empty_string(
-                            availability_iteration_str
-                        )
-                        for subproblem_str in scenario_directory_structure[
-                            weather_iteration_str
-                        ][hydro_iteration_str][availability_iteration_str].keys():
-                            stage_directories = scenario_directory_structure[
-                                weather_iteration_str
-                            ][hydro_iteration_str][availability_iteration_str][
-                                subproblem_str
-                            ]
+            if parsed_arguments.benders:
 
-                            # If --incomplete_only flag is set, filter out complete subproblems
-                            if parsed_arguments.incomplete_only:
-                                # Filter stage directories to only include incomplete stages
-                                incomplete_stage_directories = [
-                                    stage_dir
-                                    for stage_dir in stage_directories
-                                    if not is_subproblem_stage_complete(
-                                        scenario_directory,
+                all_subproblem_data = {}
+
+                for weather_iteration_str in scenario_directory_structure.keys():
+                    print("weather", weather_iteration_str)
+
+                    for hydro_iteration_str in scenario_directory_structure[weather_iteration_str].keys():
+                        print("hydro", hydro_iteration_str)
+
+                        for availability_iteration_str in scenario_directory_structure[
+                            weather_iteration_str
+                        ][hydro_iteration_str]:
+
+                            print("availability", availability_iteration_str)
+
+                            weather_iteration_str = ensure_empty_string(weather_iteration_str)
+                            hydro_iteration_str = ensure_empty_string(hydro_iteration_str)
+                            availability_iteration_str = ensure_empty_string(
+                                availability_iteration_str
+                            )
+
+                            for subproblem_str in scenario_directory_structure[
+                                weather_iteration_str
+                            ][hydro_iteration_str][availability_iteration_str].keys():
+
+                                stage_directories = scenario_directory_structure[
+                                    weather_iteration_str
+                                ][hydro_iteration_str][availability_iteration_str][subproblem_str]
+
+                                if parsed_arguments.incomplete_only:
+                                    stage_directories = [
+                                        stage_dir
+                                        for stage_dir in stage_directories
+                                        if not is_subproblem_stage_complete(
+                                            scenario_directory,
+                                            weather_iteration_str,
+                                            hydro_iteration_str,
+                                            availability_iteration_str,
+                                            subproblem_str,
+                                            stage_dir,
+                                        )
+                                    ]
+
+                                    if not stage_directories:
+                                        continue
+
+                                all_subproblem_data[
+                                    (
                                         weather_iteration_str,
                                         hydro_iteration_str,
                                         availability_iteration_str,
                                         subproblem_str,
-                                        stage_dir,
                                     )
+                                ] = stage_directories
+                # Create a data pool with separate subproblems to call in run_optimisation_for_subproblem_stage
+                pool_data.append(
+                    [
+                        scenario_directory,
+                        all_subproblem_data,
+                        scenario_structure.STAGE_FLAG,
+                        parsed_arguments,
+                        objective_values,
+                    ]
+                )
+
+            else:
+                for weather_iteration_str in scenario_directory_structure.keys():
+                    print("weather", weather_iteration_str)
+                    for hydro_iteration_str in scenario_directory_structure[
+                        weather_iteration_str
+                    ].keys():
+                        print("hydro", hydro_iteration_str)
+                        for availability_iteration_str in scenario_directory_structure[
+                            weather_iteration_str
+                        ][hydro_iteration_str]:
+                            print("availability", availability_iteration_str)
+                            # We may have passed "empty_string" to avoid actual empty
+                            # strings as dictionary keys; convert to actual empty
+                            # strings here to pass to the directory creation methods
+                            weather_iteration_str = ensure_empty_string(
+                                weather_iteration_str
+                            )
+                            hydro_iteration_str = ensure_empty_string(hydro_iteration_str)
+                            availability_iteration_str = ensure_empty_string(
+                                availability_iteration_str
+                            )
+                            for subproblem_str in scenario_directory_structure[
+                                weather_iteration_str
+                            ][hydro_iteration_str][availability_iteration_str].keys():
+                                stage_directories = scenario_directory_structure[
+                                    weather_iteration_str
+                                ][hydro_iteration_str][availability_iteration_str][
+                                    subproblem_str
                                 ]
-                                # Only add to pool if there are incomplete stages
-                                if incomplete_stage_directories:
+
+                                # If --incomplete_only flag is set, filter out complete subproblems
+                                if parsed_arguments.incomplete_only:
+                                    # Filter stage directories to only include incomplete stages
+                                    incomplete_stage_directories = [
+                                        stage_dir
+                                        for stage_dir in stage_directories
+                                        if not is_subproblem_stage_complete(
+                                            scenario_directory,
+                                            weather_iteration_str,
+                                            hydro_iteration_str,
+                                            availability_iteration_str,
+                                            subproblem_str,
+                                            stage_dir,
+                                        )
+                                    ]
+                                    # Only add to pool if there are incomplete stages
+                                    if incomplete_stage_directories:
+                                        pool_data.append(
+                                            [
+                                                scenario_directory,
+                                                weather_iteration_str,
+                                                hydro_iteration_str,
+                                                availability_iteration_str,
+                                                subproblem_str,
+                                                incomplete_stage_directories,
+                                                scenario_structure.STAGE_FLAG,
+                                                parsed_arguments,
+                                                objective_values,
+                                            ]
+                                        )
+                                else:
+                                    # Add all stages if not filtering
+                                    # If using Benders decomposition, each of the
+                                    # planning problems should be identical (as they are
+                                    # not subproblem dependent.
+                                    # if parsed_arguments.benders:
+                                        # pool_data.append(
+                                        #     [
+                                        #         "scenario": scenario_directory,
+                                        #         "weather": weather_iteration_str,
+                                        #         "hydro": hydro_iteration_str,
+                                        #         "availability": availability_iteration_str,
+                                        #         "subproblem": subproblem_str,
+                                        #         "stage": stage_directories,
+                                        #         "availability": scenario_structure.STAGE_FLAG,
+                                        #         "availability": parsed_arguments,
+                                        #         "availability": objective_values,
+                                        #     ]
+                                        # )
+                                    # else:
                                     pool_data.append(
                                         [
                                             scenario_directory,
@@ -902,45 +1075,15 @@ def run_scenario(
                                             hydro_iteration_str,
                                             availability_iteration_str,
                                             subproblem_str,
-                                            incomplete_stage_directories,
+                                            stage_directories,
                                             scenario_structure.STAGE_FLAG,
                                             parsed_arguments,
                                             objective_values,
                                         ]
                                     )
-                            else:
-                                # Add all stages if not filtering
-                                # If using Benders decomposition, each of the
-                                # planning problems should be identical (as they are
-                                # not subproblem dependent.
-                                # if parsed_arguments.benders:
-                                    # pool_data.append(
-                                    #     [
-                                    #         "scenario": scenario_directory,
-                                    #         "weather": weather_iteration_str,
-                                    #         "hydro": hydro_iteration_str,
-                                    #         "availability": availability_iteration_str,
-                                    #         "subproblem": subproblem_str,
-                                    #         "stage": stage_directories,
-                                    #         "availability": scenario_structure.STAGE_FLAG,
-                                    #         "availability": parsed_arguments,
-                                    #         "availability": objective_values,
-                                    #     ]
-                                    # )
-                                # else:
-                                pool_data.append(
-                                    [
-                                        scenario_directory,
-                                        weather_iteration_str,
-                                        hydro_iteration_str,
-                                        availability_iteration_str,
-                                        subproblem_str,
-                                        stage_directories,
-                                        scenario_structure.STAGE_FLAG,
-                                        parsed_arguments,
-                                        objective_values,
-                                    ]
-                                )
+
+
+
             print("try this data: ", pool_data)
             pool_data = tuple(pool_data)
 
@@ -961,15 +1104,8 @@ def run_scenario(
 
             print("here is the data: ", pool_data)
 
-            if parsed_arguments.benders:
-
-                pool.map(run_optimization_for_subproblem_pool, pool_data)
-                pool.close()
-
-            else:
-
-                pool.map(run_optimization_for_subproblem_pool, pool_data)
-                pool.close()
+            pool.map(run_optimization_for_subproblem_pool, pool_data)
+            pool.close()
 
             return objective_values
 
@@ -1455,7 +1591,7 @@ def solve(prob_sol_files_directory,instance, parsed_arguments):
         print("Var list",list(instance["Investment"].component_data_objects(pyo.Var)))
         print("Expression list",list(instance["Investment"].component_data_objects(pyo.Expression)))
 
-        add_required_variables(instance["Investment"])
+        # add_required_variables(instance["Investment"])
 
         linking_vars = define_linking_vars(instance["Investment"])
         setup = {
@@ -1549,13 +1685,13 @@ def add_variables(model):
                 model.add(var.name)
 
 def define_linking_vars(m):
-    expression_names = [
+    investment_vars = [
         "Capacity_MW"
     ]
 
     linking_vars = set()
 
-    for expr_name in expression_names:
+    for expr_name in investment_vars:
         expr_component = getattr(m, expr_name)
 
         # Handle scalar Expression

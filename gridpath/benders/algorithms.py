@@ -30,10 +30,10 @@ class BendersResult:
 
 def all_variables(model) -> list:
     """Returns a flat list of all variable data objects in the Pyomo model."""
-    print("What is the type",type(model))
-    print("What is the components",model.component_data_objects(pyo.Var, descend_into=True))
-    print("What is the list",list(model.component_data_objects(pyo.Var, descend_into=True)))
-    print("here is the model: ", model.pprint())
+    # print("What is the type",type(model))
+    # print("What is the components",model.component_data_objects(pyo.Var, descend_into=True))
+    # print("What is the list",list(model.component_data_objects(pyo.Var, descend_into=True)))
+    # print("here is the model: ", model.pprint())
     # Still returning an empty list of variables.
 
     return list(model.component_data_objects(pyo.Var, descend_into=True))
@@ -48,6 +48,10 @@ def benders(
     """
     Regularized Benders decomposition.
     """
+
+    print("This is now the planning problem: ", planning_problem)
+    print("This is now the subproblem dictionary: ", subproblems)
+
     print("Running Benders decomposition...")
     logger.info("Running Benders decomposition")
 
@@ -319,13 +323,11 @@ def update_planning_problem_multi_cuts(
     # 2. Re-create the Julia comprehension mapping over all scenarios w in W
     for w in W:
         sol_w = subop_sol[w]
-        print("This is the subproblem:",sol_w,w)
-        linking_vars_w = linking_variables_sub[w]
 
         # Build the dynamic sum() expression term
         sum_terms = 0
-        for i in range(len(linking_vars_w)):
-            var_name = linking_vars_w[i]
+        for i in range(len(linking_variables_sub)):
+            var_name = linking_variables_sub[i]
 
             # Find the actual Pyomo variable object inside the model by its string name
             model_var = planning_problem.find_component(var_name)
