@@ -116,12 +116,12 @@ def create_problem(
     (see the *fix_variables* method).
     """
     # Create pyomo abstract model class
-
     if parsed_arguments.benders:
         model = {}
-
-        model["Operational"] = AbstractModel()
         model["Investment"] = AbstractModel()
+        # No change in operational model structure between subproblems.
+        # Therefore, use wholistic design.
+        model["Operational"] = AbstractModel()
     else:
         model = AbstractModel()
 
@@ -143,18 +143,19 @@ def create_problem(
     if not parsed_arguments.quiet:
         print("Building model...")
 
-    @dataclass(frozen=True)
-    # If weather, hydro, availability iterations are not numeric, this needs to change to str.
-    class ScenarioKey:
-        weather: int | None
-        hydro: int | None
-        availability: int | None
-        subproblem: str
-
     if parsed_arguments.benders:
-        # TODO: create benders_subproblems (recall that subproblems already exist).
-        benders_problems = ["Investment","Operational"]
+        benders_problems = ["Investment", "Operational"]
         instance = {}
+
+        # Choose one iteration for the planning problem because all variables in the planning problem
+        # should not depend on subperiods.
+        # Also, build the operational subproblem abstractmodel this way because it doesn't change based on
+        # the iteration
+        planning_weather      = weather_iteration[0]
+        planning_hydro        = hydro_iteration[0]
+        planning_availability = availability_iteration[0]
+        planning_subproblem   = subproblem[0]
+
         for i in benders_problems:
             create_abstract_model(
                 # Also have to create two separate models (operational and investment) to facilitate benders
@@ -165,113 +166,60 @@ def create_problem(
                 # This is to create the model from the loaded modules from module_list.py and model_organisation.py.
                 loaded_modules[i],
                 scenario_directory,
-                weather_iteration,
-                hydro_iteration,
-                availability_iteration,
-                subproblem,
-                stage,
+                planning_weather,
+                planning_hydro,
+                planning_availability,
+                planning_subproblem,
+                stage
             )
 
-            # Create a dual suffix component
-            # TODO: maybe this shouldn't always be needed
-            model[i].dual = Suffix(direction=Suffix.IMPORT)
+        # From here on, only the investment model will be instantiated because the operational
+        # subproblems will be instantiated in the benders algorithm. This was done because we
+        # MAY need to recreate each operational instance every iteration (not currently sure).
+        # Doing it this way also provides flexibility in case we would like to change the parallelisation
+        # routine to include building each subproblem's instance and solving in the same subprocess.
 
-            scenario_data = {}
+        model["Investment"].dual = Suffix(direction=Suffix.IMPORT)
 
-            # Load the scenario data
-            if not parsed_arguments.quiet:
-                print("Loading data...")
-            if i=="Operational":
-                # Add part here to split out each of the subproblems into individual components. This
-                # can automatically be extended to include weather, hydro, and availability iterations
-                # if desired.
-                scenario_data_benders = {}
-                instance_benders = {}
-                # Include the possibility that weather_iteration can be none (for dictionary scenario_data).
-                weather_iters = weather_iteration or [None]
-                hydro_iters = hydro_iteration or [None]
-                availability_iters = availability_iteration or [None]
-                subproblem_list = subproblem
+        # Load the scenario data
+        if not parsed_arguments.quiet:
+            print("Loading data...")
 
-                for weather, hydro, availability, subproblem in product(
-                        weather_iters,
-                        hydro_iters,
-                        availability_iters,
-                        subproblem_list,
-                ):
+        # Add a part here where the investment variables/constraints are being added.
+        scenario_data = load_scenario_data(
+            model["Investment"],
+            dynamic_components,
+            loaded_modules["Investment"],
+            scenario_directory,
+            planning_weather,
+            planning_hydro,
+            planning_availability,
+            # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
+            planning_subproblem,
+            stage,
+        )
 
-                    key = ScenarioKey(weather, hydro, availability, subproblem)
+        # print("Scenario data: ",scenario_data.data())
+        if not parsed_arguments.quiet:
+            print("Creating problem instance for planning problem...")
+        instance["Investment"] = create_problem_instance(model["Investment"], scenario_data)
 
-                    # Convert missing dimensions for filesystem compatibility
-                    weather_path = "" if weather is None else weather
-                    hydro_path = "" if hydro is None else hydro
-                    availability_path = "" if availability is None else availability
-                    subproblem_path = "" if subproblem is None else subproblem
-
-                    scenario_data_benders[key] = load_scenario_data(
-                        model[i],
-                        dynamic_components,
-                        loaded_modules[i],
-                        scenario_directory,
-                        weather_path,
-                        hydro_path,
-                        availability_path,
-                        # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
-                        subproblem_path,
-                        stage,
-                    )
-
-                    # print("Scenario data: ",scenario_data.data())
-                    if not parsed_arguments.quiet:
-                        print("Creating problem instance for operational subproblems...")
-                    instance_benders[key] = create_problem_instance(model[i], scenario_data_benders[key])
-
-                    # Fix variables if modules request so
-                    instance_benders[key] = fix_variables(
-                        instance_benders[key],
-                        dynamic_components,
-                        scenario_directory,
-                        weather,
-                        hydro,
-                        availability,
-                        subproblem,
-                        stage,
-                        loaded_modules[i],
-                    )
-
-                instance[i] = instance_benders
-
-            else:
-                # Add a part here where the investment variables/constraints are being added.
-                scenario_data = load_scenario_data(
-                    model[i],
-                    dynamic_components,
-                    loaded_modules[i],
-                    scenario_directory,
-                    weather_iteration,
-                    hydro_iteration,
-                    availability_iteration,
-                    # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
-                    subproblem,
-                    stage,
-                )
-                # print("Scenario data: ",scenario_data.data())
-                if not parsed_arguments.quiet:
-                    print("Creating problem instance for planning problem...")
-                instance[i] = create_problem_instance(model[i], scenario_data)
-
-                # Fix variables if modules request so
-                instance[i] = fix_variables(
-                    instance[i],
-                    dynamic_components,
-                    scenario_directory,
-                    weather_iteration,
-                    hydro_iteration,
-                    availability_iteration,
-                    subproblem,
-                    stage,
-                    loaded_modules[i],
-                )
+        # Fix variables if modules request so
+        instance["Investment"] = fix_variables(
+            instance["Investment"],
+            dynamic_components,
+            scenario_directory,
+            planning_weather,
+            planning_hydro,
+            planning_availability,
+            # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
+            planning_subproblem,
+            stage,
+            loaded_modules["Investment"],
+        )
+        # Keep the operational instance just the abstract model for now. This will be instantiated
+        # later.
+        instance["Operational"] = model["Operational"]
 
         return dynamic_components, instance
 
@@ -335,12 +283,93 @@ def create_problem(
     if parsed_arguments.report_timing:
         report_timing()
 
-def solve_problem(prob_sol_files_directory,parsed_arguments, instance):
+def create_operational_problem_benders(
+    scenario_directory,
+    key,
+    model,
+    dynamic_components,
+    multi_stage,
+    parsed_arguments,
+):
+    """
+    :param scenario_directory: the main scenario directory
+    :param subproblem: the horizon subproblem name
+    :param stage: the stage subproblem name
+    :param parsed_arguments: the user-defined script arguments
+    :return: modules_to_use (list of module names used in scenario),
+        loaded_modules (Python objects), dynamic_inputs (the populated
+        dynamic components class), instance (the problem instance), results
+        (the optimization results)
+
+    This method creates the problem instance for each Benders subproblem through multi-
+    processing.
+
+    """
+
+    modules_to_use, loaded_modules = set_up_gridpath_modules(
+        scenario_directory=scenario_directory,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments
+    )
+
+    scenario_data_benders = load_scenario_data(
+        model,
+        dynamic_components,
+        loaded_modules,
+        scenario_directory,
+        key.weather,
+        key.hydro,
+        key.availability,
+        # Change this to be only one subproblem and loop over it to build a dictionary of scenario_data.
+        key.subproblem,
+        key.stage,
+    )
+
+        # print("Scenario data: ",scenario_data.data())
+    if not parsed_arguments.quiet:
+        print("Creating problem instance for operational subproblems...")
+    instance = create_problem_instance(model, scenario_data_benders)
+
+    # Fix variables if modules request so
+    instance = fix_variables(
+        instance,
+        dynamic_components,
+        scenario_directory,
+        key.weather,
+        key.hydro,
+        key.availability,
+        key.subproblem,
+        key.stage,
+        loaded_modules,
+    )
+
+    return dynamic_components, instance
+
+def create_operational_problem_benders_pool(tasks):
+    """
+    Wrapper for multiprocessing of operational instance creation.
+    :param tasks: the directory of tasks to pool.
+    """
+
+    key, subproblems, scenario_directory,dynamic_components,multi_stage, parsed_arguments = tasks
+
+    instance = create_operational_problem_benders(
+        scenario_directory=scenario_directory,
+        key=key,
+        model=subproblems,
+        dynamic_components=dynamic_components,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments,
+    )
+
+    return key, instance
+
+def solve_problem(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,parsed_arguments, instance):
     # Solve
     # If desired, produce an lp file of the abstract model (if only the .lp file is desired use the parsed argument --lp_
     if not parsed_arguments.quiet:
         print("Solving...")
-    results = solve(prob_sol_files_directory,instance, parsed_arguments)
+    results = solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,instance, parsed_arguments)
 
     return instance, results
 
@@ -356,11 +385,11 @@ def run_optimization_for_subproblem_stage(
 ):
     """
     :param scenario_directory: the main scenario directory
-    :param subproblem_directory: if there are horizon subproblems, the horizon
+    :param subproblem_directory: if there are horizon subproblems, the horizon. If Benders, the list of horizons.
     :param stage_directory: if there are stage subproblems, the stage
     :param parsed_arguments: the parsed script arguments
     :return: return the objective function value (Total_Cost); only used in
-        testing
+        testing. If Benders, the list of objective function values.
 
     Log each run in the (sub)problem directory if requested by the user.
 
@@ -372,210 +401,282 @@ def run_optimization_for_subproblem_stage(
     Return the objective function (Total_Cost) value; only used in testing mode
 
     """
+    # Need to create temp parameters for these to loop over to keep the same naming convention.
+    weather_iteration_directory_ = weather_iteration_directory
+    hydro_iteration_directory_ = hydro_iteration_directory
+    availability_iteration_directory_ = availability_iteration_directory
+    subproblem_directory_ = subproblem_directory
+
     # Determine whether to skip this optimization before creating logger to
     # avoid the logging overhead and opening too many files for large
     # simulations
+
+    # TODO: Implement this loop somewhere. Not currently sure whether it should be in
+    # the create_problem function (because the subproblem, iteration, etc. needs to be
+    # indexed there (to generate a separate instance for each).
     skip_solve = False
+    # We need to loop over all of these directories now as each are lists in the Benders case.
     if parsed_arguments.incomplete_only:
-        termination_condition_file = os.path.join(
-            scenario_directory,
-            weather_iteration_directory,
-            hydro_iteration_directory,
-            availability_iteration_directory,
-            subproblem_directory,
-            stage_directory,
-            "results",
-            "termination_condition.txt",
-        )
-        if os.path.isfile(termination_condition_file):
-            with open(termination_condition_file, "r") as f:
-                termination_condition = f.read()
-            if not parsed_arguments.quiet:
-                print(
-                    f"Subproblem stage {subproblem_directory} "
-                    f"{stage_directory} "
-                    f"previously solved with termination condition "
-                    f"**{termination_condition}**. Skipping solve."
-                )
-            skip_solve = True
-            if not parsed_arguments.quiet:
-                print(
-                    f"Skipping {weather_iteration_directory}/{hydro_iteration_directory}/"
-                    f"{availability_iteration_directory}/{subproblem_directory}/{stage_directory} "
-                    f"(already solved)"
-                )
-            # Force garbage collection to release file descriptor immediately
-            gc.collect()
-            return None  # Exit early without creating logger
+        for weather_iteration_directory in weather_iteration_directory_:
+            for hydro_iteration_directory in hydro_iteration_directory_:
+                for availability_iteration_directory in availability_iteration_directory_:
+                    for subproblem_directory in subproblem_directory_:
 
-    # If directed to do so, log optimization run (only if actually solving)
-    if parsed_arguments.log:
-        logs_directory = create_logs_directory_if_not_exists(
-            scenario_directory,
-            weather_iteration_directory,
-            hydro_iteration_directory,
-            availability_iteration_directory,
-            subproblem_directory,
-            stage_directory,
-        )
+                        termination_condition_file = os.path.join(
+                            scenario_directory,
+                            weather_iteration_directory,
+                            hydro_iteration_directory,
+                            availability_iteration_directory,
+                            subproblem_directory,
+                            stage_directory,
+                            "results",
+                            "termination_condition.txt",
+                        )
+                        if os.path.isfile(termination_condition_file):
+                            with open(termination_condition_file, "r") as f:
+                                termination_condition = f.read()
+                            if not parsed_arguments.quiet:
+                                print(
+                                    f"Subproblem stage {subproblem_directory} "
+                                    f"{stage_directory} "
+                                    f"previously solved with termination condition "
+                                    f"**{termination_condition}**. Skipping solve."
+                                )
+                            skip_solve = True
+                            if not parsed_arguments.quiet:
+                                print(
+                                    f"Skipping {weather_iteration_directory}/{hydro_iteration_directory}/"
+                                    f"{availability_iteration_directory}/{subproblem_directory}/{stage_directory} "
+                                    f"(already solved)"
+                                )
+                            # Force garbage collection to release file descriptor immediately
+                            gc.collect()
+                            return None  # Exit early without creating logger
 
-        # Save sys.stdout, so we can return to it later
-        stdout_original = sys.stdout
-        stderr_original = sys.stderr
+                        # If directed to do so, log optimization run (only if actually solving)
+                        if parsed_arguments.log:
+                            logs_directory = create_logs_directory_if_not_exists(
+                                scenario_directory,
+                                weather_iteration_directory,
+                                hydro_iteration_directory,
+                                availability_iteration_directory,
+                                subproblem_directory,
+                                stage_directory,
+                            )
 
-        # The print statement will call the write() method of any object
-        # you assign to sys.stdout (in this case the Logging object). The
-        # write method of Logging writes both to sys.stdout and a log file
-        # (see auxiliary/auxiliary.py)
-        logger = Logging(
-            logs_dir=logs_directory,
-            start_time=datetime.datetime.now(),
-            e2e=False,
-            process_id=None,
-        )
-        sys.stdout = logger
-        sys.stderr = logger
+                            # Save sys.stdout, so we can return to it later
+                            stdout_original = sys.stdout
+                            stderr_original = sys.stderr
+
+                            # The print statement will call the write() method of any object
+                            # you assign to sys.stdout (in this case the Logging object). The
+                            # write method of Logging writes both to sys.stdout and a log file
+                            # (see auxiliary/auxiliary.py)
+                            logger = Logging(
+                                logs_dir=logs_directory,
+                                start_time=datetime.datetime.now(),
+                                e2e=False,
+                                process_id=None,
+                            )
+                            sys.stdout = logger
+                            sys.stderr = logger
+                        # This folder will be created later for Benders (reasoning is that this will only create a
+                        # prob_sol_files folder for one of the iterations (whichever is designated for the planning problem.
+                        # When we pool over processors the solve, we will add this there.
+                        prob_sol_files_directory = os.path.join(
+                            scenario_directory,
+                            subproblem_directory,
+                            stage_directory,
+                            "prob_sol_files",
+                        )
 
     if not skip_solve:
-        # If directed, set temporary file directory to be the logs directory
-        # In conjunction with --keepfiles, this will write the solver solution
-        # files into the log directory (rather than a hidden temp folder).
-        # Use the --symbolic argument as well for best debugging results
-        if parsed_arguments.write_solver_files_to_logs_dir:
-            logs_directory = create_logs_directory_if_not_exists(
-                scenario_directory,
-                weather_iteration_directory,
-                hydro_iteration_directory,
-                availability_iteration_directory,
-                subproblem_directory,
-                stage_directory,
-            )
-            TempfileManager.tempdir = logs_directory
+        for weather_iteration_directory in weather_iteration_directory_:
+            for hydro_iteration_directory in hydro_iteration_directory_:
+                for availability_iteration_directory in availability_iteration_directory_:
+                    for subproblem_directory in subproblem_directory_:
+                        # If directed, set temporary file directory to be the logs directory
+                        # In conjunction with --keepfiles, this will write the solver solution
+                        # files into the log directory (rather than a hidden temp folder).
+                        # Use the --symbolic argument as well for best debugging results
+                        if parsed_arguments.write_solver_files_to_logs_dir:
+                            logs_directory = create_logs_directory_if_not_exists(
+                                scenario_directory,
+                                weather_iteration_directory,
+                                hydro_iteration_directory,
+                                availability_iteration_directory,
+                                subproblem_directory,
+                                stage_directory,
+                            )
+                            TempfileManager.tempdir = logs_directory
 
-        if not parsed_arguments.quiet:
-            print(
-                "\nRunning optimization for scenario {}".format(
-                    scenario_directory.split("/")[-1]
-                )
-            )
-            current_suproblem = os.path.join(
-                weather_iteration_directory,
-                hydro_iteration_directory,
-                availability_iteration_directory,
-                subproblem_directory,
-                stage_directory,
-            )
-            if current_suproblem.endswith("/"):
-                current_suproblem = current_suproblem[:-1]
+                        if not parsed_arguments.quiet:
+                            print(
+                                "\nRunning optimization for scenario {}".format(
+                                    scenario_directory.split("/")[-1]
+                                )
+                            )
+                            current_suproblem = os.path.join(
+                                weather_iteration_directory,
+                                hydro_iteration_directory,
+                                availability_iteration_directory,
+                                subproblem_directory,
+                                stage_directory,
+                            )
+                            if current_suproblem.endswith("/"):
+                                current_suproblem = current_suproblem[:-1]
 
-            print(f"--- subproblem: {current_suproblem}")
+                            print(f"--- subproblem: {current_suproblem}")
 
-        # We're expecting subproblem and stage to be strings downstream from here
-        subproblem_directory = str(subproblem_directory)
-        stage_directory = str(stage_directory)
+                        # We're expecting subproblem and stage to be strings downstream from here
+                        subproblem_directory = str(subproblem_directory)
+                        stage_directory = str(stage_directory)
 
-        # Used only if we are writing problem files or loading solutions
-        prob_sol_files_directory = os.path.join(
-            scenario_directory, subproblem_directory, stage_directory, "prob_sol_files"
+                        # Used only if we are writing problem files or loading solutions
+                        # Controls for the loop (the only iterate inside this function is the subproblem. This avoids overwriting
+                        # multiple times.
+                        if not os.path.exists(os.path.join(scenario_directory,subproblem_directory,stage_directory,"prob_sol_files")):
+                            prob_sol_files_directory = os.path.join(
+                                scenario_directory,
+                                subproblem_directory,
+                                stage_directory,
+                                "prob_sol_files"
+                            )
+
+                        # Create problem instance and either save the problem file or solve the instance
+                        # TODO: incompatible options
+                        # If we are loading a solution, skip the compilation step; we'll use the saved
+                        # instance and dynamic components
+                        if parsed_arguments.load_solution:
+                            solved_instance, results, dynamic_components = load_json_solution(
+                                prob_sol_files_directory=prob_sol_files_directory,
+                                solution_filename="solution.json",
+                            )
+                        # elif parsed_arguments.load_gurobi_solution:
+                        #     solved_instance, results, dynamic_components = load_gurobi_json_solution(
+                        #         prob_sol_files_directory=prob_sol_files_directory,
+                        #         solution_filename="gurobi_solution.json",
+                        #     )
+                        # if parsed_arguments.load_highs_solution:
+                        #     solved_instance, results, dynamic_components = load_highs_xml_solution(
+                        #         prob_sol_files_directory=prob_sol_files_directory,
+                        #         solution_filename="highs_solution.sol",
+                        #     )
+
+        # For the create problem step, for large instances with many stochastic iterations and many subproblems,
+        # loops will get very expensive. So, parallelise on separate processors for operational subproblems.
+        # We can keep this the same for Benders just remember that instance becomes a dictionary (with only investment
+        # problem at this stage.
+        dynamic_components, instance = create_problem(
+            scenario_directory=scenario_directory,
+            weather_iteration=weather_iteration_directory,
+            hydro_iteration=hydro_iteration_directory,
+            availability_iteration=availability_iteration_directory,
+            subproblem=subproblem_directory,
+            stage=stage_directory,
+            multi_stage=multi_stage,
+            parsed_arguments=parsed_arguments,
         )
 
-        # Create problem instance and either save the problem file or solve the instance
-        # TODO: incompatible options
-        # If we are loading a solution, skip the compilation step; we'll use the saved
-        # instance and dynamic components
-        if parsed_arguments.load_solution:
-            solved_instance, results, dynamic_components = load_json_solution(
-                prob_sol_files_directory=prob_sol_files_directory,
-                solution_filename="solution.json",
-            )
-        # elif parsed_arguments.load_gurobi_solution:
-        #     solved_instance, results, dynamic_components = load_gurobi_json_solution(
-        #         prob_sol_files_directory=prob_sol_files_directory,
-        #         solution_filename="gurobi_solution.json",
-        #     )
-        # if parsed_arguments.load_highs_solution:
-        #     solved_instance, results, dynamic_components = load_highs_xml_solution(
-        #         prob_sol_files_directory=prob_sol_files_directory,
-        #         solution_filename="highs_solution.sol",
-        #     )
+        print("This is the instance now: ", instance)
+
+        # Check to see if there exists already an .lp file and .pickle file for the model instance.
+        from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
+        saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
+        # If this is the case, then easily solve from the saved instance and .lp file.
+        if saved_instance and parsed_arguments.load_instance:
+            solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
+                                                    pickle_file=saved_instance,
+                                                    parsed_arguments=parsed_arguments)
+
         else:
-            dynamic_components, instance = create_problem(
-                scenario_directory=scenario_directory,
-                weather_iteration=weather_iteration_directory,
-                hydro_iteration=hydro_iteration_directory,
-                availability_iteration=availability_iteration_directory,
-                subproblem=subproblem_directory,
-                stage=stage_directory,
-                multi_stage=multi_stage,
-                parsed_arguments=parsed_arguments,
-            )
+            if parsed_arguments.create_lp_problem_file or parsed_arguments.create_lp_problem_file_only:
+                if not os.path.exists(prob_sol_files_directory):
+                    os.makedirs(prob_sol_files_directory)
+                if parsed_arguments.benders:
+                    with open(
+                        os.path.join(prob_sol_files_directory, "instance_Investment.pickle".format(i)), "wb"
+                    ) as f_out:
+                        dill.dump(instance["Investment"],   f_out)
+                else:
+                    with open(
+                        os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
+                    ) as f_out:
+                        dill.dump(instance, f_out)
+                with open(
+                    os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
+                    "wb",
+                ) as f_out:
+                    dill.dump(dynamic_components, f_out)
 
-            print("This is the instance after having disaggregated by subproblem: ", instance)
+                smap_id = write_problem_file(
+                    instance=instance, prob_sol_files_directory=prob_sol_files_directory
+                )
 
-            prob_sol_files_directory = os.path.join(
-                scenario_directory,
-                subproblem_directory,
-                stage_directory,
-                "prob_sol_files",
-            )
-            # Check to see if there exists already an .lp file and .pickle file for the model instance.
-            from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
-            saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
-            # If this is the case, then easily solve from the saved instance and .lp file.
-            if saved_instance and parsed_arguments.load_instance:
-                solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
-                                                        pickle_file=saved_instance,
-                                                        parsed_arguments=parsed_arguments)
+                symbol_map = instance.solutions.symbol_map[smap_id]
+
+                symbol_cuid_pairs = tuple(
+                    (symbol, ComponentUID(var_weakref, cuid_buffer={}))
+                    for symbol, var_weakref in symbol_map.bySymbol.items()
+                )
+
+                with open(
+                    os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
+                ) as f_out:
+                    dill.dump(symbol_cuid_pairs, f_out)
+
+                print("Problem file written to {}".format(prob_sol_files_directory))
+
+                if parsed_arguments.create_lp_problem_file_only:
+                    sys.exit()
 
             else:
-                if parsed_arguments.create_lp_problem_file or parsed_arguments.create_lp_problem_file_only:
-                    if not os.path.exists(prob_sol_files_directory):
-                        os.makedirs(prob_sol_files_directory)
-                    if parsed_arguments.benders:
-                        benders_problems = ["Operational","Investment"]
-                        for i in benders_problems:
-                            with open(
-                                os.path.join(prob_sol_files_directory, "instance_{}.pickle".format(i)), "wb"
-                            ) as f_out:
-                                dill.dump(instance[i],   f_out)
-                    else:
-                        with open(
-                            os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
-                        ) as f_out:
-                            dill.dump(instance, f_out)
-                    with open(
-                        os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
-                        "wb",
-                    ) as f_out:
-                        dill.dump(dynamic_components, f_out)
+                benders_subproblems = {}
+                if parsed_arguments.benders:
 
-                    smap_id = write_problem_file(
-                        instance=instance, prob_sol_files_directory=prob_sol_files_directory
-                    )
+                    from itertools import product
+                    from dataclasses import dataclass
 
-                    symbol_map = instance.solutions.symbol_map[smap_id]
+                    @dataclass(frozen=True)
+                    class ScenarioKey:
+                        weather: str
+                        hydro: str
+                        availability: str
+                        subproblem: str
+                        stage:str
+                    # This creates a key to easily reference the Benders subproblem desired.
+                    for weather, hydro, availability, subproblem, stage in product(
+                            weather_iteration_directory,
+                            hydro_iteration_directory,
+                            availability_iteration_directory,
+                            subproblem_directory,
+                            stage_directory
+                    ):
+                        key = ScenarioKey(
+                            weather=weather,
+                            hydro=hydro,
+                            availability=availability,
+                            subproblem=subproblem,
+                            stage=stage
+                        )
 
-                    symbol_cuid_pairs = tuple(
-                        (symbol, ComponentUID(var_weakref, cuid_buffer={}))
-                        for symbol, var_weakref in symbol_map.bySymbol.items()
-                    )
+                        benders_subproblems[key] = {
+                            "weather": weather,
+                            "hydro": hydro,
+                            "availability": availability,
+                            "subproblem": subproblem,
+                            "stage":stage
+                        }
 
-                    with open(
-                        os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(symbol_cuid_pairs, f_out)
-
-                    print("Problem file written to {}".format(prob_sol_files_directory))
-
-                    if parsed_arguments.create_lp_problem_file_only:
-                        sys.exit()
-
-                else:
-                    solved_instance, results = solve_problem(
-                        prob_sol_files_directory,
-                        parsed_arguments=parsed_arguments,
-                        instance=instance,
-                    )
+                solved_instance, results = solve_problem(
+                    # Note that this doesn't get used unless Benders is activated.
+                    benders_subproblems,
+                    dynamic_components,
+                    multi_stage,
+                    prob_sol_files_directory,
+                    parsed_arguments=parsed_arguments,
+                    instance=instance,
+                )
 
         # Save the scenario results to disk
         save_results(
@@ -627,18 +728,24 @@ def run_optimization_for_subproblem(
     Check if there are stages in the subproblem; if not solve subproblem;
     if, yes, solve each stage sequentially
     """
-    subproblem = 1 if subproblem_directory == "" else int(subproblem_directory)
+    # Need to generalise this check to accomodate when subproblem_directory is a list.
+    if isinstance(subproblem_directory, str):
+        subproblem_directories = [subproblem_directory]
+    else:
+        subproblem_directories = subproblem_directory
+
+    subproblem = [
+        1 if d == "" else int(d)
+        for d in subproblem_directories
+    ]
 
     for stage_directory in stage_directories:
+
         stage = 1 if stage_directory == "" else int(stage_directory)
-        objective_values[
-            (
-                weather_iteration_directory,
-                hydro_iteration_directory,
-                availability_iteration_directory,
-                subproblem,
-            )
-        ][stage] = run_optimization_for_subproblem_stage(
+        # Little bit of a weird setup, but it is what I could come up with for now.
+        # - Each of the directories are lists and now what will come out of run_optimisation_for_subproblem_stage is a
+        # list of terminal objective values corresponding to each of the iterations and subproblems decomposed.
+        result = run_optimization_for_subproblem_stage(
             scenario_directory,
             weather_iteration_directory,
             hydro_iteration_directory,
@@ -648,8 +755,59 @@ def run_optimization_for_subproblem(
             multi_stage,
             parsed_arguments,
         )
-        # Force garbage collection after each stage to release file descriptors
+
+        if parsed_arguments.benders:
+            print("SUB:", subproblem_directory)
+            # result is a dictionary:
+            # {
+            #   (weather, hydro, availability, subproblem): objective_value,
+            #   ...
+            # }
+
+            objective_values[stage] = result
+
+        else:
+            print("SUB:", subproblem_directory)
+            # The original objective values code remains the same.
+            objective_values[
+                (
+                    weather_iteration_directory,
+                    hydro_iteration_directory,
+                    availability_iteration_directory,
+                    subproblem,
+                )
+            ][stage] = result
+
         gc.collect()
+
+# def run_optimization_for_subproblem_benders(
+#     scenario_directory,
+#     all_subproblem_data,
+#     stage_directories,
+#     multi_stage,
+#     parsed_arguments,
+#     objective_values,
+# ):
+#     """
+#     Check if there are stages in the subproblem; if not solve subproblem;
+#     if, yes, solve each stage sequentially
+#     """
+#
+#     for stage_directory in stage_directories:
+#         stage = 1 if stage_directory == "" else int(stage_directory)
+#         objective_values[
+#             (
+#                 all_subproblem_data
+#             )
+#         ][stage] = run_optimization_for_subproblem_stage_benders(
+#             scenario_directory,
+#             all_subproblem_data,
+#             stage_directory,
+#             multi_stage,
+#             parsed_arguments,
+#         )
+#         # Force garbage collection after each stage to release file descriptors
+#         gc.collect()
 
 
 def is_subproblem_stage_complete(
@@ -689,14 +847,48 @@ def run_optimization_for_subproblem_pool(pool_datum):
     Helper function to easily pass to pool.map if solving subproblems in
     parallel
     """
-    [
-        scenario_directory,
-        all_subproblem_data,
-        stage_directories,
-        multi_stage,
-        parsed_arguments,
-        objective_values,
-    ] = pool_datum
+
+    if isinstance(pool_datum, dict):
+        # This way, each of the iteration_directories will be
+        # lists instead of individual elements.
+        all_subproblem_data = pool_datum["all_subproblem_data"]
+        multi_stage = pool_datum["multi_stage"]
+        parsed_arguments = pool_datum["parsed_arguments"]
+        objective_values = pool_datum["objective_values"]
+        scenario_directory = pool_datum["scenario_directory"]
+
+        weather_iteration_directory = []
+        hydro_iteration_directory = []
+        availability_iteration_directory = []
+        subproblem_directory = []
+        stage_directories = []
+
+        for (
+                weather,
+                hydro,
+                availability,
+                subproblem,
+        ), stage_directories in all_subproblem_data.items():
+
+            weather_iteration_directory.append(weather)
+            hydro_iteration_directory.append(hydro)
+            availability_iteration_directory.append(availability)
+            subproblem_directory.append(subproblem)
+            stage_directories.append(stage_directories)
+
+    else:
+
+        [
+            scenario_directory,
+            weather_iteration_directory,
+            hydro_iteration_directory,
+            availability_iteration_directory,
+            subproblem_directory,
+            stage_directories,
+            multi_stage,
+            parsed_arguments,
+            objective_values,
+        ] = pool_datum
 
     run_optimization_for_subproblem(
         scenario_directory=scenario_directory,
@@ -707,7 +899,7 @@ def run_optimization_for_subproblem_pool(pool_datum):
         stage_directories=stage_directories,
         multi_stage=multi_stage,
         parsed_arguments=parsed_arguments,
-        objective_values=objective_values,
+        objective_values=objective_values
     )
 
 
@@ -921,9 +1113,9 @@ def run_scenario(
                                 )
                             ] = manager.dict()
 
-            pool_data = []
             if parsed_arguments.benders:
 
+                pool_data = {}
                 all_subproblem_data = {}
 
                 for weather_iteration_str in scenario_directory_structure.keys():
@@ -977,18 +1169,19 @@ def run_scenario(
                                         subproblem_str,
                                     )
                                 ] = stage_directories
-                # Create a data pool with separate subproblems to call in run_optimisation_for_subproblem_stage
-                pool_data.append(
-                    [
-                        scenario_directory,
-                        all_subproblem_data,
-                        scenario_structure.STAGE_FLAG,
-                        parsed_arguments,
-                        objective_values,
-                    ]
-                )
+                # Create a data pool with separate subproblems to call in run_optimisation_for_subproblem_stage.
+                # Need to make this a dictionary because benders need so be flexibly called later on and
+                # Chaning the structure of subproblem_pool function is not desired.
+                pool_data = [{
+                    "scenario_directory": scenario_directory,
+                    "all_subproblem_data": all_subproblem_data,
+                    "stage_flag": scenario_structure.STAGE_FLAG,
+                    "parsed_arguments": parsed_arguments,
+                    "objective_values": objective_values,
+                }]
 
             else:
+                pool_data = {}
                 for weather_iteration_str in scenario_directory_structure.keys():
                     print("weather", weather_iteration_str)
                     for hydro_iteration_str in scenario_directory_structure[
@@ -1067,7 +1260,7 @@ def run_scenario(
                                         #         "availability": objective_values,
                                         #     ]
                                         # )
-                                    # else:
+                                    # els
                                     pool_data.append(
                                         [
                                             scenario_directory,
@@ -1078,18 +1271,17 @@ def run_scenario(
                                             stage_directories,
                                             scenario_structure.STAGE_FLAG,
                                             parsed_arguments,
-                                            objective_values,
+                                            objective_values
                                         ]
                                     )
 
-
-
-            print("try this data: ", pool_data)
             pool_data = tuple(pool_data)
 
             # Adjust pool size based on actual number of tasks
             # (may be less than total subproblems if using --incomplete_only)
             n_tasks = len(pool_data)
+
+            print("# of tasks: ", n_tasks)
             if n_tasks == 0:
                 if not parsed_arguments.quiet:
                     print("All subproblems already complete. Nothing to solve.")
@@ -1099,13 +1291,24 @@ def run_scenario(
             if n_parallel_subproblems > n_tasks:
                 n_parallel_subproblems = n_tasks
 
-            # Pool must use spawn to work properly on Linux
-            pool = get_context("spawn").Pool(n_parallel_subproblems)
+            if parsed_arguments.benders:
+                # For benders, we want the pooling to happen later in the processing routine. For now, we need to have
+                # all subproblems in the pool_data dictionary.
+                # The reason why we can't pool here is because the pool.map function applies the function to each of the individual
+                # subproblems (hence creating a separate planning problem for each operational subproblem and running the benders
+                # function separately for each subproblem.
+                # Now, we run the run_optimisation_for_subproblem_pool function without the pool.map. We move the pool.map to be applied
+                # to a function within the benders function.
+                run_optimization_for_subproblem_pool(pool_data)
 
-            print("here is the data: ", pool_data)
+            else:
+                # Pool must use spawn to work properly on Linux
+                pool = get_context("spawn").Pool(n_parallel_subproblems)
 
-            pool.map(run_optimization_for_subproblem_pool, pool_data)
-            pool.close()
+                print("here is the data: ", pool_data)
+                #
+                pool.map(run_optimization_for_subproblem_pool, pool_data)
+                pool.close()
 
             return objective_values
 
@@ -1474,8 +1677,10 @@ def view_loaded_data(loaded_modules, instance):
             m.view_loaded_data(instance)
 
 
-def solve(prob_sol_files_directory,instance, parsed_arguments):
+def solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,instance, parsed_arguments):
     """
+    :dict benders_subproblems: a dictionary of lists containing the full set of benders subproblems including stochastic
+            iterations
     :param instance: the compiled problem instance
     :param parsed_arguments: the user-defined arguments (parsed)
     :return: the problem results
@@ -1586,12 +1791,6 @@ def solve(prob_sol_files_directory,instance, parsed_arguments):
             optimizer.options[opt] = solver_options[opt]
 
     if parsed_arguments.benders:
-        investment = instance["Investment"]
-
-        print("Var list",list(instance["Investment"].component_data_objects(pyo.Var)))
-        print("Expression list",list(instance["Investment"].component_data_objects(pyo.Expression)))
-
-        # add_required_variables(instance["Investment"])
 
         linking_vars = define_linking_vars(instance["Investment"])
         setup = {
@@ -1615,8 +1814,12 @@ def solve(prob_sol_files_directory,instance, parsed_arguments):
         results = benders(
             instance["Investment"],
             instance["Operational"],
+            dynamic_components,
+            scenario_directory,
+            benders_subproblems,
             linking_vars,
             setup,
+            multi_stage,
             parsed_arguments,
         )
 

@@ -58,6 +58,76 @@ def fix_linking_variables(model, planning_sol, linking_vars):
         # mimic JuMP behavior
         var.domain = Reals
 
+def parallelise_solve(model,parsed_arguments):
+    n_tasks = len(model)
+    # Should be the number of subproblems including stochastic iterations.
+    print("# of tasks: ", n_tasks)
+
+    # Pool must use spawn to work properly on Linux
+    pool = get_context("spawn").Pool(n_tasks)
+
+    print("here is the data: ", model)
+    # Here model will be the subproblems. We will need an index with more
+    # features than this though.
+    [
+        model,
+
+    ] = pool_data
+    pool.map(subproblems, model)
+    pool.close()
+
+    return subop_sol
+
+def parallelise_operational_instance(model,parsed_arguments):
+    n_tasks = len(model)
+    # Should be the number of subproblems including stochastic iterations.
+    print("# of tasks: ", n_tasks)
+
+    # Pool must use spawn to work properly on Linux
+    pool = get_context("spawn").Pool(n_tasks)
+
+    print("here is the data: ", model)
+    # Here model will be the subproblems. We will need an index with more
+    # features than this though.
+    [
+        model,
+
+    ] = pool_data
+    # Call the worker function and pass through the abstract model.
+    pool.map(create_operational_problem_benders_pool, model)
+    pool.close()
+
+    return subop_sol
+
+def subproblems(model,
+                planning_sol,
+                linking_vars,
+                expect_feasible,
+                optimiser,
+                parsed_arguments,
+                ):
+
+
+
+        from gridpath.run_scenario import create_operational_problem_benders
+        create_operational_problem_benders()
+
+        if expect_feasible:
+            print("Skipping feasibility cuts.")
+            logger.info("Skipping feasibility cuts.")
+        else:
+            add_slacks_to_subproblem(model)
+
+        subop_sol = solve_subproblem(
+            model,
+            planning_sol,
+            linking_variables_sub,
+            expect_feasible,
+            optimiser
+        )
+
+    return subop_sol
+
 def solve_subproblem(model, planning_sol, linking_vars, expect_feasible, optimiser):
 
     fix_linking_variables(model, planning_sol, linking_vars)

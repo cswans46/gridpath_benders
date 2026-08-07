@@ -41,27 +41,44 @@ def all_variables(model) -> list:
 def benders(
     planning_problem,
     subproblems,
+    dynamic_components,
+    benders_subproblems,
+    scenario_directory,
     linking_variables_sub,
     setup,
+    multi_stage,
     parsed_arguments
 ):
     """
     Regularized Benders decomposition.
     """
-
+    # Note that the subproblem argument is now
+    # an abstractmodel().
     print("This is now the planning problem: ", planning_problem)
+    # At this point there should be only an operational abstract model waiting to be instantiated.
     print("This is now the subproblem dictionary: ", subproblems)
+
+    pool_data = [
+        # subproblems is just a single abstract model
+        # representative of operational constraints
+        (key, subproblems,scenario_directory,dynamic_components, parsed_arguments)
+        for key in benders_subproblems
+    ]
+
+    from gridpath.run_scenario import create_operational_problem_benders_pool
+    # We will now instantiate the subproblems here to easily revert to the alternative
+    # option (which would be to instantiate each subproblem in the same routine.
+    print("Generating operational Benders subproblems...")
+    # This should now be a dictionary of all operational concrete models.
+    # Pool must use spawn to work properly on Linux
+    pool = get_context("spawn").Pool(len(pool_data))
+    subproblems = dict(pool.map(create_operational_problem_benders_pool,pool_data))
 
     print("Running Benders decomposition...")
     logger.info("Running Benders decomposition")
-
+    # If we expect the subproblem to be feasible, we can skip adding slacks to the subproblem variables.
+    # TODO: This needs to be altered slightly so that policy constraints have slacks by subperiod added to them.
     expect_feasible = setup["ExpectFeasibleSubproblems"]
-
-    if expect_feasible:
-        print("Skipping feasibility cuts.")
-        logger.info("Skipping feasibility cuts.")
-    else:
-        add_slacks_to_subproblem(subproblems)
 
     add_approximate_variable_cost(
         planning_problem,
@@ -137,13 +154,17 @@ def benders(
         )
 
         start = time.time()
-        subop_sol = solve_subproblem(
+
+        # Now it's time to parallelise. Each Benders iteration will be solved separately.
+
+        from gridpath.benders.subproblems import subproblems
+
+        subop_sol = parallelise_solve(
             subproblems,
             planning_sol,
             linking_variables_sub,
             expect_feasible,
-            optimiser
-        )
+            optimiser)
 
         logger.info(
             "Subproblem solve took %.2f seconds",
