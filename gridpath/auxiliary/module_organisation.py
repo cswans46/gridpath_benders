@@ -262,7 +262,7 @@ def define_benders_modules(modules_to_use):
         "objective.project.aggregate_capacity_costs",
         "objective.project.aggregate_prm_group_costs",
         "objective.transmission.aggregate_capacity_costs",
-        "objective.max_npv"
+        "objective.max_npv_benders"
     ]
     """
      Redefine operational and investment modules such that only requested modules are include

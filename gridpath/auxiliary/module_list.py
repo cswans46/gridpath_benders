@@ -280,6 +280,7 @@ def all_modules_list():
         "objective.system.water.aggregate_flow_violation_penalty_costs",
         "objective.min_op_costs",
         "objective.max_npv",
+        "objective.max_npv_benders"
     ]
     return all_modules
 

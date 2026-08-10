@@ -13,6 +13,7 @@ from pyomo.environ import (
 from gridpath.benders.planning import *
 from gridpath.benders.regularization import *
 from gridpath.benders.subproblems import *
+from multiprocessing import get_context
 
 logger = logging.getLogger(__name__)
 
@@ -40,10 +41,9 @@ def all_variables(model) -> list:
 
 def benders(
     planning_problem,
-    subproblems,
     dynamic_components,
-    benders_subproblems,
     scenario_directory,
+    benders_subproblems,
     linking_variables_sub,
     setup,
     multi_stage,
@@ -61,15 +61,20 @@ def benders(
     # an abstractmodel().
     print("This is now the planning problem: ", planning_problem)
     # At this point there should be only an operational abstract model waiting to be instantiated.
-    print("This is now the subproblem dictionary: ", subproblems)
 
     # TODO: This needs to be altered slightly so that policy constraints have slacks by subperiod added to them.
     expect_feasible = setup["ExpectFeasibleSubproblems"]
 
+    print(
+        "BEFORE POOL:",
+        type(planning_problem),
+        isinstance(planning_problem, dict)
+    )
+
     pool_data = [
         # subproblems is just a single abstract model
         # representative of operational constraints
-        (key, subproblems,scenario_directory,dynamic_components, multi_stage,expect_feasible,parsed_arguments)
+        (key, scenario_directory,dynamic_components, multi_stage,expect_feasible,parsed_arguments)
         for key in benders_subproblems
     ]
 
@@ -80,7 +85,7 @@ def benders(
     # This should now be a dictionary of all operational concrete models.
     # Pool must use spawn to work properly on Linux
 
-    n_tasks = len(pool_data)
+    n_tasks = len(benders_subproblems)
     # Should be the number of subproblems including stochastic iterations.
     print("# of tasks: ", n_tasks)
 
@@ -94,7 +99,6 @@ def benders(
     print("Running Benders decomposition...")
     logger.info("Running Benders decomposition")
     # If we expect the subproblem to be feasible, we can skip adding slacks to the subproblem variables.
-
     add_approximate_variable_cost(
         planning_problem,
         len(linking_variables_sub),
@@ -172,14 +176,21 @@ def benders(
 
         # Now it's time to parallelise. Each Benders iteration will be solved separately.
         pool_data_subproblem = [
-            subproblems,
-            planning_sol,
-            linking_variables_sub,
-            expect_feasible,
-            optimiser
+            (
+                key,
+                model,
+                planning_sol,
+                linking_variables_sub,
+                expect_feasible,
+                optimiser,
+            )
+            for key, model in subproblems.items()
         ]
 
-        subop_sol = pool.map(parallelise_solve(pool_data_subproblem))
+        subop_sol = pool.map(
+            parallelise_solve,
+            pool_data_subproblem
+        )
 
         logger.info(
             "Subproblem solve took %.2f seconds",

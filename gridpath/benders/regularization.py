@@ -35,7 +35,7 @@ def solve_int_level_set_problem(
         )
 
     model.cLevelSet.set_value(
-        model.ePlanningCost
+        model.ePlanningNPV
         + sum(model.vTHETA[w] for w in model.vTHETA)
         <= level_bound
     )
@@ -46,7 +46,7 @@ def solve_int_level_set_problem(
     # ------------------------------------------------------------
     if not hasattr(model, "MasterObjective"):
         model.MasterObjective = Objective(
-            expr=model.ePlanningCost
+            expr=model.ePlanningNPV
             + sum(model.vTHETA[w] for w in model.vTHETA),
             sense=minimize,
         )

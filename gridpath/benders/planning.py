@@ -9,7 +9,7 @@ from pyomo.environ import (
     Objective,
     ObjectiveList,
     value,
-    minimize,
+    maximize,
     SolverFactory,
 )
 from pyomo.opt import SolverStatus, TerminationCondition
@@ -69,7 +69,7 @@ def solve_planning_problem(instance, planning_variables, optimiser):
             planning_variables,
         )
 
-        LB = value(instance.ePlanningCost)
+        LB = value(instance.ePlanningNPV)
 
         return planning_sol, LB
 
@@ -138,27 +138,17 @@ def add_approximate_variable_cost(instance, n_subproblems):
     # Save original objective
     #
 
-    objectives = list(
-        instance.component_data_objects(
-            Objective,
-            active=True,
-        )
-    )
-
-    if len(objectives) != 1:
+    if not hasattr(instance, "NPV"):
         raise RuntimeError(
-            "Model should contain exactly one active objective."
+            "Expected the model to contain an NPV objective."
         )
 
-    original_obj = objectives[0]
-
-    expr = original_obj.expr
-
+    original_obj = instance.NPV
     #
     # Store planning cost expression
     #
 
-    instance.ePlanningCost = expr
+    instance.ePlanningNPV = original_obj.expr
 
     #
     # Replace objective
@@ -167,12 +157,14 @@ def add_approximate_variable_cost(instance, n_subproblems):
     original_obj.deactivate()
 
     instance.MasterObjective = Objective(
-        expr=instance.ePlanningCost
-        + sum(
+        expr=instance.ePlanningNPV
+        # Because this is a NPV maximising problem, not a cost minimisation problem
+        # Need to subtract approximate variable cost from subproblems.
+        - sum(
             instance.vTHETA[w]
             for w in range(1, n_subproblems + 1)
         ),
-        sense=minimize,
+        sense=maximize
     )
 
 
@@ -234,7 +226,7 @@ def process_planning_sol(instance, planning_variables):
     # Planning cost
     #
 
-    planning_cost = value(instance.ePlanningCost)
+    planning_cost = value(instance.ePlanningNPV)
 
     return PlanningSolution(
         planning_cost=planning_cost,

@@ -50,6 +50,15 @@ from pyomo.opt import ReaderFactory, ResultsFormat, ProblemFormat
 import sys
 import warnings
 
+@dataclass(frozen=True)
+class ScenarioKey:
+    weather: str
+    hydro: str
+    availability: str
+    subproblem: str
+    stage: str
+
+
 # Benders
 # Import benders' functions from auxiliary files.
 from gridpath.benders.algorithms import *
@@ -119,9 +128,6 @@ def create_problem(
     if parsed_arguments.benders:
         model = {}
         model["Investment"] = AbstractModel()
-        # No change in operational model structure between subproblems.
-        # Therefore, use wholistic design.
-        model["Operational"] = AbstractModel()
     else:
         model = AbstractModel()
 
@@ -144,34 +150,33 @@ def create_problem(
         print("Building model...")
 
     if parsed_arguments.benders:
-        benders_problems = ["Investment", "Operational"]
         instance = {}
 
         # Choose one iteration for the planning problem because all variables in the planning problem
         # should not depend on subperiods.
         # Also, build the operational subproblem abstractmodel this way because it doesn't change based on
         # the iteration
+        print("WEATHER:", weather_iteration)
         planning_weather      = weather_iteration[0]
         planning_hydro        = hydro_iteration[0]
         planning_availability = availability_iteration[0]
         planning_subproblem   = subproblem[0]
 
-        for i in benders_problems:
-            create_abstract_model(
-                # Also have to create two separate models (operational and investment) to facilitate benders
-                # Because it implies a change to the optimisation structure.
-                model[i],
-                dynamic_components,
-                # This is why need to make loaded_modules a dictionary.
-                # This is to create the model from the loaded modules from module_list.py and model_organisation.py.
-                loaded_modules[i],
-                scenario_directory,
-                planning_weather,
-                planning_hydro,
-                planning_availability,
-                planning_subproblem,
-                stage
-            )
+        create_abstract_model(
+            # Also have to create two separate models (operational and investment) to facilitate benders
+            # Because it implies a change to the optimisation structure.
+            model["Investment"],
+            dynamic_components,
+            # This is why need to make loaded_modules a dictionary.
+            # This is to create the model from the loaded modules from module_list.py and model_organisation.py.
+            loaded_modules["Investment"],
+            scenario_directory,
+            planning_weather,
+            planning_hydro,
+            planning_availability,
+            planning_subproblem,
+            stage
+        )
 
         # From here on, only the investment model will be instantiated because the operational
         # subproblems will be instantiated in the benders algorithm. This was done because we
@@ -219,7 +224,6 @@ def create_problem(
         )
         # Keep the operational instance just the abstract model for now. This will be instantiated
         # later.
-        instance["Operational"] = model["Operational"]
 
         return dynamic_components, instance
 
@@ -286,8 +290,8 @@ def create_problem(
 def create_operational_problem_benders(
     scenario_directory,
     key,
-    model,
     dynamic_components,
+    expect_feasible,
     multi_stage,
     parsed_arguments,
 ):
@@ -306,16 +310,51 @@ def create_operational_problem_benders(
 
     """
 
+    # No change in operational model structure between subproblems.
+    # Therefore, use wholistic design.
+    model = AbstractModel()
+
+    if not parsed_arguments.quiet:
+        print("Building operational model...")
+
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory,
         multi_stage=multi_stage,
         parsed_arguments=parsed_arguments
     )
 
+    create_abstract_model(
+        # Also have to create two separate models (operational and investment) to facilitate benders
+        # Because it implies a change to the optimisation structure.
+        model,
+        dynamic_components,
+        # This is why need to make loaded_modules a dictionary.
+        # This is to create the model from the loaded modules from module_list.py and model_organisation.py.
+        loaded_modules["Operational"],
+        scenario_directory,
+        key.weather,
+        key.hydro,
+        key.availability,
+        key.subproblem,
+        key.stage
+    )
+
+    print(
+        "components after create_abstract_model:",
+        list(model.component_objects())
+    )
+
+    if expect_feasible:
+        print("Skipping feasibility cuts.")
+        logger.info("Skipping feasibility cuts.")
+    else:
+        # We can add slacks to subproblem here because we haven't instantiated the model yet.
+        add_slacks_to_subproblem(model)
+
     scenario_data_benders = load_scenario_data(
         model,
         dynamic_components,
-        loaded_modules,
+        loaded_modules["Operational"],
         scenario_directory,
         key.weather,
         key.hydro,
@@ -324,7 +363,7 @@ def create_operational_problem_benders(
         key.subproblem,
         key.stage,
     )
-
+    
         # print("Scenario data: ",scenario_data.data())
     if not parsed_arguments.quiet:
         print("Creating problem instance for operational subproblems...")
@@ -340,10 +379,10 @@ def create_operational_problem_benders(
         key.availability,
         key.subproblem,
         key.stage,
-        loaded_modules,
+        loaded_modules["Operational"],
     )
 
-    return dynamic_components, instance
+    return instance
 
 def create_operational_problem_benders_pool(tasks):
     """
@@ -351,25 +390,18 @@ def create_operational_problem_benders_pool(tasks):
     :param tasks: the directory of tasks to pool.
     """
 
-    key, subproblems, scenario_directory,dynamic_components,multi_stage,expect_feasible, parsed_arguments = tasks
-
-    if expect_feasible:
-        print("Skipping feasibility cuts.")
-        logger.info("Skipping feasibility cuts.")
-    else:
-        # We can add slacks to subproblem here because we haven't instantiated the model yet.
-        add_slacks_to_subproblem(subproblems)
+    key, scenario_directory,dynamic_components,multi_stage,expect_feasible, parsed_arguments = tasks
 
     instance = create_operational_problem_benders(
         scenario_directory=scenario_directory,
         key=key,
-        model=subproblems,
         dynamic_components=dynamic_components,
+        expect_feasible=expect_feasible,
         multi_stage=multi_stage,
         parsed_arguments=parsed_arguments,
     )
 
-    return instance
+    return key,instance
 
 def solve_problem(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,parsed_arguments, instance):
     # Solve
@@ -517,38 +549,35 @@ def run_optimization_for_subproblem_stage(
                             )
                             TempfileManager.tempdir = logs_directory
 
-                        if not parsed_arguments.quiet:
-                            print(
-                                "\nRunning optimization for scenario {}".format(
-                                    scenario_directory.split("/")[-1]
-                                )
-                            )
-                            current_suproblem = os.path.join(
-                                weather_iteration_directory,
-                                hydro_iteration_directory,
-                                availability_iteration_directory,
-                                subproblem_directory,
-                                stage_directory,
-                            )
-                            if current_suproblem.endswith("/"):
-                                current_suproblem = current_suproblem[:-1]
-
-                            print(f"--- subproblem: {current_suproblem}")
+                        # TODO: Bring this back and reimplement after Benders is dealt with.
+                        # if not parsed_arguments.quiet:
+                            # print(
+                            #     "\nRunning optimization for scenario {}".format(
+                            #         scenario_directory.split("/")[-1]
+                            #     )
+                            # )
+                            # current_suproblem = os.path.join(
+                            #     weather_iteration_directory,
+                            #     hydro_iteration_directory,
+                            #     availability_iteration_directory,
+                            #     subproblem_directory,
+                            #     stage_directory,
+                            # )
+                            # if current_suproblem.endswith("/"):
+                            #     current_suproblem = current_suproblem[:-1]
+                            #
+                            # # print(f"--- subproblem: {current_suproblem}")
 
                         # We're expecting subproblem and stage to be strings downstream from here
                         subproblem_directory = str(subproblem_directory)
                         stage_directory = str(stage_directory)
 
-                        # Used only if we are writing problem files or loading solutions
-                        # Controls for the loop (the only iterate inside this function is the subproblem. This avoids overwriting
-                        # multiple times.
-                        if not os.path.exists(os.path.join(scenario_directory,subproblem_directory,stage_directory,"prob_sol_files")):
-                            prob_sol_files_directory = os.path.join(
-                                scenario_directory,
-                                subproblem_directory,
-                                stage_directory,
-                                "prob_sol_files"
-                            )
+                        prob_sol_files_directory = os.path.join(
+                            scenario_directory,
+                            subproblem_directory,
+                            stage_directory,
+                            "prob_sol_files"
+                        )
 
                         # Create problem instance and either save the problem file or solve the instance
                         # TODO: incompatible options
@@ -574,6 +603,26 @@ def run_optimization_for_subproblem_stage(
         # loops will get very expensive. So, parallelise on separate processors for operational subproblems.
         # We can keep this the same for Benders just remember that instance becomes a dictionary (with only investment
         # problem at this stage.
+        if weather_iteration_directory_ and any(weather_iteration_directory_):
+            weather_iteration_directory = weather_iteration_directory_
+        else:
+            weather_iteration_directory = ['']
+
+        if hydro_iteration_directory_ and any(hydro_iteration_directory_):
+            hydro_iteration_directory = hydro_iteration_directory_
+        else:
+            hydro_iteration_directory = ['']
+
+        if availability_iteration_directory_ and any(availability_iteration_directory_):
+            availability_iteration_directory = availability_iteration_directory_
+        else:
+            availability_iteration_directory = ['']
+
+        if subproblem_directory_ and any(subproblem_directory_):
+            subproblem_directory = subproblem_directory_
+        else:
+            subproblem_directory = ['']
+
         dynamic_components, instance = create_problem(
             scenario_directory=scenario_directory,
             weather_iteration=weather_iteration_directory,
@@ -638,42 +687,34 @@ def run_optimization_for_subproblem_stage(
                     sys.exit()
 
             else:
-                benders_subproblems = {}
+
                 if parsed_arguments.benders:
+                    benders_subproblems = {}
+
+                    stage_directory = [stage_directory]
 
                     from itertools import product
                     from dataclasses import dataclass
 
-                    @dataclass(frozen=True)
-                    class ScenarioKey:
-                        weather: str
-                        hydro: str
-                        availability: str
-                        subproblem: str
-                        stage:str
-                    # This creates a key to easily reference the Benders subproblem desired.
                     for weather, hydro, availability, subproblem, stage in product(
                             weather_iteration_directory,
                             hydro_iteration_directory,
                             availability_iteration_directory,
                             subproblem_directory,
-                            stage_directory
+                            stage_directory,
                     ):
                         key = ScenarioKey(
                             weather=weather,
                             hydro=hydro,
                             availability=availability,
                             subproblem=subproblem,
-                            stage=stage
+                            stage=stage,
                         )
 
-                        benders_subproblems[key] = {
-                            "weather": weather,
-                            "hydro": hydro,
-                            "availability": availability,
-                            "subproblem": subproblem,
-                            "stage":stage
-                        }
+                        benders_subproblems[key] = key
+
+                    for key in benders_subproblems:
+                        print(key)
 
                 solved_instance, results = solve_problem(
                     # Note that this doesn't get used unless Benders is activated.
@@ -859,7 +900,7 @@ def run_optimization_for_subproblem_pool(pool_datum):
         # This way, each of the iteration_directories will be
         # lists instead of individual elements.
         all_subproblem_data = pool_datum["all_subproblem_data"]
-        multi_stage = pool_datum["multi_stage"]
+        multi_stage = pool_datum["stage_flag"]
         parsed_arguments = pool_datum["parsed_arguments"]
         objective_values = pool_datum["objective_values"]
         scenario_directory = pool_datum["scenario_directory"]
@@ -1179,13 +1220,13 @@ def run_scenario(
                 # Create a data pool with separate subproblems to call in run_optimisation_for_subproblem_stage.
                 # Need to make this a dictionary because benders need so be flexibly called later on and
                 # Chaning the structure of subproblem_pool function is not desired.
-                pool_data = [{
+                pool_data = {
                     "scenario_directory": scenario_directory,
                     "all_subproblem_data": all_subproblem_data,
                     "stage_flag": scenario_structure.STAGE_FLAG,
                     "parsed_arguments": parsed_arguments,
                     "objective_values": objective_values,
-                }]
+                }
 
             else:
                 pool_data = {}
@@ -1282,11 +1323,15 @@ def run_scenario(
                                         ]
                                     )
 
-            pool_data = tuple(pool_data)
+            if not parsed_arguments.benders:
+                pool_data = tuple(pool_data)
+                n_tasks = len(pool_data)
+            else:
+                n_tasks = len(pool_data["all_subproblem_data"])
 
             # Adjust pool size based on actual number of tasks
             # (may be less than total subproblems if using --incomplete_only)
-            n_tasks = len(pool_data)
+
 
             print("# of tasks: ", n_tasks)
             if n_tasks == 0:
@@ -1820,7 +1865,6 @@ def solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_dire
 
         results = benders(
             instance["Investment"],
-            instance["Operational"],
             dynamic_components,
             scenario_directory,
             benders_subproblems,
