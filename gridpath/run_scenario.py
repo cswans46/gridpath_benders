@@ -351,7 +351,14 @@ def create_operational_problem_benders_pool(tasks):
     :param tasks: the directory of tasks to pool.
     """
 
-    key, subproblems, scenario_directory,dynamic_components,multi_stage, parsed_arguments = tasks
+    key, subproblems, scenario_directory,dynamic_components,multi_stage,expect_feasible, parsed_arguments = tasks
+
+    if expect_feasible:
+        print("Skipping feasibility cuts.")
+        logger.info("Skipping feasibility cuts.")
+    else:
+        # We can add slacks to subproblem here because we haven't instantiated the model yet.
+        add_slacks_to_subproblem(subproblems)
 
     instance = create_operational_problem_benders(
         scenario_directory=scenario_directory,
@@ -362,7 +369,7 @@ def create_operational_problem_benders_pool(tasks):
         parsed_arguments=parsed_arguments,
     )
 
-    return key, instance
+    return instance
 
 def solve_problem(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,parsed_arguments, instance):
     # Solve
