@@ -52,59 +52,18 @@ def benders(
     """
     Regularized Benders decomposition.
     """
-
-    """
-    Get the subproblems set up using parallelisation.
-    """
-    print("Building subproblems for Benders decomposition...")
-    # Note that the subproblem argument is now
-    # an abstractmodel().
-    print("This is now the planning problem: ", planning_problem)
-    # At this point there should be only an operational abstract model waiting to be instantiated.
-
     # TODO: This needs to be altered slightly so that policy constraints have slacks by subperiod added to them.
     expect_feasible = setup["ExpectFeasibleSubproblems"]
 
-    print(
-        "BEFORE POOL:",
-        type(planning_problem),
-        isinstance(planning_problem, dict)
-    )
-
-    pool_data = [
-        # subproblems is just a single abstract model
-        # representative of operational constraints
-        (key, scenario_directory,dynamic_components, multi_stage,expect_feasible,parsed_arguments)
-        for key in benders_subproblems
-    ]
-
-    from gridpath.run_scenario import create_operational_problem_benders_pool
-    # We will now instantiate the subproblems here to easily revert to the alternative
-    # option (which would be to instantiate each subproblem in the same routine.
-    print("Generating operational Benders subproblems...")
-    # This should now be a dictionary of all operational concrete models.
-    # Pool must use spawn to work properly on Linux
-
-    n_tasks = len(benders_subproblems)
-    # Should be the number of subproblems including stochastic iterations.
-    print("# of tasks: ", n_tasks)
-
-    pool = get_context("spawn").Pool(n_tasks)
-    subproblems = dict(pool.map(create_operational_problem_benders_pool,pool_data))
-
-    """
-    Now start the Benders algorithm.
-    """
-
     print("Running Benders decomposition...")
     logger.info("Running Benders decomposition")
+
+    solver_start = time.time()
     # If we expect the subproblem to be feasible, we can skip adding slacks to the subproblem variables.
     add_approximate_variable_cost(
         planning_problem,
-        len(linking_variables_sub),
+        benders_subproblems
     )
-
-    solver_start = time.time()
 
     max_iter = setup["MaxIter"]
     conv_tol = setup["ConvTol"]
@@ -146,6 +105,10 @@ def benders(
     else:
         optimiser = SolverFactory(parsed_arguments.solver)
 
+    # ---------------------------------------------------------
+    # Initially solve planning problem
+    # ---------------------------------------------------------
+
     planning_sol, LB = solve_planning_problem(
         planning_problem,
         planning_variable_names,
@@ -166,39 +129,99 @@ def benders(
         [planning_sol.values[name] for name in planning_variable_names]
     ]
 
+    # ---------------------------------------------------------
+    # Create and Solve Subproblem in assigning processors
+    # ---------------------------------------------------------
+
+    print("Building subproblems for Benders decomposition...")
+
+    # What we are doing here is creating the worker directories to assign.
+    ctx = mp.get_context("spawn")
+
+    workers = {}
+    input_queues = {}
+    output_queues = {}
+
+    # Here, we are looping over benders subproblems to assign each worker
+    # to a given subproblem. This starts the process within the loop (minimising
+    # computational inefficiencies).
+    for key in benders_subproblems:
+        input_queue = ctx.Queue()
+        output_queue = ctx.Queue()
+        # Here process is initialised for the current key (key corresponding to
+        # each weather, hydro, subproblem, and availability iteration tuple)
+        process = ctx.Process(
+            target=benders_subproblem_worker,
+            args=(
+                key,
+                input_queue,
+                output_queue,
+                scenario_directory,
+                multi_stage,
+                expect_feasible,
+                parsed_arguments,
+            ),
+        )
+        # Process is started here
+        process.start()
+        # Process is assigned to each worker.
+        workers[key] = process
+        input_queues[key] = input_queue
+        output_queues[key] = output_queue
+
+    linking_variables_sub = {}
+
+    for key in benders_subproblems:
+
+        result = output_queues[key].get()
+
+        if result["status"] != "READY":
+            raise RuntimeError(
+                f"Worker {key} failed to initialise."
+            )
+
+        linking_variables_sub[key] = result["linking_vars"]
+
     for k in range(max_iter + 1):
 
         planning_sol_hist.append(
-            [planning_sol.values[n] for n in planning_variable_names]
+            [
+                planning_sol.values[n]
+                for n in planning_variable_names
+            ]
         )
 
-        start = time.time()
+        # ---------------------------------------------------------
+        # Send current planning solution to every operational worker
+        # ---------------------------------------------------------
 
-        # Now it's time to parallelise. Each Benders iteration will be solved separately.
-        pool_data_subproblem = [
-            (
-                key,
-                model,
-                planning_sol,
-                linking_variables_sub,
-                expect_feasible,
-                optimiser,
+        for key in benders_subproblems:
+            input_queues[key].put(
+                {
+                    "planning_sol": planning_sol,
+                }
             )
-            for key, model in subproblems.items()
-        ]
 
-        subop_sol = pool.map(
-            parallelise_solve,
-            pool_data_subproblem
-        )
+        # ---------------------------------------------------------
+        # Wait for all operational subproblems
+        # ---------------------------------------------------------
+
+        subop_sol = {}
+
+        for key in benders_subproblems:
+            result_key, result = output_queues[key].get()
+            subop_sol[result_key] = result
 
         logger.info(
             "Subproblem solve took %.2f seconds",
-            time.time() - start,
+            time.time() - solver_start,
         )
 
+        # ---------------------------------------------------------
+        # Update upper bound
+        # ---------------------------------------------------------
+
         UB_new = compute_upper_bound(
-            planning_problem,
             planning_sol,
             subop_sol,
         )
@@ -208,6 +231,10 @@ def benders(
             planning_sol_best = deepcopy(planning_sol)
             subop_sol_best = deepcopy(subop_sol)
 
+        # ---------------------------------------------------------
+        # Generate Bender's cuts
+        # ---------------------------------------------------------
+
         update_planning_problem_multi_cuts(
             planning_problem,
             subop_sol,
@@ -215,13 +242,41 @@ def benders(
             linking_variables_sub,
         )
 
+        # ---------------------------------------------------------
+        # Resolve master
+        # ---------------------------------------------------------
+
         unst_planning_sol, LB_new = solve_planning_problem(
             planning_problem,
             planning_variable_names,
             optimiser
         )
 
+        print("NEW LB:", LB_new)
+
+        for w in subop_sol:
+            print(
+                "THETA",
+                w,
+                "=",
+                planning_problem.vTHETA[w].value,
+            )
+
+        print("OLD LB:", LB)
+        print("NEW LB:", LB_new)
+
+        for key in benders_subproblems:
+            print(
+                "theta",
+                key,
+                value(planning_problem.vTHETA[key])
+            )
+
         LB = max(LB, LB_new)
+
+        # ---------------------------------------------------------
+        # Calculate Convergence
+        # ---------------------------------------------------------
 
         gap = (UB - LB) / abs(LB)
 
@@ -238,9 +293,9 @@ def benders(
             gap,
         )
 
-        #
-        # termination
-        #
+        # ---------------------------------------------------------
+        # Termination Condition
+        # ---------------------------------------------------------
 
         if gap <= conv_tol:
 
@@ -353,45 +408,80 @@ def benders(
     )
 
 def update_planning_problem_multi_cuts(
-        planning_problem: pyo.ConcreteModel,
-        subop_sol: dict,
-        planning_sol: object,
-        linking_variables_sub: dict
+    planning_problem: pyo.ConcreteModel,
+    subop_sol: dict,
+    planning_sol: object,
+    linking_variables_sub: dict,
 ):
     """
-    Adds dynamic multi-cut Benders optimality constraints to the Pyomo planning model.
+    Adds dynamic multi-cut Benders optimality constraints
+    to the Pyomo planning model.
     """
-    # 1. Ensure a named ConstraintList exists on the model to hold our cuts
+
+    # Ensure a named ConstraintList exists on the model
     if not hasattr(planning_problem, "benders_cuts"):
         planning_problem.benders_cuts = pyo.ConstraintList()
 
-    W = subop_sol.keys()
+    # One cut for each operational subproblem
+    for w, sol_w in subop_sol.items():
 
-    # 2. Re-create the Julia comprehension mapping over all scenarios w in W
-    for w in W:
-        sol_w = subop_sol[w]
+        # Linking variables associated with this subproblem
+        linking_vars_w = linking_variables_sub[w]
 
-        # Build the dynamic sum() expression term
+        # Build:
+        #
+        # op_cost_w +
+        # sum_i lambda_w[i] * (x_i - xbar_i)
+        #
         sum_terms = 0
-        for i in range(len(linking_variables_sub)):
-            var_name = linking_variables_sub[i]
 
-            # Find the actual Pyomo variable object inside the model by its string name
+        for i, var_name in enumerate(linking_vars_w):
+
             model_var = planning_problem.find_component(var_name)
 
             if model_var is None:
-                raise KeyError(f"Variable '{var_name}' not found in the planning problem model.")
+                raise KeyError(
+                    f"Variable '{var_name}' not found "
+                    "in the planning problem model."
+                )
 
-            # Accumulate: lambda * (x_model - x_planning)
-            sum_terms += sol_w.lambda_[i] * (model_var - planning_sol.values[var_name])
+            sum_terms += (
+                sol_w["lambda"][i]
+                * (
+                    model_var
+                    - planning_sol.values[var_name]
+                )
+            )
 
-        # Left-hand side: subop_sol[w].theta_coeff * planning_problem.vTHETA[w]
-        # (Assumes your model initialization script created 'vTHETA' as an indexed Var)
-        lhs = sol_w.theta_coeff * planning_problem.vTHETA[w]
-        rhs = sol_w.op_cost + sum_terms
+        # Benders cut:
+        #
+        # theta_coeff_w * theta_w
+        # >=
+        # op_cost_w + lambda_w' (x - xbar)
+        #
+        lhs = (
+            sol_w["theta_coeff"]
+            * planning_problem.vTHETA[w]
+        )
 
-        # 3. Append the greater-than-or-equal-to constraint directly to the model
-        planning_problem.benders_cuts.add(lhs >= rhs)
+        rhs = (
+            sol_w["op_cost"]
+            + sum_terms
+        )
+
+        planning_problem.benders_cuts.add(
+            lhs >= rhs
+        )
+
+        print(
+            "CUT:",
+            w,
+            "theta_coeff =", sol_w["theta_coeff"],
+            "op_cost =", sol_w["op_cost"],
+            "lambda =", sol_w["lambda"],
+        )
+
+        print("Number of Benders cuts:", len(planning_problem.benders_cuts))
 
 def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 
@@ -410,34 +500,15 @@ def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 
     return gamma
 
-def compute_upper_bound(model, planning_sol, subop_sol):
+def compute_upper_bound(planning_sol,
+                        subop_sol):
+
     print("here is the subop_sol: ", subop_sol)
 
-    if isinstance(subop_sol, dict):
-        subop_sol = [subop_sol]
-
-    if any(sp["theta_coeff"] == 0 for sp in subop_sol):
+    if any(sp["theta_coeff"] == 0 for sp in subop_sol.values()):
         return math.inf
-
-    # for w, sp in subop_sol.items():
-    #
-    #     expr = (
-    #         sp.op_cost
-    #         + quicksum(
-    #             sp.lambda_[i]
-    #             * (
-    #                 model.getVarByName(linking_variables_sub[w][i])
-    #                 - planning_sol.values[linking_variables_sub[w][i]]
-    #             )
-    #             for i in range(len(linking_variables_sub[w]))
-    #         )
-    #     )
-    #
-    #     model.addConstr(
-    #         sp.theta_coeff * theta[w] >= expr
-    #     )
 
     return (
         planning_sol.planning_cost
-        + sum(sp["op_cost"] for sp in subop_sol)
+        + sum(sp["op_cost"] for sp in subop_sol.values())
     )

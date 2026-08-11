@@ -294,10 +294,6 @@ def load_model_data(
                 subproblem,
                 stage,
             )
-            # Check to see what was added.
-            print("Variables added by", op_m)
-            for v in m.component_objects(Var, active=True):
-                print("  ", v.name)
 
 
 # TODO: move this to gridpath.project.capacity.__init__?

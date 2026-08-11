@@ -15,6 +15,11 @@ from pyomo.environ import (
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
 from typing import Any, Dict, List, NamedTuple
+from gridpath.auxiliary.dynamic_components import DynamicComponents
+from gridpath.benders.operational_model_creation import (
+    create_operational_problem_benders,
+    define_linking_vars
+)
 
 def add_slacks_to_subproblem(model):
 
@@ -58,20 +63,209 @@ def fix_linking_variables(model, planning_sol, linking_vars):
         # mimic JuMP behavior
         var.domain = Reals
 
+import multiprocessing as mp
+def benders_subproblem_worker(
+    key,
+    input_queue,
+    output_queue,
+    scenario_directory,
+    multi_stage,
+    expect_feasible,
+    parsed_arguments,
+):
+    """
+    Persistent worker for one Benders operational subproblem.
+
+    The ConcreteModel is created ONCE and reused for every
+    Benders iteration.
+    """
+
+    # ---------------------------------------------------------
+
+    # Build the subproblem ONCE within the same worker
+
+    dynamic_components = DynamicComponents()
+
+    instance = create_operational_problem_benders(
+        scenario_directory=scenario_directory,
+        key=key,
+        dynamic_components=dynamic_components,
+        expect_feasible=expect_feasible,
+        multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments,
+    )
+
+    print(
+        f"Worker started for {key}. "
+        f"Components: {len(list(instance.component_objects()))}"
+    )
+
+    # ---------------------------------------------------------
+    # Determine the linking variables for THIS subproblem
+    # ---------------------------------------------------------
+
+    linking_vars = define_linking_vars(instance)
+
+    # Tell the master that this worker is ready and provide
+    # the names of the linking variables.
+    output_queue.put(
+            {
+                "status": "READY",
+                "linking_vars": linking_vars,
+            }
+    )
+
+    # Solver choice INSIDE the worker.
+
+    if parsed_arguments.solver_executable is not None:
+        optimiser = SolverFactory(
+            parsed_arguments.solver,
+            executable=parsed_arguments.solver_executable,
+        )
+    else:
+        optimiser = SolverFactory(parsed_arguments.solver)
+
+    # Remain alive for all Benders iterations
+
+    while True:
+
+        message = input_queue.get()
+
+        if message == "STOP":
+            break
+
+        # -----------------------------------------------------
+        # Message contains information from the master problem
+        # -----------------------------------------------------
+
+        planning_sol = message["planning_sol"]
+
+        # -----------------------------------------------------
+        # Update existing ConcreteModel
+        # -----------------------------------------------------
+
+        fix_linking_variables(
+            instance,
+            planning_sol,
+            linking_vars,
+        )
+
+        # -----------------------------------------------------
+        # Solve existing ConcreteModel
+        # -----------------------------------------------------
+
+        results = optimiser.solve(
+            instance,
+            tee=False,
+        )
+
+        # -----------------------------------------------------
+        # Extract ONLY the information Benders needs
+        # -----------------------------------------------------
+
+        subop_sol = process_subproblem_solution(
+            instance,
+            results,
+            linking_vars,
+            expect_feasible,
+            optimiser
+        )
+
+        # -----------------------------------------------------
+        # Return only small, pickleable data
+        # -----------------------------------------------------
+
+        output_queue.put(
+            (
+                key,
+                subop_sol,
+            )
+        )
+
+def process_subproblem_solution(
+    instance,
+    results,
+    linking_vars,
+    expect_feasible,
+    optimiser,
+):
+    status = results.solver.status
+    term = results.solver.termination_condition
+
+    # ---------------------------------------------------------
+    # Feasible case
+    # ---------------------------------------------------------
+
+    if term == "optimal":
+        op_cost = value(instance.MIN_OP_COSTS)
+
+        duals = [
+            instance.dual[instance.find_component(name)]
+            for name in linking_vars
+        ]
+
+        return {
+            "op_cost": op_cost,
+            "lambda": duals,
+            "theta_coeff": 1,
+        }
+
+    # ---------------------------------------------------------
+    # Infeasible case
+    # ---------------------------------------------------------
+
+    if expect_feasible:
+        raise RuntimeError(
+            "Subproblem infeasible (expected feasible)."
+        )
+
+    # ---------------------------------------------------------
+    # Solve feasibility problem
+    # ---------------------------------------------------------
+
+    instance.slack_fix.deactivate()
+
+    instance.obj.deactivate()
+
+    instance.feasibility_obj = Objective(
+        expr=instance.slack_max
+    )
+
+    optimiser.solve(instance)
+
+    op_cost = value(instance.feasibility_obj)
+
+    duals = [
+        instance.dual[instance.find_component(name)]
+        for name in linking_vars
+    ]
+
+    instance.feasibility_obj.deactivate()
+    instance.obj.activate()
+    instance.slack_fix.activate()
+
+    return {
+        "op_cost": op_cost,
+        "lambda": duals,
+        "theta_coeff": 0,
+    }
+
 def parallelise_solve(pool_data):
 
     # Here model will be the subproblems. We will need an index with more
     # features than this though.
-    [
-        subproblems,
+    (
+        key,
+        model,
         planning_sol,
         linking_variables_sub,
         expect_feasible,
-        optimiser
-    ] = pool_data
+        optimiser,
+    ) = pool_data
+
 
     subop_sol = solve_subproblem(
-        model=subproblems,
+        model=model,
         planning_sol=planning_sol,
         linking_vars=linking_variables_sub,
         expect_feasible=expect_feasible,
@@ -93,9 +287,9 @@ def solve_subproblem(model,
     status = results.solver.status
     term = results.solver.termination_condition
 
-    # ------------------------------------------------------------
+
     # feasible case
-    # ------------------------------------------------------------
+
     if term == "optimal":
 
         op_cost = value(model.MIN_OP_COSTS)
@@ -111,16 +305,16 @@ def solve_subproblem(model,
             "theta_coeff": 1,
         }
 
-    # ------------------------------------------------------------
+
     # infeasible case
-    # ------------------------------------------------------------
+
     if expect_feasible:
 
         raise RuntimeError("Subproblem infeasible (expected feasible).")
 
-    # ------------------------------------------------------------
+
     # feasibility cut
-    # ------------------------------------------------------------
+
     model.slack_fix.deactivate()
 
     model.obj.deactivate()

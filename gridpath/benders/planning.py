@@ -11,6 +11,7 @@ from pyomo.environ import (
     value,
     maximize,
     SolverFactory,
+    Reals
 )
 from pyomo.opt import SolverStatus, TerminationCondition
 
@@ -69,7 +70,7 @@ def solve_planning_problem(instance, planning_variables, optimiser):
             planning_variables,
         )
 
-        LB = value(instance.ePlanningNPV)
+        LB = value(instance.MasterObjective)
 
         return planning_sol, LB
 
@@ -84,7 +85,8 @@ def solve_planning_problem(instance, planning_variables, optimiser):
 # Add theta variables and modify the objective
 # -------------------------------------------------------------------------
 
-def add_approximate_variable_cost(instance, n_subproblems):
+def add_approximate_variable_cost(instance,
+                                  benders_subproblems):
     """
     Adds theta variables and replaces the objective by
 
@@ -94,18 +96,15 @@ def add_approximate_variable_cost(instance, n_subproblems):
     """
 
     if hasattr(instance, "vTHETA"):
-        logger.warning(
-            "vTHETA already exists. Skipping."
-        )
+        logger.warning("vTHETA already exists. Skipping.")
         return
 
-    #
-    # Theta variables
-    #
-
     instance.vTHETA = Var(
-        range(1, n_subproblems + 1)
+        benders_subproblems,
+        domain=Reals,
     )
+
+    print("What is theta", sum(instance.vTHETA[w] for w in instance.vTHETA))
 
     #
     # Lower bounds
@@ -117,21 +116,19 @@ def add_approximate_variable_cost(instance, n_subproblems):
 
         instance.ThetaLowerBound = ConstraintList()
 
-        for w in range(1, n_subproblems + 1):
-
+        for key in benders_subproblems:
             instance.ThetaLowerBound.add(
-                instance.vTHETA[w]
-                >= instance.eLowerBoundOperatingCost[w]
+                instance.vTHETA[key]
+                >= instance.eLowerBoundOperatingCost[key]
             )
 
     else:
 
         instance.ThetaLowerBound = ConstraintList()
 
-        for w in range(1, n_subproblems + 1):
-
+        for key in benders_subproblems:
             instance.ThetaLowerBound.add(
-                instance.vTHETA[w] >= 0.0
+                instance.vTHETA[key] >= 0.0
             )
 
     #
@@ -161,8 +158,8 @@ def add_approximate_variable_cost(instance, n_subproblems):
         # Because this is a NPV maximising problem, not a cost minimisation problem
         # Need to subtract approximate variable cost from subproblems.
         - sum(
-            instance.vTHETA[w]
-            for w in range(1, n_subproblems + 1)
+            instance.vTHETA[key]
+            for key in benders_subproblems
         ),
         sense=maximize
     )
@@ -172,7 +169,8 @@ def add_approximate_variable_cost(instance, n_subproblems):
 # Extract solution
 # -------------------------------------------------------------------------
 
-def process_planning_sol(instance, planning_variables):
+def process_planning_sol(instance,
+                         planning_variables):
     """
     Create the PlanningSolution object.
     """
