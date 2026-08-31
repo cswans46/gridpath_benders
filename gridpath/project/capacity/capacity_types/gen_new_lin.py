@@ -313,12 +313,24 @@ def add_model_components(
 
 
 def operational_periods_by_generator_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if mod._is_benders_subproblem:
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.gen_new_lin_operational_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -338,12 +350,24 @@ def gen_new_lin_vintages_operational_in_period(mod, p):
 
 
 def financial_periods_by_generator_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if mod._is_benders_subproblem:
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.gen_new_lin_financial_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -616,6 +640,38 @@ def write_model_inputs(
         stage,
         conn,
     )
+
+    # # Filter new-build costs to only include vintages
+    # # that exist in this subproblem.
+    # # TODO: Need to add an if parsed_arguments.benders: here.
+    # if subproblem != "":
+    #     periods_path = os.path.join(
+    #         scenario_directory,
+    #         weather_iteration,
+    #         hydro_iteration,
+    #         availability_iteration,
+    #         subproblem,
+    #         stage,
+    #         "inputs",
+    #         "periods.tab",
+    #     )
+    #
+    #     with open(periods_path, "r", newline="") as periods_file:
+    #         reader = csv.DictReader(
+    #             periods_file,
+    #             delimiter="\t",
+    #         )
+    #
+    #         periods = {
+    #             int(row["period"])
+    #             for row in reader
+    #         }
+    #
+    #     new_gen_costs = [
+    #         row
+    #         for row in new_gen_costs
+    #         if int(row[1]) in periods
+    #     ]
 
     with open(
         os.path.join(

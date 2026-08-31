@@ -96,11 +96,10 @@ def add_model_components(
     +-------------------------------------------------------------------------+
 
     """
-
     # Sets
     ###########################################################################
 
-    # This goes in capacity_sets.py
+    m.GEN_SPEC_OPR_PRDS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
 
     # Required Params
     ###########################################################################
@@ -119,6 +118,18 @@ def add_model_components(
     getattr(d, capacity_type_operational_period_sets).append(
         "GEN_SPEC_OPR_PRDS",
     )
+
+    # print("\n===== INSIDE add_model_components =====")
+    # print("m:", m)
+    # print("m type:", type(m))
+    #
+    # print("\nParams currently on m:")
+    # for p in m.component_objects(Param, active=True):
+    #     print(
+    #         p.name,
+    #         "constructed =", p.is_constructed(),
+    #         "indexed =", p.is_indexed(),
+    #     )
 
 
 # Capacity Type Methods

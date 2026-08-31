@@ -9,6 +9,7 @@ from pyomo.environ import (
     Objective,
     ObjectiveList,
     value,
+    Constraint,
     maximize,
     SolverFactory,
     Reals
@@ -52,6 +53,40 @@ def solve_planning_problem(instance, planning_variables, optimiser):
     """
 
     results = optimiser.solve(instance, tee=False)
+
+    print("Results of Planning Problem: ", results)
+
+    # print("\n========== MASTER MODEL AFTER SOLVE ==========")
+    #
+    # print("ConcreteModel:", instance)
+    # print("Number of components:", len(list(instance.component_objects())))
+    #
+    # print("\n--- Variables ---")
+    # for var in instance.component_objects(Var, active=True):
+    #     print(
+    #         var.name,
+    #         "indexed =", var.is_indexed(),
+    #         "entries =", len(var) if var.is_indexed() else 1,
+    #     )
+    #     if var.is_indexed():
+    #         for i in var:
+    #             print("   ", i, "=", value(var[i], exception=False))
+    #     else:
+    #         print("   =", value(var, exception=False))
+    #
+    # print("\n--- Constraints ---")
+    # for con in instance.component_objects(Constraint, active=True):
+    #     print(
+    #         con.name,
+    #         "indexed =", con.is_indexed(),
+    #         "entries =", len(con) if con.is_indexed() else 1,
+    #     )
+    #
+    # print("\n--- Objectives ---")
+    # for obj in instance.component_objects(Objective, active=True):
+    #     print(obj.name)
+    #     print("   expression:", obj.expr)
+    #     print("   sense:", obj.sense)
 
     status = results.solver.status
     termination = results.solver.termination_condition
@@ -104,7 +139,7 @@ def add_approximate_variable_cost(instance,
         domain=Reals,
     )
 
-    print("What is theta", sum(instance.vTHETA[w] for w in instance.vTHETA))
+    # print("What is theta", sum(instance.vTHETA[w] for w in instance.vTHETA))
 
     #
     # Lower bounds

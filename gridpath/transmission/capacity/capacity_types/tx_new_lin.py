@@ -373,15 +373,36 @@ def add_model_components(
 # Set Rules
 ###############################################################################
 
-
+# WITH BENDERS:
 def operational_periods_by_tx_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if mod._is_benders_subproblem:
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.tx_new_lin_operational_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
+# OG:
+# def operational_periods_by_tx_vintage(mod, prj, v):
+#     return relevant_periods_by_project_vintage(
+#         future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+#         period_start_year=getattr(mod, "period_start_year"),
+#         period_end_year=getattr(mod, "period_end_year"),
+#         vintage=v,
+#         lifetime_yrs=mod.tx_new_lin_operational_lifetime_yrs_by_vintage[prj, v],
+#     )
 
 
 def tx_new_lin_operational_periods(mod):
@@ -400,12 +421,24 @@ def tx_new_lin_vintages_operational_in_period(mod, p):
 
 
 def financial_periods_by_tx_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if mod._is_benders_subproblem:
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.tx_new_lin_financial_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -797,6 +830,51 @@ def write_model_inputs(
         stage,
         conn,
     )
+
+    # TODO: Need to add an if parsed_arguments.benders: here.
+    if subproblem != "":
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        stage_for_periods = 1 if stage == "" else stage
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_for_periods,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+        current_period = max(periods)
+        # Identify transmission whose vintage is not operational in this subproblem
+
+        transmission_rows = tx_cost.fetchall()
+
+        transmission_rows = [
+            row
+            for row in transmission_rows
+            if int(str(row[1])[:4]) <= current_period < int(str(row[1])[:4]) + row[2]
+        ]
+
+        class FilteredTxCosts:
+            def __init__(self, rows):
+                self.description = tx_cost.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        tx_cost = FilteredTxCosts(transmission_rows)
 
     with open(
         os.path.join(

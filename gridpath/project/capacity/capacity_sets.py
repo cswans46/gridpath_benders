@@ -25,37 +25,37 @@ def add_model_components(
 ):
     m.GEN_SPEC_OPR_PRDS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
     
-    m.PRJ_OPR_PRDS = Set(
-        dimen=2,
-        within=m.PROJECTS * m.PERIODS,
-        initialize=lambda mod: join_sets(
-            mod,
-            getattr(d, capacity_type_operational_period_sets),
-        ),
-    )
-
-    m.OPR_PRDS_BY_PRJ = Set(
-        m.PROJECTS,
-        initialize=lambda mod, project: operational_periods_by_project(
-            prj=project,
-            project_operational_periods=mod.PRJ_OPR_PRDS,
-        ),
-    )
-
-    m.PRJ_OPR_TMPS = Set(
-        dimen=2,
-        initialize=lambda mod: [
-            (g, tmp)
-            for g in mod.PROJECTS
-            for p in mod.OPR_PRDS_BY_PRJ[g]
-            for tmp in mod.TMPS_IN_PRD[p]
-        ],
-    )
-
-    m.OPR_PRJS_IN_TMP = Set(
-        m.TMPS,
-        initialize=op_gens_by_tmp,
-    )
+    # m.PRJ_OPR_PRDS = Set(
+    #     dimen=2,
+    #     within=m.PROJECTS * m.PERIODS,
+    #     initialize=lambda mod: join_sets(
+    #         mod,
+    #         getattr(d, capacity_type_operational_period_sets),
+    #     ),
+    # )
+    #
+    # m.OPR_PRDS_BY_PRJ = Set(
+    #     m.PROJECTS,
+    #     initialize=lambda mod, project: operational_periods_by_project(
+    #         prj=project,
+    #         project_operational_periods=mod.PRJ_OPR_PRDS,
+    #     ),
+    # )
+    #
+    # m.PRJ_OPR_TMPS = Set(
+    #     dimen=2,
+    #     initialize=lambda mod: [
+    #         (g, tmp)
+    #         for g in mod.PROJECTS
+    #         for p in mod.OPR_PRDS_BY_PRJ[g]
+    #         for tmp in mod.TMPS_IN_PRD[p]
+    #     ],
+    # )
+    #
+    # m.OPR_PRJS_IN_TMP = Set(
+    #     m.TMPS,
+    #     initialize=op_gens_by_tmp,
+    # )
 
 
 # Set Rules

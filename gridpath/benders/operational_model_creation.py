@@ -1,6 +1,9 @@
 from pyomo.environ import AbstractModel
-from pyomo.core.expr.visitor import identify_variables
+from pyomo.core.expr.visitor import identify_variables,identify_components
 import logging
+from pyomo.environ import Expression, Param,Set
+from pyomo.core.expr.visitor import identify_variables, identify_components
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -67,13 +70,40 @@ def create_operational_problem_benders(
     # Therefore, use wholistic design.
     model = AbstractModel()
 
-    if not parsed_arguments.quiet:
-        print("Building operational model...")
+    # Here, we need to identify the subproblems as being operational subproblems
+    # and not the master problem since the master problem reuses infrastructure for
+    # generating the abstractmodel.
+    model._is_benders_subproblem = True
 
     modules_to_use, loaded_modules = set_up_gridpath_modules(
         scenario_directory=scenario_directory,
         multi_stage=multi_stage,
         parsed_arguments=parsed_arguments
+    )
+
+    inputs_path = os.path.join(
+        scenario_directory,
+        str(key.weather),
+        str(key.hydro),
+        str(key.availability),
+        str(key.subproblem),
+        str(key.stage),
+        "inputs",
+    )
+
+    projects_path = os.path.join(
+        inputs_path,
+        "projects.tab",
+    )
+
+    print(
+        "\n--- BENDERS WORKER ---"
+        f"\nPID: {os.getpid()}"
+        f"\nkey: {key}"
+        f"\ninputs_path: {inputs_path}"
+        f"\nprojects_path: {projects_path}"
+        f"\ninputs exists: {os.path.isdir(inputs_path)}"
+        f"\nprojects exists: {os.path.isfile(projects_path)}"
     )
 
     create_abstract_model(
@@ -116,6 +146,113 @@ def create_operational_problem_benders(
     if not parsed_arguments.quiet:
         print("Creating problem instance for operational subproblems...")
     instance = create_problem_instance(model, scenario_data_benders)
+
+    # print("\n--- Sets ---")
+    # for s in instance.component_objects(Set):
+    #     print(
+    #         "SET:",
+    #         s.name,
+    #         "constructed:",
+    #         s.is_constructed(),
+    #         "size:",
+    #         len(s) if s.is_constructed() else "NOT CONSTRUCTED",
+    #     )
+    #
+    # print("\n--- Variables ---")
+    # for var in instance.component_objects(Var, active=True):
+    #     print(
+    #         var.name,
+    #         "indexed =", var.is_indexed(),
+    #         "entries =", len(var) if var.is_indexed() else 1,
+    #     )
+    #     if var.is_indexed():
+    #         for i in var:
+    #             print("   ", i, "=", value(var[i], exception=False))
+    #     else:
+    #         print("   =", value(var, exception=False))
+    #
+    # print("\n--- Constraints ---")
+    # for con in instance.component_objects(Constraint, active=True):
+    #     print(
+    #         con.name,
+    #         "indexed =", con.is_indexed(),
+    #         "entries =", len(con) if con.is_indexed() else 1,
+    #     )
+    #
+    # print("\n--- Objectives ---")
+    # for obj in instance.component_objects(Objective, active=True):
+    #     print(obj.name)
+    #     print("   expression:", obj.expr)
+    #     print("   sense:", obj.sense)
+    #
+    # print("\n================== CHECKING CAPACITY SETS ====================")
+    # print("PRJ_OPR_PRDS:")
+    # for i in instance.PRJ_OPR_PRDS:
+    #     print("   ", i)
+
+    # print("\n================== EXPRESSION VARIABLE DEPENDENCIES ==================")
+    #
+    # for expr_component in instance.component_objects(
+    #         Expression, active=True
+    # ):
+    #
+    #     print(f"\n--- {expr_component.name} ---")
+    #     print("indexed:", expr_component.is_indexed())
+    #     print("constructed:", expr_component.is_constructed())
+    #
+    #     if expr_component.is_indexed():
+    #
+    #         # Indexed Expression
+    #         for index in expr_component:
+    #
+    #             expr_data = expr_component[index]
+    #             expr = expr_data.expr
+    #
+    #             variables = list(identify_variables(expr))
+    #             params = list(identify_components(expr, {Param}))
+    #
+    #             print(f"\n{expr_data.name}[{index}]")
+    #             print(f"  EXPR: {expr}")
+    #
+    #             if variables:
+    #                 print("  VARIABLES:")
+    #                 for var in variables:
+    #                     print(f"    {var.name}")
+    #             else:
+    #                 print("  VARIABLES: NONE")
+    #
+    #             if params:
+    #                 print("  PARAMS:")
+    #                 for param in params:
+    #                     print(f"    {param.name}")
+    #             else:
+    #                 print("  PARAMS: NONE")
+
+        # else:
+        #
+        #     # Scalar Expression
+        #     expr_data = expr_component
+        #     expr = expr_data.expr
+        #
+        #     variables = list(identify_variables(expr))
+        #     params = list(identify_components(expr, {Param}))
+        #
+        #     print(f"\n{expr_data.name}")
+        #     print(f"  EXPR: {expr}")
+        #
+        #     if variables:
+        #         print("  VARIABLES:")
+        #         for var in variables:
+        #             print(f"    {var.name}")
+        #     else:
+        #         print("  VARIABLES: NONE")
+        #
+        #     if params:
+        #         print("  PARAMS:")
+        #         for param in params:
+        #             print(f"    {param.name}")
+        #     else:
+        #         print("  PARAMS: NONE")
 
     # Fix variables if modules request so
     instance = fix_variables(

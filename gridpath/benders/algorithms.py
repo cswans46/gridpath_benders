@@ -252,33 +252,36 @@ def benders(
             optimiser
         )
 
-        print("NEW LB:", LB_new)
+        # print("NEW LB:", LB_new)
+        #
+        # # for w in subop_sol:
+        # #     print(
+        # #         "THETA",
+        # #         w,
+        # #         "=",
+        # #         planning_problem.vTHETA[w].value,
+        # #     )
+        #
+        # print("OLD LB:", LB)
+        # print("NEW LB:", LB_new)
 
-        for w in subop_sol:
-            print(
-                "THETA",
-                w,
-                "=",
-                planning_problem.vTHETA[w].value,
-            )
-
-        print("OLD LB:", LB)
-        print("NEW LB:", LB_new)
-
-        for key in benders_subproblems:
-            print(
-                "theta",
-                key,
-                value(planning_problem.vTHETA[key])
-            )
+        # for key in benders_subproblems:
+        #     print(
+        #         "theta",
+        #         key,
+        #         value(planning_problem.vTHETA[key])
+        #     )
 
         LB = max(LB, LB_new)
 
         # ---------------------------------------------------------
         # Calculate Convergence
         # ---------------------------------------------------------
-
-        gap = (UB - LB) / abs(LB)
+        # Try this fix if there are no planning variables. I think it should lead to the same thing.
+        if abs(LB) > 1e-10:
+            gap = abs(UB - LB) / abs(LB)
+        else:
+            gap = abs(UB - LB)
 
         LB_hist.append(LB)
         UB_hist.append(UB)
@@ -473,15 +476,15 @@ def update_planning_problem_multi_cuts(
             lhs >= rhs
         )
 
-        print(
-            "CUT:",
-            w,
-            "theta_coeff =", sol_w["theta_coeff"],
-            "op_cost =", sol_w["op_cost"],
-            "lambda =", sol_w["lambda"],
-        )
+        # print(
+        #     "CUT:",
+        #     w,
+        #     "theta_coeff =", sol_w["theta_coeff"],
+        #     "op_cost =", sol_w["op_cost"],
+        #     "lambda =", sol_w["lambda"],
+        # )
 
-        print("Number of Benders cuts:", len(planning_problem.benders_cuts))
+        # print("Number of Benders cuts:", len(planning_problem.benders_cuts))
 
 def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 
@@ -503,7 +506,7 @@ def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 def compute_upper_bound(planning_sol,
                         subop_sol):
 
-    print("here is the subop_sol: ", subop_sol)
+    # print("here is the subop_sol: ", subop_sol)
 
     if any(sp["theta_coeff"] == 0 for sp in subop_sol.values()):
         return math.inf

@@ -23,6 +23,7 @@ def define_benders_modules(modules_to_use):
         "project.operations.reserves.op_type_dependent.spinning_reserves",
         "project.operations.reserves.op_type_dependent.inertia_reserves",
         "project.availability.availability",
+        "transmission",
         "transmission.availability.availability",
         "transmission.operations",
         "transmission.operations.operational_types",
@@ -209,14 +210,20 @@ def define_benders_modules(modules_to_use):
         "geography.markets",
         "geography.water_network",
         "project",
-        "project.capacity.capacity_sets",
         "project.capacity",
         "project.capacity.capacity_types",
+        "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
         "project.capacity.capacity_groups",
         "project.capacity.relative_capacity",
         "project.capacity.costs",
+        "transmission.capacity",
+        "transmission.capacity.capacity_types",
+        "transmission.capacity.capacity",
+        "transmission.capacity.costs",
+        "transmission.capacity.consolidate_results",
+        "transmission.capacity.capacity_groups",
     ]
 
     inv_module = [
@@ -264,6 +271,45 @@ def define_benders_modules(modules_to_use):
         "objective.transmission.aggregate_capacity_costs",
         "objective.max_npv_benders"
     ]
+
+    # def get_defined_variables(path_):
+    #     import ast
+    #     import importlib.util
+    #     from pathlib import Path
+    #     variables_master = []
+    #
+    #     for module_name in path_:
+    #         spec = importlib.util.find_spec(module_name)
+    #
+    #         if spec is None:
+    #             raise ImportError(f"Could not find module: {module_name}")
+    #
+    #         path = Path(spec.origin)
+    #
+    #         with open(path, "r", encoding="utf-8") as f:
+    #             tree = ast.parse(f.read(), filename=str(path))
+    #
+    #         variables = set()
+    #
+    #         for node in ast.walk(tree):
+    #             if isinstance(node, ast.Assign):
+    #                 for target in node.targets:
+    #                     if isinstance(target, ast.Name):
+    #                         variables.add(target.id)
+    #
+    #             elif isinstance(node, ast.AnnAssign):
+    #                 if isinstance(node.target, ast.Name):
+    #                     variables.add(node.target.id)
+    #
+    #         variables_master.extend(variables)
+    #
+    #     return print(variables_master)
+    #
+    # print("\n============== INVESTMENT VARIABLES ===================")
+    # get_defined_variables(inv_module)
+    # print("\n============== OPERATIONAL VARIABLES ==================")
+    # get_defined_variables(op_module)
+
     """
      Redefine operational and investment modules such that only requested modules are include
      in the Bender's scheme

@@ -88,8 +88,6 @@ def add_model_components(
 
     m.Total_Revenue = m.Expression(initialize=total_revenue_rule)
 
-    print("What are the costs?: ",cost_components)
-
     # Aggregate all costs
     def total_cost_rule(mod):
         return sum(getattr(mod, c) for c in getattr(d, cost_components))

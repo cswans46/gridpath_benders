@@ -229,6 +229,12 @@ def get_run_scenario_parser():
         help="Log output to a file in the scenario's 'logs' "
         "directory as well as the terminal.",
     )
+    parser.add_argument(
+        "--quick_write_and_solve",
+        default=False,
+        action="store_true",
+        help="loads solution in from pickle file and solves"
+    )
     # Problem files and solutions
     parser.add_argument(
         "--create_lp_problem_file_only",

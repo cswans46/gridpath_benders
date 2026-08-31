@@ -3788,9 +3788,17 @@ def export_linked_subproblem_inputs(
     # If there's a linked_subproblems_map CSV file, check which of the
     # current subproblem TMPS we should export results for to link to the
     # next subproblem
+
+    print("BEFORE check_for_tmps_to_link")
+    print("subproblem =", subproblem)
+    print("stage =", stage)
+
     tmps_to_link, tmp_linked_tmp_dict = check_for_tmps_to_link(
         scenario_directory=scenario_directory, subproblem=subproblem, stage=stage
     )
+
+    print("AFTER check_for_tmps_to_link")
+    print("subproblem =", subproblem)
 
     # If the list of timepoints to link is not empty, write the linked
     # timepoint results for this module in the next subproblem's input

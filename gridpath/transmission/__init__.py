@@ -394,6 +394,76 @@ def write_model_inputs(
         conn,
     )
 
+    # TODO: Need to add an if parsed_arguments.benders: here.
+    if subproblem != "":
+        # Get transmission-vintage-lifetime combinations from database
+        c = conn.cursor()
+        # Gather vintage, transmission, lifetime map for filtering
+        vintage_transmission_lifetimes = [
+            (int(str(vintage)[:4]), transmission, lifetime)
+            for vintage, transmission, lifetime in c.execute(
+                f"""
+                SELECT vintage, transmission_line, tx_operational_lifetime_yrs
+                FROM inputs_transmission_new_cost
+                WHERE transmission_new_cost_scenario_id = {subscenarios.TRANSMISSION_NEW_COST_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+        print("vintage_transmission_lifetimes",[weather_iteration,hydro_iteration,availability_iteration,subproblem],vintage_transmission_lifetimes)
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify transmission whose vintage is not operational in this subproblem
+        excluded_transmissions = {
+            transmission
+            for transmission in {
+                transmission
+                for vintage, transmission, lifetime in vintage_transmission_lifetimes
+            }
+            if all(
+                period < vintage or period >= vintage + lifetime
+                for vintage, tx, lifetime in vintage_transmission_lifetimes
+                if tx == transmission
+                for period in periods
+            )
+        }
+
+        # Filter transmissions.tab
+        transmission_rows = [
+            row
+            for row in transmission_lines.fetchall()
+            if row[0] not in excluded_transmissions
+        ]
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredTransmissionlines:
+            def __init__(self, rows):
+                self.description = transmission_lines.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        transmission_lines = FilteredTransmissionlines(transmission_rows)
+
     write_tab_file_model_inputs(
         scenario_directory=scenario_directory,
         weather_iteration=weather_iteration,

@@ -429,6 +429,7 @@ def write_tab_file_model_inputs(
     :param replace_nulls: Booolean, whether the replace Nulls with "."
     :return:
     """
+
     out_file = os.path.join(
         scenario_directory,
         weather_iteration,
@@ -445,6 +446,7 @@ def write_tab_file_model_inputs(
 
     # Only write if we have data
     data_list = [row for row in data.fetchall()]
+
     if data_list:
         with open(out_file, append_mode, newline="") as f:
             writer = csv.writer(f, delimiter="\t", lineterminator="\n")

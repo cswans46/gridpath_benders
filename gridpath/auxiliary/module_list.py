@@ -78,7 +78,7 @@ def all_modules_list():
         "project",
         "project.capacity",
         "project.capacity.capacity_types",
-        "project.capacity.capacity_sets",
+        # "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
         "project.capacity.capacity_groups",
@@ -618,14 +618,16 @@ def feature_remove_modules_list():
 
 
 def determine_modules(
+    parsed_arguments,
     features=None,
     scenario_directory=None,
-    multi_stage=None,
+    multi_stage=None
 ):
     """
     :param features: List of requested features. Optional input; if
         not specified, function will try to load 'features.csv' file to
         determine the requested features.
+    :param parsed_arguments: list of command-line arguments.
     :param scenario_directory: the scenario directory, where we will look
         for the list of requested features. Optional input; if not specified,
         function will look for the 'features' input parameter
@@ -708,6 +710,10 @@ def determine_modules(
     if remove_fix_variable_modules:
         modules_to_use.remove("project.operations.fix_commitment")
         modules_to_use.remove("system.markets.fix_market_participation")
+
+    if not parsed_arguments.benders:
+        modules_to_use.remove("objective.min_op_costs")
+        modules_to_use.remove("objective.max_npv_benders")
 
     # Remove modules associated with features that are not requested
     optional_modules = optional_modules_list()
