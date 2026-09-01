@@ -151,7 +151,7 @@ def import_scenario_results_into_database(
                             if current_suproblem.endswith("/"):
                                 current_suproblem = current_suproblem[:-1]
 
-                            print(f"--- subproblem: {current_suproblem}")
+                            # print(f"--- subproblem: {current_suproblem}")
 
                         # Import termination condition data
                         c = db.cursor()

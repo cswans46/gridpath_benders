@@ -28,6 +28,7 @@ class BendersResult:
     termination_status: str
     cpu_time: list
     planning_sol_hist: list
+    planning_results: object
 
 def all_variables(model) -> list:
     """Returns a flat list of all variable data objects in the Pyomo model."""
@@ -109,7 +110,9 @@ def benders(
     # Initially solve planning problem
     # ---------------------------------------------------------
 
-    planning_sol, LB = solve_planning_problem(
+    planning_results = None
+
+    planning_sol, LB, planning_results = solve_planning_problem(
         planning_problem,
         planning_variable_names,
         optimiser
@@ -246,7 +249,7 @@ def benders(
         # Resolve master
         # ---------------------------------------------------------
 
-        unst_planning_sol, LB_new = solve_planning_problem(
+        unst_planning_sol, LB_new,planning_results = solve_planning_problem(
             planning_problem,
             planning_variable_names,
             optimiser
@@ -318,7 +321,7 @@ def benders(
                 for v in binary_vars:
                     set_binary(v)
 
-                planning_sol, LB = solve_planning_problem(
+                planning_sol, LB, planning_results = solve_planning_problem(
                     planning_problem,
                     planning_variable_names,
                     optimiser
@@ -373,6 +376,7 @@ def benders(
                         LB,
                         UB,
                         gamma,
+                        optimiser
                     )
 
                     for v in integer_vars:
@@ -392,11 +396,20 @@ def benders(
                         LB,
                         UB,
                         gamma,
+                        optimiser
                     )
 
             else:
 
                 planning_sol = deepcopy(unst_planning_sol)
+
+    # Stop all workers
+    for key in workers:
+        input_queues[key].put("STOP")
+
+    # Wait for all workers to finish
+    for key in workers:
+        workers[key].join()
 
     return BendersResult(
         planning_problem=planning_problem,
@@ -408,6 +421,7 @@ def benders(
         termination_status=term_status,
         cpu_time=cpu_time,
         planning_sol_hist=planning_sol_hist,
+        planning_results=planning_results,
     )
 
 def update_planning_problem_multi_cuts(

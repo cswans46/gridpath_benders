@@ -137,8 +137,7 @@ def create_problem(
 
     # Create an object to differentiate the planning from the operational subproblems
     # since we are using the same infrastructure to build the model.
-    if parsed_arguments.benders:
-        model._is_benders_subproblem = False
+    model._is_benders_subproblem = False
 
     dynamic_components = DynamicComponents()
 
@@ -212,16 +211,26 @@ def create_problem(
         loaded_modules,
     )
 
-    print("this is the instance:",instance)
-
     return dynamic_components, instance
 
-def solve_problem(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,parsed_arguments, instance):
+def solve_problem(parsed_arguments,
+                  instance,
+                  benders_subproblems=None,
+                  dynamic_components=None,
+                  multi_stage=None,
+                  prob_sol_files_directory=None
+):
     # Solve
     # If desired, produce an lp file of the abstract model (if only the .lp file is desired use the parsed argument --lp_
     if not parsed_arguments.quiet:
         print("Solving...")
-    results = solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,instance, parsed_arguments)
+    results = solve(instance,
+                    parsed_arguments,
+                    benders_subproblems,
+                    dynamic_components,
+                    multi_stage,
+                    prob_sol_files_directory
+                    )
 
     return instance, results
 
@@ -442,17 +451,17 @@ def run_optimization_for_subproblem_stage(
             parsed_arguments,
         )
 
-        # Summarize results
-        summarize_results(
-            scenario_directory,
-            weather_iteration_directory,
-            hydro_iteration_directory,
-            availability_iteration_directory,
-            subproblem_directory,
-            stage_directory,
-            multi_stage,
-            parsed_arguments,
-        )
+        # # Summarize results
+        # summarize_results(
+        #     scenario_directory,
+        #     weather_iteration_directory,
+        #     hydro_iteration_directory,
+        #     availability_iteration_directory,
+        #     subproblem_directory,
+        #     stage_directory,
+        #     multi_stage,
+        #     parsed_arguments,
+        # )
 
         # If logging, we need to return sys.stdout to original (i.e. stop writing
         # to log file)
@@ -743,31 +752,29 @@ def run_optimization_for_subproblem_stage_benders(
 
                         benders_subproblems[key] = key
 
-                    for key in benders_subproblems:
-                        print(key)
+                    # for key in benders_subproblems:
+                    #     print(key)
 
                 solved_instance, results = solve_problem(
                     # Note that this doesn't get used unless Benders is activated.
+                    parsed_arguments,
+                    instance,
                     benders_subproblems,
                     dynamic_components,
                     multi_stage,
-                    prob_sol_files_directory,
-                    parsed_arguments=parsed_arguments,
-                    instance=instance,
+                    prob_sol_files_directory
                 )
 
-        # Save the scenario results to disk
-        print("THIS IS THE SUBPROBLEM: ", subproblem_directory)
         save_results(
             scenario_directory,
-            weather_iteration_directory,
-            hydro_iteration_directory,
-            availability_iteration_directory,
-            subproblem_directory,
-            stage_directory,
+            "",
+            "",
+            "",
+            "",
+            "",
             multi_stage,
             solved_instance,
-            results,
+            results.planning_results,
             dynamic_components,
             parsed_arguments,
         )
@@ -785,7 +792,7 @@ def run_optimization_for_subproblem_stage_benders(
         # Return the objective function value (in the testing suite, the value
         # gets checked against the expected value, but this is the only place
         # this is actually used)
-        if results.solver.termination_condition != "infeasible":
+        if results.planning_results.solver.termination_condition != "infeasible":
             if parsed_arguments.testing:
                 return solved_instance.NPV()
         else:
@@ -810,7 +817,6 @@ def run_optimization_for_subproblem_benders(
     # Need to generalise this check to accomodate when subproblem_directory is a list.
 
     for stage_directory in stage_directories:
-        print(stage_directory)
         stage = 1 if stage_directory == "" else int(stage_directory)
         # Little bit of a weird setup, but it is what I could come up with for now.
         # - Each of the directories are lists and now what will come out of run_optimisation_for_subproblem_stage is a
@@ -994,13 +1000,18 @@ def run_optimization_for_subproblem_pool(pool_datum):
                 hydro,
                 availability,
                 subproblem,
-        ), stage_directories in all_subproblem_data.items():
+        ), stage_directory in all_subproblem_data.items():
 
             weather_iteration_directory.append(weather)
             hydro_iteration_directory.append(hydro)
             availability_iteration_directory.append(availability)
             subproblem_directory.append(subproblem)
-            stage_directories.append(stage_directories)
+
+            if not stage_directories:
+                stage_directories = stage_directory.copy()
+
+        if not stage_directories:
+            stage_directories = [""]
 
         run_optimization_for_subproblem_benders(
             scenario_directory=scenario_directory,
@@ -1513,7 +1524,7 @@ def save_results(
     Save objective function value.
     Save constraint duals.
     """
-    if not parsed_arguments.quiet:
+    if not (parsed_arguments.quiet and instance._is_benders_subproblem):
         print("Saving results...")
 
     # TODO: how best to handle non-empty results directories?
@@ -1587,7 +1598,7 @@ def save_results(
             ]["export_summary"](instance=instance, quiet=parsed_arguments.quiet)
 
         if export_summary_rule:
-            if not parsed_arguments.quiet:
+            if not (parsed_arguments.quiet and instance._is_benders_subproblem):
                 print("...exporting summary CSV results")
             export_summary_results(
                 scenario_directory=scenario_directory,
@@ -1623,7 +1634,7 @@ def save_results(
             availability_iteration=availability_iteration,
             subproblem=subproblem,
             stage=stage,
-            instance=instance,
+            instance=instance
         )
 
         save_duals(
@@ -1886,7 +1897,12 @@ def view_loaded_data(loaded_modules, instance):
             m.view_loaded_data(instance)
 
 
-def solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_directory,instance, parsed_arguments):
+def solve(instance,
+          parsed_arguments,
+          benders_subproblems=None,
+          dynamic_components=None,
+          multi_stage=None,
+          prob_sol_files_directory=None):
     """
     :dict benders_subproblems: a dictionary of lists containing the full set of benders subproblems including stochastic
             iterations
@@ -2071,12 +2087,6 @@ def solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_dire
             symbolic_solver_labels=parsed_arguments.symbolic,
         )
 
-        print("\n--- Objectives ---")
-        for obj in instance.component_objects(Objective, active=True):
-            print(obj.name)
-            print("   expression:", obj.expr)
-            print("   sense:", obj.sense)
-
     # Can optionally log infeasibilities but this has resulted in false
     # positives due to rounding errors larger than the default tolerance
     # of 1E-6.
@@ -2084,34 +2094,38 @@ def solve(benders_subproblems,dynamic_components,multi_stage,prob_sol_files_dire
 
     # CODE TO OUTPUT SOLUTION FILE AND RELOAD IN THE CASE OF AN INFEASIBLE SOLUTION
     # OR ONE THAT ITERATED/TIMED OUT
-    from gridpath.auxiliary.plugins.gurobi_solve import write_solution_json
-    # Write the solution
-    instance.solutions.load_from(results)
+    if parsed_arguments.quick_write_and_solve:
+        from gridpath.auxiliary.plugins.gurobi_solve import write_solution_json
+        # Write the solution
+        instance.solutions.load_from(results)
 
-    solution = write_solution_json(instance,os.path.join(prob_sol_files_directory,"solution.json"),results)
+        solution = write_solution_json(instance,os.path.join(prob_sol_files_directory,"solution.json"),results)
 
-    termination_condition = solution["metadata"]["termination_condition"]
-    has_solution = solution["metadata"]["has_solution"]
+        termination_condition = solution["metadata"]["termination_condition"]
+        has_solution = solution["metadata"]["has_solution"]
 
-    if termination_condition == "optimal":
-        # Already solved and json already written
-        return results
+        if termination_condition == "optimal":
+            # Already solved and json already written
+            return results
 
-    elif has_solution:
-        # Partial incumbent exists; restart from it
-        instance = load_json_solution(prob_sol_files_directory,instance)[0]
+        elif has_solution:
+            # Partial incumbent exists; restart from it
+            instance = load_json_solution(prob_sol_files_directory,instance)[0]
 
-        results = optimizer.solve(
-            instance,
-            warmstart=True,
-        )
+            results = optimizer.solve(
+                instance,
+                warmstart=True,
+            )
 
-        return results
+            return results
+
+        else:
+            # No usable solution exists
+            results = optimizer.solve(instance)
+
+            return results
 
     else:
-        # No usable solution exists
-        results = optimizer.solve(instance)
-
         return results
 
 def add_variables(model):
@@ -2292,7 +2306,7 @@ def save_objective_function_value(
     availability_iteration,
     subproblem,
     stage,
-    instance,
+    instance
 ):
     """
     Save the objective function value.
@@ -2302,7 +2316,10 @@ def save_objective_function_value(
     :param instance:
     :return:
     """
-    objective_function_value = instance.NPV()
+    if not instance._is_benders_subproblem:
+        objective_function_value = instance.NPV()
+    else:
+        objective_function_value = instance.MIN_OP_COSTS()
 
     # Round objective function value of test examples
     if os.path.dirname(scenario_directory)[-8:] == "examples":

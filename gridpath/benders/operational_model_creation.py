@@ -4,29 +4,31 @@ import logging
 from pyomo.environ import Expression, Param,Set
 from pyomo.core.expr.visitor import identify_variables, identify_components
 import os
+from pyomo.common.collections import ComponentSet
 
 logger = logging.getLogger(__name__)
 
 def define_linking_vars(m):
-    investment_vars = [
-        "Capacity_MW"
+    investment_exprs = [
+        "Capacity_MW",
+        "Tx_Min_Capacity_MW",
+        "Tx_Max_Capacity_MW",
+        "TxNewLin_Capacity_MW",
+        "Energy_Storage_Capacity_MWh",
     ]
 
     linking_vars = set()
 
-    for expr_name in investment_vars:
+    for expr_name in investment_exprs:
         expr_component = getattr(m, expr_name)
 
-        # Handle scalar Expression
-        if expr_component.is_indexed() is False:
-            expressions = [expr_component.expr]
-
-        # Handle IndexedExpression
-        else:
-            expressions = [
+        if expr_component.is_indexed():
+            expressions = (
                 expr_component[i].expr
                 for i in expr_component
-            ]
+            )
+        else:
+            expressions = [expr_component.expr]
 
         for expr in expressions:
             for var in identify_variables(expr):
@@ -96,15 +98,15 @@ def create_operational_problem_benders(
         "projects.tab",
     )
 
-    print(
-        "\n--- BENDERS WORKER ---"
-        f"\nPID: {os.getpid()}"
-        f"\nkey: {key}"
-        f"\ninputs_path: {inputs_path}"
-        f"\nprojects_path: {projects_path}"
-        f"\ninputs exists: {os.path.isdir(inputs_path)}"
-        f"\nprojects exists: {os.path.isfile(projects_path)}"
-    )
+    # print(
+    #     "\n--- BENDERS WORKER ---"
+    #     f"\nPID: {os.getpid()}"
+    #     f"\nkey: {key}"
+    #     f"\ninputs_path: {inputs_path}"
+    #     f"\nprojects_path: {projects_path}"
+    #     f"\ninputs exists: {os.path.isdir(inputs_path)}"
+    #     f"\nprojects exists: {os.path.isfile(projects_path)}"
+    # )
 
     create_abstract_model(
         # Also have to create two separate models (operational and investment) to facilitate benders
@@ -123,7 +125,7 @@ def create_operational_problem_benders(
     )
 
     if expect_feasible:
-        print("Skipping feasibility cuts.")
+        # print("Skipping feasibility cuts.")
         logger.info("Skipping feasibility cuts.")
     else:
         # We can add slacks to subproblem here because we haven't instantiated the model yet.
@@ -143,8 +145,8 @@ def create_operational_problem_benders(
     )
 
     # print("Scenario data: ",scenario_data.data())
-    if not parsed_arguments.quiet:
-        print("Creating problem instance for operational subproblems...")
+    # if not parsed_arguments.quiet:
+        # print("Creating problem instance for operational subproblems...")
     instance = create_problem_instance(model, scenario_data_benders)
 
     # print("\n--- Sets ---")

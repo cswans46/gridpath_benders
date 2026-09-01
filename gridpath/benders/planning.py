@@ -54,7 +54,7 @@ def solve_planning_problem(instance, planning_variables, optimiser):
 
     results = optimiser.solve(instance, tee=False)
 
-    print("Results of Planning Problem: ", results)
+    # print("Results of Planning Problem: ", results)
 
     # print("\n========== MASTER MODEL AFTER SOLVE ==========")
     #
@@ -107,7 +107,7 @@ def solve_planning_problem(instance, planning_variables, optimiser):
 
         LB = value(instance.MasterObjective)
 
-        return planning_sol, LB
+        return planning_sol, LB, results
 
     raise RuntimeError(
         f"Planning problem failed.\n"

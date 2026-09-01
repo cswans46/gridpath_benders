@@ -45,9 +45,9 @@ def main(prob_sol_dir,pickle_file,parsed_arguments):
     # model = gurobipy.read(os.path.join(prob_sol_dir, problem_file))
 
     solved_instance, results = solve_problem(
-        prob_sol_dir,
-        parsed_arguments=parsed_arguments,
-        instance=instance,
+        parsed_arguments,
+        instance,
+        prob_sol_files_directory=prob_sol_dir,
     )
 
     # Define tags for some variables in order to access their values later

@@ -409,7 +409,6 @@ def write_model_inputs(
                 """
             ).fetchall()
         ]
-        print("vintage_transmission_lifetimes",[weather_iteration,hydro_iteration,availability_iteration,subproblem],vintage_transmission_lifetimes)
         # Call in locally the sql query for periods.tab for this subproblem
         from gridpath.temporal.investment.periods import (
             get_inputs_from_database as get_periods_from_database

@@ -10,8 +10,8 @@ from pyomo.environ import (
     NonNegativeReals,
     Reals,
     Constraint,
+    Suffix
 )
-
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
 from typing import Any, Dict, List, NamedTuple
@@ -20,6 +20,7 @@ from gridpath.benders.operational_model_creation import (
     create_operational_problem_benders,
     define_linking_vars
 )
+import os
 
 def add_slacks_to_subproblem(model):
 
@@ -54,14 +55,18 @@ def add_slacks_to_subproblem(model):
     model.slack_fix = Constraint(expr=model.slack_max == 0)
 
 def fix_linking_variables(model, planning_sol, linking_vars):
+    model.BendersLinkingConstraints.clear()
 
     for name in linking_vars:
         var = model.find_component(name)
+        if var is None:
+            raise ValueError(
+                f"Linking variable {name} not found in subproblem model."
+            )
 
-        var.fix(planning_sol.values[name])
-
-        # mimic JuMP behavior
-        var.domain = Reals
+        model.BendersLinkingConstraints.add(
+            var == planning_sol.values[name]
+        )
 
 import multiprocessing as mp
 def benders_subproblem_worker(
@@ -95,10 +100,15 @@ def benders_subproblem_worker(
         parsed_arguments=parsed_arguments,
     )
 
-    print(
-        f"Worker started for {key}. "
-        f"Components: {len(list(instance.component_objects()))}"
-    )
+    # Create the dual variable to access the dual variables of the linking variables.
+    instance.dual = Suffix(direction=Suffix.IMPORT)
+    # Create the linking constraints for the operational problem (i.e. y_p = y_p^k as in pecci)
+    instance.BendersLinkingConstraints = ConstraintList()
+
+    # print(
+    #     f"Worker started for {key}. "
+    #     f"Components: {len(list(instance.component_objects()))}"
+    # )
 
     # ---------------------------------------------------------
     # Determine the linking variables for THIS subproblem
@@ -182,6 +192,27 @@ def benders_subproblem_worker(
             )
         )
 
+        # -----------------------------------------------------
+        # Save this subproblem's solution
+        # -----------------------------------------------------
+
+        # This needs to be here due to circularity of import
+        from gridpath.run_scenario import save_results
+
+        save_results(
+            scenario_directory,
+            key.weather,
+            key.hydro,
+            key.availability,
+            key.subproblem,
+            key.stage,
+            multi_stage,
+            instance,
+            results,
+            dynamic_components,
+            parsed_arguments,
+        )
+
 def process_subproblem_solution(
     instance,
     results,
@@ -200,12 +231,15 @@ def process_subproblem_solution(
         op_cost = value(instance.MIN_OP_COSTS)
 
         duals = [
-            instance.dual[instance.find_component(name)]
-            for name in linking_vars
+            # The ordinal relationship between the dual variable and variable
+            # should be maintained just through this indexing across all iterations.
+            instance.dual[constraint]
+            for constraint in instance.BendersLinkingConstraints.values()
         ]
 
         return {
             "op_cost": op_cost,
+
             "lambda": duals,
             "theta_coeff": 1,
         }
