@@ -12,6 +12,7 @@ from pyomo.environ import (
     Constraint,
     Suffix
 )
+from copy import deepcopy
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
 from typing import Any, Dict, List, NamedTuple
@@ -71,6 +72,7 @@ def fix_linking_variables(model, planning_sol, linking_vars):
 import multiprocessing as mp
 def benders_subproblem_worker(
     key,
+    planning_constraint_names,
     input_queue,
     output_queue,
     scenario_directory,
@@ -100,6 +102,12 @@ def benders_subproblem_worker(
         parsed_arguments=parsed_arguments,
     )
 
+    # Identify investment-related components
+    shared_constraints = get_shared_constraints(instance,planning_constraint_names)
+
+    for name in shared_constraints:
+        instance.find_component(name).deactivate()
+
     # Create the dual variable to access the dual variables of the linking variables.
     instance.dual = Suffix(direction=Suffix.IMPORT)
     # Create the linking constraints for the operational problem (i.e. y_p = y_p^k as in pecci)
@@ -122,6 +130,7 @@ def benders_subproblem_worker(
             {
                 "status": "READY",
                 "linking_vars": linking_vars,
+                "investment_components": shared_constraints
             }
     )
 
@@ -134,6 +143,15 @@ def benders_subproblem_worker(
         )
     else:
         optimiser = SolverFactory(parsed_arguments.solver)
+
+    # Mute solver output for Benders subproblem iterations.
+    solver_name = parsed_arguments.solver.lower()
+
+    if "mosek" in solver_name:
+        optimiser.options["MSK_IPAR_LOG"] = 0
+
+    elif "gurobi" in solver_name:
+        optimiser.options["OutputFlag"] = 0
 
     # Remain alive for all Benders iterations
 
@@ -151,7 +169,7 @@ def benders_subproblem_worker(
         planning_sol = message["planning_sol"]
 
         # -----------------------------------------------------
-        # Update existing ConcreteModel
+        # Solve the base operational problem
         # -----------------------------------------------------
 
         fix_linking_variables(
@@ -160,17 +178,186 @@ def benders_subproblem_worker(
             linking_vars,
         )
 
+        results = optimiser.solve(
+            instance,
+            tee=False,
+            symbolic_solver_labels=True,
+        )
+
         # -----------------------------------------------------
-        # Solve existing ConcreteModel
+        # CCGT finite-difference diagnostic
         # -----------------------------------------------------
+
+        ccgt_name = "GenNewLin_Build_MW[Gas_CCGT_new,2030]"
+
+        ccgt_fd_diagnostic = None
+
+        if ccgt_name in linking_vars:
+
+            ccgt_value = planning_sol.values[ccgt_name]
+
+            ccgt_constraint = None
+
+            for constraint, var_name in zip(
+                    instance.BendersLinkingConstraints.values(),
+                    linking_vars,
+            ):
+                if var_name == ccgt_name:
+                    ccgt_constraint = constraint
+                    break
+
+            if ccgt_constraint is None:
+                raise RuntimeError(
+                    f"Could not find linking constraint for {ccgt_name}"
+                )
+
+            ccgt_dual = instance.dual.get(
+                ccgt_constraint,
+                None,
+            )
+
+            base_cost = value(instance.MIN_OP_COSTS)
+
+            # -------------------------------------------------
+            # Solve at x + 1 MW
+            # -------------------------------------------------
+
+            planning_sol_plus = deepcopy(planning_sol)
+
+            planning_sol_plus.values[ccgt_name] = (
+                ccgt_value + 1.0
+            )
+
+            fix_linking_variables(
+                instance,
+                planning_sol_plus,
+                linking_vars,
+            )
+
+            results_plus = optimiser.solve(
+                instance,
+                tee=False,
+                symbolic_solver_labels=True,
+            )
+
+            if results_plus.solver.termination_condition == "optimal":
+                plus_cost = value(instance.MIN_OP_COSTS)
+            else:
+                plus_cost = None
+
+            # -------------------------------------------------
+            # Solve at x - 1 MW
+            # -------------------------------------------------
+
+            planning_sol_minus = deepcopy(planning_sol)
+
+            planning_sol_minus.values[ccgt_name] = max(
+                0.0,
+                ccgt_value - 1.0,
+            )
+
+            fix_linking_variables(
+                instance,
+                planning_sol_minus,
+                linking_vars,
+            )
+
+            results_minus = optimiser.solve(
+                instance,
+                tee=False,
+                symbolic_solver_labels=True,
+            )
+
+            if results_minus.solver.termination_condition == "optimal":
+                minus_cost = value(instance.MIN_OP_COSTS)
+            else:
+                minus_cost = None
+
+            # -------------------------------------------------
+            # Calculate finite differences
+            # -------------------------------------------------
+
+            if plus_cost is not None:
+                forward_difference = (
+                    plus_cost - base_cost
+                )
+            else:
+                forward_difference = None
+
+            if minus_cost is not None:
+                backward_difference = (
+                    base_cost - minus_cost
+                )
+            else:
+                backward_difference = None
+
+            if (
+                plus_cost is not None
+                and minus_cost is not None
+            ):
+                x_plus = (
+                    planning_sol_plus.values[ccgt_name]
+                )
+
+                x_minus = (
+                    planning_sol_minus.values[ccgt_name]
+                )
+
+                central_difference = (
+                    plus_cost - minus_cost
+                ) / (
+                    x_plus - x_minus
+                )
+            else:
+                central_difference = None
+
+            ccgt_fd_diagnostic = {
+                "x": ccgt_value,
+                "base_cost": base_cost,
+                "plus_cost": plus_cost,
+                "minus_cost": minus_cost,
+                "forward_difference": forward_difference,
+                "backward_difference": backward_difference,
+                "central_difference": central_difference,
+                "dual": ccgt_dual,
+            }
+
+        # -----------------------------------------------------
+        # Restore the ORIGINAL planning solution
+        # -----------------------------------------------------
+
+        fix_linking_variables(
+            instance,
+            planning_sol,
+            linking_vars,
+        )
 
         results = optimiser.solve(
             instance,
             tee=False,
+            symbolic_solver_labels=True,
         )
 
         # -----------------------------------------------------
-        # Extract ONLY the information Benders needs
+        # Linking-variable diagnostics
+        # -----------------------------------------------------
+
+        linking_diagnostics = []
+
+        for name in linking_vars:
+
+            var = instance.find_component(name)
+
+            linking_diagnostics.append(
+                (
+                    name,
+                    planning_sol.values[name],
+                    value(var),
+                )
+            )
+
+        # -----------------------------------------------------
+        # Extract Benders information from BASE solution
         # -----------------------------------------------------
 
         subop_sol = process_subproblem_solution(
@@ -178,17 +365,19 @@ def benders_subproblem_worker(
             results,
             linking_vars,
             expect_feasible,
-            optimiser
+            optimiser,
         )
 
         # -----------------------------------------------------
-        # Return only small, pickleable data
+        # Return exactly ONE message to master
         # -----------------------------------------------------
 
         output_queue.put(
             (
                 key,
                 subop_sol,
+                linking_diagnostics,
+                ccgt_fd_diagnostic,
             )
         )
 
@@ -196,7 +385,6 @@ def benders_subproblem_worker(
         # Save this subproblem's solution
         # -----------------------------------------------------
 
-        # This needs to be here due to circularity of import
         from gridpath.run_scenario import save_results
 
         save_results(
@@ -455,3 +643,18 @@ def _(m_subproblems: DistributedArrayMock, planning_sol: NamedTuple, expect_feas
         merged_results.update(worker_result)  # Python dictionary merging/updating
 
     return merged_results
+
+def get_shared_constraints(instance, planning_constraint_names):
+
+    from pyomo.environ import Constraint
+
+    shared_constraints = []
+
+    for component in instance.component_objects(
+        Constraint,
+        active=True,
+    ):
+        if component.name in planning_constraint_names:
+            shared_constraints.append(component.name)
+
+    return shared_constraints

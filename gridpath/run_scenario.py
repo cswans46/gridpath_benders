@@ -1253,6 +1253,8 @@ def run_scenario(
                 "objective_values": objective_values,
             }
 
+            # print("HERE IS THE DATA: ", pool_data)
+
             n_tasks = len(pool_data["all_subproblem_data"])
 
             print("# of tasks: ", n_tasks)
@@ -1524,7 +1526,7 @@ def save_results(
     Save objective function value.
     Save constraint duals.
     """
-    if not (parsed_arguments.quiet and instance._is_benders_subproblem):
+    if not (parsed_arguments.quiet and parsed_arguments.benders):
         print("Saving results...")
 
     # TODO: how best to handle non-empty results directories?
@@ -1598,7 +1600,7 @@ def save_results(
             ]["export_summary"](instance=instance, quiet=parsed_arguments.quiet)
 
         if export_summary_rule:
-            if not (parsed_arguments.quiet and instance._is_benders_subproblem):
+            if not (parsed_arguments.quiet and parsed_arguments.benders):
                 print("...exporting summary CSV results")
             export_summary_results(
                 scenario_directory=scenario_directory,
@@ -2020,9 +2022,9 @@ def solve(instance,
         linking_vars = define_linking_vars(instance)
         setup = {
             # Real: Set the maximum number of iterations
-            "MaxIter": 10000,
+            "MaxIter": 1000,
             # Real: Set the desired convergence tolerance between normalised upper and lower bound
-            "ConvTol": 1e-13,
+            "ConvTol": 1e-10,
             # Real: Set the upper bound of time desired for each CPU to spend on solving a problem.
             "MaxCpuTime":100000,
             # Bool: Set to true if the subproblem solutions are expected to be feasible. Otherwise, slacks would be added to the constraints.
@@ -2033,8 +2035,8 @@ def solve(instance,
             "IntegerInvestment": False,
             # Bool: Set to true if stabilisation is requested.
             "StabDynamic": True,
-            # Real: Choose convergence parameter (\gamma \in (0,1)).
-            "StabParam": 0.9}
+            # Real: Choose  convergenceparameter (\gamma \in (0,1)). Pecci \& Jenkins mention 0.025 performs the best on average. 0.5 is a common rule of thumb.
+            "StabParam": 0.025}
 
         # print("\n========== MASTER MODEL BEFORE BENDERS ==========")
         #

@@ -105,9 +105,9 @@ def solve_planning_problem(instance, planning_variables, optimiser):
             planning_variables,
         )
 
-        LB = value(instance.MasterObjective)
+        UB = value(instance.MasterObjective)
 
-        return planning_sol, LB, results
+        return planning_sol, UB, results
 
     raise RuntimeError(
         f"Planning problem failed.\n"

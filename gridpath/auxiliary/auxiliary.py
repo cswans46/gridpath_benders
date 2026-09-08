@@ -109,11 +109,12 @@ def join_sets(mod, set_name_list):
         for s in set_name_list:
             component = getattr(mod, s)
 
-            print(
-                f"join_sets: trying to access {s} | "
-                f"type={type(component).__name__} | "
-                f"constructed={component.is_constructed()}"
-            )
+            if not mod._is_benders_subproblem:
+                print(
+                    f"join_sets: trying to access {s} | "
+                    f"type={type(component).__name__} | "
+                    f"constructed={component.is_constructed()}"
+                )
 
             if not component.is_constructed():
                 raise RuntimeError(

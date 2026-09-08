@@ -5,8 +5,10 @@ import time
 import logging
 import pyomo.environ as pyo
 from pyomo.environ import (
-    SolverFactory
+    SolverFactory,
+    Constraint
 )
+from pyomo.core.expr.visitor import identify_variables
 # from gridpath.benders.planning import add_approximate_variable_cost, solve_planning_problem
 # from gridpath.benders.regularization import solve_int_level_set_problem
 # from gridpath.benders.subproblems import solve_subproblem
@@ -84,6 +86,14 @@ def benders(
     planning_variables = all_variables(planning_problem)
     planning_variable_names = [v.name for v in planning_variables]
 
+    planning_constraint_names = {
+        component.name
+        for component in planning_problem.component_objects(
+            Constraint,
+            active=True,
+        )
+    }
+
     if integer_investment and stab_method != "off":
 
         integer_vars = [v for v in planning_variables if v.is_integer()]
@@ -99,12 +109,20 @@ def benders(
 
     if parsed_arguments.solver_executable is not None:
         optimiser = SolverFactory(
-            parsed_arguments.solver, executable=parsed_arguments.solver_executable
+            parsed_arguments.solver,
+            executable=parsed_arguments.solver_executable,
         )
-        # Otherwise, only pass the solver name; Pyomo will look for the
-        # executable in the PATH
     else:
         optimiser = SolverFactory(parsed_arguments.solver)
+
+    # Mute solver output for Benders subproblem iterations.
+    solver_name = parsed_arguments.solver.lower()
+
+    if "mosek" in solver_name:
+        optimiser.options["MSK_IPAR_LOG"] = 0
+
+    elif "gurobi" in solver_name:
+        optimiser.options["OutputFlag"] = 0
 
     # ---------------------------------------------------------
     # Initially solve planning problem
@@ -112,18 +130,19 @@ def benders(
 
     planning_results = None
 
-    planning_sol, LB, planning_results = solve_planning_problem(
+    planning_sol, master_obj, planning_results = solve_planning_problem(
         planning_problem,
         planning_variable_names,
         optimiser
     )
 
-    UB = math.inf
+    UB = master_obj
+    LB = -math.inf
 
-    LB_hist = []
-    UB_hist = []
-    gap_hist = []
-    cpu_time = []
+    LB_hist = [LB]
+    UB_hist = [math.inf]
+    gap_hist = [math.inf]
+    cpu_time = [time.time() - solver_start]
 
     planning_sol_best = deepcopy(planning_sol)
     subop_sol_best = {}
@@ -157,6 +176,7 @@ def benders(
             target=benders_subproblem_worker,
             args=(
                 key,
+                planning_constraint_names,
                 input_queue,
                 output_queue,
                 scenario_directory,
@@ -173,6 +193,7 @@ def benders(
         output_queues[key] = output_queue
 
     linking_variables_sub = {}
+    investment_components = {}
 
     for key in benders_subproblems:
 
@@ -184,15 +205,16 @@ def benders(
             )
 
         linking_variables_sub[key] = result["linking_vars"]
+        investment_components[key] = result["investment_components"]
 
     for k in range(max_iter + 1):
 
-        planning_sol_hist.append(
-            [
-                planning_sol.values[n]
-                for n in planning_variable_names
-            ]
-        )
+        # planning_sol_hist.append(
+        #     [
+        #         planning_sol.values[n]
+        #         for n in planning_variable_names
+        #     ]
+        # )
 
         # ---------------------------------------------------------
         # Send current planning solution to every operational worker
@@ -210,10 +232,23 @@ def benders(
         # ---------------------------------------------------------
 
         subop_sol = {}
+        all_linking_diagnostics = {}
+        all_ccgt_fd_diagnostics = {}
 
         for key in benders_subproblems:
-            result_key, result = output_queues[key].get()
+            result_key, result, linking_diagnostics, ccgt_fd_diagnostic = (
+                output_queues[key].get()
+            )
+
             subop_sol[result_key] = result
+
+            all_linking_diagnostics[result_key] = (
+                linking_diagnostics
+            )
+
+            all_ccgt_fd_diagnostics[result_key] = (
+                ccgt_fd_diagnostic
+            )
 
         logger.info(
             "Subproblem solve took %.2f seconds",
@@ -224,15 +259,34 @@ def benders(
         # Update upper bound
         # ---------------------------------------------------------
 
-        UB_new = compute_upper_bound(
+        # ---------------------------------------------------------
+        # Evaluate feasible incumbent
+        # ---------------------------------------------------------
+
+        LB_new = compute_incumbent_npv(
             planning_sol,
             subop_sol,
         )
 
-        if UB_new < UB:
-            UB = UB_new
+        # print(
+        #     f"\nITER {k}: "
+        #     f"planning_cost={planning_sol.planning_cost:.15g}, "
+        #     f"LB_new={LB_new:.15g}"
+        # )
+
+        # for key, sp in subop_sol.items():
+        #     print(
+        #         f"  {key}: "
+        #         f"op_cost={sp['op_cost']:.15g}, "
+        #         f"theta_coeff={sp['theta_coeff']}"
+        #     )
+
+        # A feasible solution gives a LOWER bound for maximization
+        if LB_new > LB:
+            LB = LB_new
             planning_sol_best = deepcopy(planning_sol)
             subop_sol_best = deepcopy(subop_sol)
+
 
         # ---------------------------------------------------------
         # Generate Bender's cuts
@@ -249,7 +303,7 @@ def benders(
         # Resolve master
         # ---------------------------------------------------------
 
-        unst_planning_sol, LB_new,planning_results = solve_planning_problem(
+        unst_planning_sol, UB_new,planning_results = solve_planning_problem(
             planning_problem,
             planning_variable_names,
             optimiser
@@ -275,21 +329,76 @@ def benders(
         #         value(planning_problem.vTHETA[key])
         #     )
 
-        LB = max(LB, LB_new)
+        print(
+            f"LB DEBUG: old={LB:.6e}, "
+            f"new={LB_new:.6e}, "
+            f"max={max(LB, LB_new):.6e}"
+        )
+
+        # LB = LB_new
+
+        # Master objective is an UPPER bound for maximization
+        UB = min(UB, UB_new)
 
         # ---------------------------------------------------------
         # Calculate Convergence
         # ---------------------------------------------------------
         # Try this fix if there are no planning variables. I think it should lead to the same thing.
-        if abs(LB) > 1e-10:
-            gap = abs(UB - LB) / abs(LB)
+        if UB != math.inf:
+            gap = abs(UB - LB) / max(abs(UB), 1e-10)
         else:
-            gap = abs(UB - LB)
+            gap = math.inf
+
+        if LB > UB:
+            logger.warning(
+                "LB exceeds UB: LB=%.6f, UB=%.6f",
+                LB,
+                UB,
+            )
+
+            print(f"LB exceeds UB: LB={LB:.6f}, UB={UB:.6f}")
 
         LB_hist.append(LB)
         UB_hist.append(UB)
         gap_hist.append(gap)
         cpu_time.append(time.time() - solver_start)
+
+        planning_npv = pyo.value(planning_problem.ePlanningNPV)
+
+        theta = sum(
+            pyo.value(planning_problem.vTHETA[w])
+            for w in planning_problem.vTHETA
+        )
+
+        master_objective = pyo.value(planning_problem.MasterObjective)
+
+        operational_cost = sum(
+            sp["op_cost"] for sp in subop_sol.values()
+        )
+
+        npv = pyo.value(planning_problem.NPV.expr)
+
+        print_convergence_graph(
+            LB_hist,
+            UB_hist,
+            gap_hist,
+            investment_components,
+            linking_diagnostics=all_linking_diagnostics,
+            subop_sol=subop_sol,
+            planning_sol=planning_sol,
+            unst_planning_sol=unst_planning_sol,
+            linking_variables_sub=linking_variables_sub,
+            planning_problem=planning_problem,
+            planning_cost=planning_npv,
+            operational_cost=operational_cost,
+            theta=theta,
+            master_objective=master_objective,
+            npv=npv,
+            ccgt_fd_diagnostics=all_ccgt_fd_diagnostics,
+            planning_sol_hist=planning_sol_hist,
+            gamma=gamma,
+            planning_variable_names=planning_variable_names,
+        )
 
         logger.info(
             "Iter %d  LB %.3f  UB %.3f  Gap %.5f",
@@ -517,7 +626,7 @@ def update_stab_param(gamma, UB, LB, UB_old, LB_old):
 
     return gamma
 
-def compute_upper_bound(planning_sol,
+def compute_incumbent_npv(planning_sol,
                         subop_sol):
 
     # print("here is the subop_sol: ", subop_sol)
@@ -527,5 +636,561 @@ def compute_upper_bound(planning_sol,
 
     return (
         planning_sol.planning_cost
-        + sum(sp["op_cost"] for sp in subop_sol.values())
+        - sum(sp["op_cost"] for sp in subop_sol.values())
     )
+
+
+def print_convergence_graph(
+    LB_hist,
+    UB_hist,
+    gap_hist,
+    investment_components,
+    linking_diagnostics,
+    subop_sol,
+    planning_sol,
+    unst_planning_sol,
+    linking_variables_sub,
+    planning_problem,
+    planning_cost=None,
+    operational_cost=None,
+    theta=None,
+    master_objective=None,
+    npv=None,
+    ccgt_fd_diagnostics=None,
+    planning_sol_hist=None,
+    gamma=None,
+    planning_variable_names=None,
+    width=70,
+    height=12,
+    history_window=20,
+):
+    """
+    Display Benders convergence directly in the Windows
+    Command Prompt using ASCII/Unicode characters.
+
+    Only the most recent `history_window` iterations are plotted,
+    while the full histories are retained by the Benders algorithm.
+    """
+
+    import os
+    import math
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if not LB_hist:
+        return
+
+    # Clear terminal
+    os.system("cls")
+
+    iteration = len(LB_hist) - 1
+
+    current_lb = LB_hist[-1]
+    current_ub = UB_hist[-1]
+    current_gap = gap_hist[-1]
+
+    planning_npv = pyo.value(planning_problem.ePlanningNPV)
+    theta = sum(
+        pyo.value(planning_problem.vTHETA[w])
+        for w in planning_problem.vTHETA
+    )
+    master_objective = pyo.value(planning_problem.MasterObjective)
+
+    print("=" * (width + 18))
+    print(" BENDERS DECOMPOSITION CONVERGENCE")
+    print("=" * (width + 18))
+
+    print(f" Iteration : {iteration}")
+    print()
+
+    print(" MASTER")
+
+    if master_objective is not None:
+        print(f"   Master objective     : {master_objective:,.6g}")
+
+    print()
+
+    print(" SUBPROBLEMS")
+
+    if operational_cost is not None:
+        print(f"   Operational cost     : {operational_cost:,.6g}")
+
+    if npv is not None:
+        print()
+        print(" ORIGINAL MODEL")
+        print(f"   NPV                  : {npv:,.6g}")
+
+    print("CONVERGENCE CRITERIA")
+    print()
+    print(f"   LB                   : {current_lb:,.6g}")
+    print(
+        f"   UB                   : "
+        f"{'∞' if current_ub == math.inf else f'{current_ub:,.6g}'}"
+    )
+    if math.isfinite(current_gap):
+        print(f" Gap                    : {current_gap:.6e}")
+    else:
+        print(" Gap                    : ∞")
+
+    print()
+    # ---------------------------------------------------------
+    # Log detailed investment-component diagnostics
+    # ---------------------------------------------------------
+
+    logger.info("")
+    logger.info("OPERATIONAL MODEL INVESTMENT COMPONENTS")
+
+    for key, constraints in investment_components.items():
+
+        logger.info(f"\nSubproblem: {key}")
+
+        if constraints:
+            for name in constraints:
+                logger.info(f"    {name}")
+        else:
+            logger.info("    None")
+
+
+    # =========================================================
+    # SELECT PLOTTING WINDOW
+    # =========================================================
+
+    start = max(0, len(LB_hist) - history_window)
+
+    LB_plot = LB_hist[start:]
+    UB_plot = UB_hist[start:]
+    gap_plot = gap_hist[start:]
+
+    plot_start_iteration = start
+    plot_end_iteration = iteration
+
+    # =========================================================
+    # OBJECTIVE BOUNDS
+    # =========================================================
+
+    print(" OBJECTIVE BOUNDS")
+    print()
+
+    finite_values = [
+        x
+        for x in LB_plot + UB_plot
+        if math.isfinite(x)
+    ]
+
+    if finite_values:
+
+        # ---------------------------------------------------------
+        # Determine y-axis range
+        # ---------------------------------------------------------
+
+        ymin = min(finite_values)
+        ymax = max(finite_values)
+
+        if ymax == ymin:
+            padding = max(abs(ymax) * 0.01, 1.0)
+        else:
+            padding = (ymax - ymin) * 0.05
+
+        ymin -= padding
+        ymax += padding
+
+        # ---------------------------------------------------------
+        # Force zero to be included in the range
+        # ---------------------------------------------------------
+
+        if ymin < 0 < ymax:
+            # Make the range symmetric around zero.
+            max_abs = max(abs(ymin), abs(ymax))
+
+            ymin = -max_abs
+            ymax = max_abs
+
+        # -----------------------------------------------------
+        # Map y value to terminal row
+        # -----------------------------------------------------
+
+        def y_to_row(value):
+
+            return int(
+                round(
+                    (ymax - value)
+                    / max(ymax - ymin, 1e-300)
+                    * (height - 1)
+                )
+            )
+
+        # -----------------------------------------------------
+        # Map iteration to terminal column
+        # -----------------------------------------------------
+
+        n = len(LB_plot)
+
+        def x_to_col(i):
+
+            if n <= 1:
+                return width // 2
+
+            return int(
+                i / (n - 1)
+                * (width - 1)
+            )
+
+        # -----------------------------------------------------
+        # Create graph
+        # -----------------------------------------------------
+
+        graph = [
+            [" " for _ in range(width)]
+            for _ in range(height)
+        ]
+
+        # -----------------------------------------------------
+        # Draw line between two points
+        # -----------------------------------------------------
+
+        def draw_segment(
+            x1,
+            y1,
+            x2,
+            y2,
+            symbol="·",
+        ):
+
+            steps = max(
+                abs(x2 - x1),
+                abs(y2 - y1),
+            )
+
+            for j in range(steps + 1):
+
+                t = j / max(steps, 1)
+
+                x = round(
+                    x1 + t * (x2 - x1)
+                )
+
+                y = round(
+                    y1 + t * (y2 - y1)
+                )
+
+                if (
+                    0 <= x < width
+                    and 0 <= y < height
+                    and graph[y][x] == " "
+                ):
+                    graph[y][x] = symbol
+
+        # -----------------------------------------------------
+        # Draw LB line
+        # -----------------------------------------------------
+
+        for i in range(1, n):
+
+            if (
+                math.isfinite(LB_plot[i - 1])
+                and math.isfinite(LB_plot[i])
+            ):
+
+                draw_segment(
+                    x_to_col(i - 1),
+                    y_to_row(LB_plot[i - 1]),
+                    x_to_col(i),
+                    y_to_row(LB_plot[i]),
+                )
+
+        # -----------------------------------------------------
+        # Draw UB line
+        # -----------------------------------------------------
+
+        for i in range(1, n):
+
+            if (
+                math.isfinite(UB_plot[i - 1])
+                and math.isfinite(UB_plot[i])
+            ):
+
+                draw_segment(
+                    x_to_col(i - 1),
+                    y_to_row(UB_plot[i - 1]),
+                    x_to_col(i),
+                    y_to_row(UB_plot[i]),
+                )
+
+        # -----------------------------------------------------
+        # Draw LB observations
+        # -----------------------------------------------------
+
+        for i, value in enumerate(LB_plot):
+
+            if math.isfinite(value):
+
+                x = x_to_col(i)
+                y = y_to_row(value)
+
+                if (
+                    0 <= x < width
+                    and 0 <= y < height
+                ):
+                    graph[y][x] = "L"
+
+        # -----------------------------------------------------
+        # Draw UB observations
+        # -----------------------------------------------------
+
+        for i, value in enumerate(UB_plot):
+
+            if math.isfinite(value):
+
+                x = x_to_col(i)
+                y = y_to_row(value)
+
+                if (
+                    0 <= x < width
+                    and 0 <= y < height
+                ):
+
+                    if graph[y][x] == "L":
+                        graph[y][x] = "◆"
+                    else:
+                        graph[y][x] = "U"
+
+        # -----------------------------------------------------
+        # Print graph
+        # -----------------------------------------------------
+
+        for row in range(height):
+
+            y_value = (
+                ymax
+                - row / max(height - 1, 1)
+                * (ymax - ymin)
+            )
+
+            print(
+                f"{y_value:>12,.5g} │"
+                + "".join(graph[row])
+            )
+
+        print(
+            " " * 13
+            + "└"
+            + "─" * width
+        )
+
+        # -----------------------------------------------------
+        # X axis
+        # -----------------------------------------------------
+
+        if plot_end_iteration > plot_start_iteration:
+
+            print(
+                " " * 14
+                + str(plot_start_iteration)
+                + " " * max(
+                    width - len(str(plot_start_iteration))
+                    - len(str(plot_end_iteration)),
+                    1
+                )
+                + str(plot_end_iteration)
+            )
+        else:
+
+            print(
+                " " * 14
+                + str(plot_start_iteration)
+            )
+
+        print()
+        print(
+            "   L = Lower bound"
+            "    U = Upper bound"
+            "    ◆ = LB = UB"
+        )
+
+    # =========================================================
+    # GAP
+    # =========================================================
+
+    print()
+    print(" OPTIMALITY GAP")
+    print()
+
+    # ---------------------------------------------------------
+    # Check whether the current gap is exactly zero
+    # ---------------------------------------------------------
+
+    if (
+        math.isfinite(current_gap)
+        and current_gap == 0
+    ):
+
+        print("        CONVERGED: LB = UB")
+        print()
+
+    else:
+
+        positive_gaps = [
+            g
+            for g in gap_plot
+            if math.isfinite(g) and g > 0
+        ]
+
+        if positive_gaps:
+
+            # -------------------------------------------------
+            # Log10 transformation
+            # -------------------------------------------------
+
+            log_gaps = [
+                math.log10(g)
+                if math.isfinite(g) and g > 0
+                else None
+                for g in gap_plot
+            ]
+
+            finite_log_gaps = [
+                g
+                for g in log_gaps
+                if g is not None
+            ]
+
+            log_min = min(finite_log_gaps)
+            log_max = max(finite_log_gaps)
+
+            if log_min == log_max:
+                log_min -= 1
+
+            n = len(gap_plot)
+
+            def gap_to_row(value):
+
+                log_value = math.log10(value)
+
+                return int(
+                    round(
+                        (log_max - log_value)
+                        / max(log_max - log_min, 1e-300)
+                        * (height - 1)
+                    )
+                )
+
+            def x_to_col(i):
+
+                if n <= 1:
+                    return width // 2
+
+                return int(
+                    i / (n - 1)
+                    * (width - 1)
+                )
+
+            graph = [
+                [" " for _ in range(width)]
+                for _ in range(height)
+            ]
+
+            # -------------------------------------------------
+            # Draw gap line
+            # -------------------------------------------------
+
+            for i in range(1, n):
+
+                if (
+                    log_gaps[i - 1] is not None
+                    and log_gaps[i] is not None
+                ):
+
+                    x1 = x_to_col(i - 1)
+                    y1 = gap_to_row(gap_plot[i - 1])
+
+                    x2 = x_to_col(i)
+                    y2 = gap_to_row(gap_plot[i])
+
+                    steps = max(
+                        abs(x2 - x1),
+                        abs(y2 - y1),
+                    )
+
+                    for j in range(steps + 1):
+
+                        t = j / max(steps, 1)
+
+                        x = round(
+                            x1 + t * (x2 - x1)
+                        )
+
+                        y = round(
+                            y1 + t * (y2 - y1)
+                        )
+
+                        if (
+                            0 <= x < width
+                            and 0 <= y < height
+                            and graph[y][x] == " "
+                        ):
+                            graph[y][x] = "·"
+
+            # -------------------------------------------------
+            # Draw gap observations
+            # -------------------------------------------------
+
+            for i, value in enumerate(gap_plot):
+
+                if (
+                    math.isfinite(value)
+                    and value > 0
+                ):
+
+                    x = x_to_col(i)
+                    y = gap_to_row(value)
+
+                    if (
+                        0 <= x < width
+                        and 0 <= y < height
+                    ):
+                        graph[y][x] = "●"
+
+            # -------------------------------------------------
+            # Print gap graph
+            # -------------------------------------------------
+
+            for row in range(height):
+
+                exponent = (
+                    log_max
+                    - row / max(height - 1, 1)
+                    * (log_max - log_min)
+                )
+
+                print(
+                    f"  10^{exponent:>5.1f} │"
+                    + "".join(graph[row])
+                )
+
+            print(
+                " " * 15
+                + "└"
+                + "─" * width
+            )
+
+            if plot_end_iteration > plot_start_iteration:
+
+                print(
+                    " " * 16
+                    + str(plot_start_iteration)
+                    + " " * max(
+                        width
+                        - len(str(plot_start_iteration))
+                        - len(str(plot_end_iteration)),
+                        1
+                    )
+                    + str(plot_end_iteration)
+                )
+
+        else:
+
+            print("        No positive finite gaps to plot.")
+
+    print()
+    print("=" * (width + 18))

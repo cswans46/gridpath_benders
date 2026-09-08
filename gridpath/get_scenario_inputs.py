@@ -29,6 +29,8 @@ import pandas as pd
 import sys
 import warnings
 from functools import partial
+import shutil
+from pathlib import Path
 
 from db.common_functions import connect_to_database
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
@@ -329,8 +331,12 @@ def delete_prior_inputs(inputs_directory):
     """
     Delete all .tab files that may exist in the specified directory
     :param inputs_directory: local directory where .tab files are saved
+    :param scenario_directory: the scenario directory
     :return:
     """
+    # First, in case a scenario changes, folders in the main scenario
+    # directory must also be deleted
+
     prior_input_tab_files = [
         f for f in os.listdir(inputs_directory) if f.endswith(".tab")
     ]
