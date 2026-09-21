@@ -311,6 +311,56 @@ def write_model_inputs(
         stage,
         conn,
     )
+
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        if stage == "":
+            stage_temp = 1
+        else:
+            stage_temp = stage
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_temp,
+            conn,
+        ).fetchall()
+
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        carbon_credit_param_rows = query_results.fetchall()
+
+        included_rows = [
+            row
+            for row in carbon_credit_param_rows
+            if int(row[1]) in periods
+        ]
+
+        carbon_credit_param_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCarbonCreditParam:
+            def __init__(self, rows):
+                self.description = query_results.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        query_results = FilteredCarbonCreditParam(carbon_credit_param_rows)
+
     # carbon_tax_zones_carbon_credits_zone_mapping.tab
     df = cursor_to_df(query_results)
     df = df.fillna(".")

@@ -16,7 +16,7 @@
 Constraint total carbon emissions to be less than cap
 """
 
-from pyomo.environ import Var, Constraint, Expression, NonNegativeReals, value
+from pyomo.environ import Var, Constraint, Expression, NonNegativeReals, value, Set
 
 from gridpath.auxiliary.dynamic_components import (
     carbon_cap_balance_emission_components,
@@ -77,6 +77,16 @@ def add_model_components(
         ),
     )
 
+    if m._is_benders_subproblem:
+        if not hasattr(m,"SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[subproblem])
+
+        m.CARBON_CAP_ALLOCATION = Var(
+            m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP,
+            m.SUBPROBLEM,
+            within=NonNegativeReals,
+        )
+
     def carbon_cap_target_rule(mod, z, p):
         """
         Total carbon emitted must be less than target
@@ -85,10 +95,16 @@ def add_model_components(
         :param p:
         :return:
         """
+
+        if mod._is_benders_subproblem:
+            target = mod.CARBON_CAP_ALLOCATION[z, p, subproblem]
+        else:
+            target = mod.carbon_cap_target[z, p]
+
         return (
             mod.Total_Carbon_Emissions_from_All_Sources_Expression[z, p]
             - mod.Carbon_Cap_Overage_Expression[z, p]
-            <= mod.carbon_cap_target[z, p]
+            <= target
             + mod.Total_Carbon_Credits_from_All_Sources_Expression[z, p]
         )
 

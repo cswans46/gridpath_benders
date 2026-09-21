@@ -20,7 +20,7 @@ import csv
 import os.path
 import pandas as pd
 
-from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value
+from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value, Param, Set
 
 from gridpath.common_functions import (
     create_results_df,
@@ -61,6 +61,15 @@ def add_model_components(
         m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET, rule=violation_expression_rule
     )
 
+    if m._is_benders_subproblem:
+        m.SUBPROBLEM = Set(initialize=[subproblem])
+
+        m.PERIOD_ENERGY_TARGET_ALLOCATION = Var(
+            m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
+            m.SUBPROBLEM,
+            within=NonNegativeReals,
+        )
+
     def energy_target_rule(mod, z, p):
         """
         Total delivered energy-target-eligible energy must exceed target
@@ -69,16 +78,21 @@ def add_model_components(
         :param p:
         :return:
         """
+
+        if mod._is_benders_subproblem:
+            target = mod.PERIOD_ENERGY_TARGET_ALLOCATION[z, p, subproblem]
+        else:
+            target = mod.Period_Energy_Target[z, p]
+
         return (
             mod.Total_Delivered_Period_Energy_Target_Energy_MWh[z, p]
             + mod.Period_Energy_Target_Shortage_MWh_Expression[z, p]
-            >= mod.Period_Energy_Target[z, p]
+            >= target
         )
 
     m.Period_Energy_Target_Constraint = Constraint(
         m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET, rule=energy_target_rule
     )
-
 
 def export_results(
     scenario_directory,

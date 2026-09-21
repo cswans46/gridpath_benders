@@ -17,7 +17,7 @@ Aggregate carbon emissions from the project-timepoint level to
 the carbon cap zone - period level.
 """
 
-from pyomo.environ import Expression, value
+from pyomo.environ import Expression, value, Set
 
 from gridpath.auxiliary.dynamic_components import carbon_cap_balance_emission_components
 from gridpath.common_functions import create_results_df
@@ -40,6 +40,11 @@ def add_model_components(
     :param d:
     :return:
     """
+    # Add this set in the case of a benders subproblem (this is otherwise defined in the planning problem)
+    if m._is_benders_subproblem:
+        m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
+            dimen=2, within=m.CARBON_CAP_ZONES * m.PERIODS
+        )
 
     def total_carbon_emissions_rule(mod, z, p):
         """

@@ -1,4 +1,4 @@
-from pyomo.environ import value
+import pyomo.environ as pyo
 from pyomo.environ import (
     Var,
     ConstraintList,
@@ -8,11 +8,12 @@ from pyomo.environ import (
     minimize,
     SolverFactory,
     NonNegativeReals,
+    TerminationCondition,
     Reals,
     Constraint,
     Suffix
 )
-from copy import deepcopy
+
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
 from typing import Any, Dict, List, NamedTuple
@@ -22,6 +23,9 @@ from gridpath.benders.operational_model_creation import (
     define_linking_vars
 )
 import os
+
+class BendersState(NamedTuple):
+    values: tuple
 
 def add_slacks_to_subproblem(model):
 
@@ -56,23 +60,64 @@ def add_slacks_to_subproblem(model):
     model.slack_fix = Constraint(expr=model.slack_max == 0)
 
 def fix_linking_variables(model, planning_sol, linking_vars):
+
     model.BendersLinkingConstraints.clear()
+    # Make a map that maps the constraint to the variable type.
+    model.BendersLinkingConstraintMap = {}
 
     for name in linking_vars:
-        var = model.find_component(name)
-        if var is None:
-            raise ValueError(
-                f"Linking variable {name} not found in subproblem model."
-            )
 
-        model.BendersLinkingConstraints.add(
+        var = model.find_component(name)
+
+        if var is None:
+            continue
+
+        constraint = model.BendersLinkingConstraints.add(
             var == planning_sol.values[name]
         )
+
+        model.BendersLinkingConstraintMap[name] = constraint
+
+def get_discrete_linking_vars(linking_vars_by_type):
+    """
+    Return all discrete linking variable names in a deterministic order.
+    """
+    return (
+        linking_vars_by_type["binary"]
+        + linking_vars_by_type["integer"]
+    )
+
+def get_discrete_state(planning_sol, linking_vars_by_type):
+    """
+    Return the complete discrete linking-variable configuration
+    represented by the planning solution.
+
+    The ordering must remain fixed across all Benders iterations.
+    """
+    discrete_vars = get_discrete_linking_vars(
+        linking_vars_by_type
+    )
+
+    return tuple(
+        planning_sol.values[name]
+        for name in discrete_vars
+    )
+
+def get_continuous_point(planning_sol, linking_vars_by_type):
+    """
+    Return the continuous linking-variable values at the
+    current master solution.
+    """
+    return {
+        name: planning_sol.values[name]
+        for name in linking_vars_by_type["continuous"]
+    }
 
 import multiprocessing as mp
 def benders_subproblem_worker(
     key,
     planning_constraint_names,
+    linking_vars,
     input_queue,
     output_queue,
     scenario_directory,
@@ -102,38 +147,6 @@ def benders_subproblem_worker(
         parsed_arguments=parsed_arguments,
     )
 
-    # Identify investment-related components
-    shared_constraints = get_shared_constraints(instance,planning_constraint_names)
-
-    for name in shared_constraints:
-        instance.find_component(name).deactivate()
-
-    # Create the dual variable to access the dual variables of the linking variables.
-    instance.dual = Suffix(direction=Suffix.IMPORT)
-    # Create the linking constraints for the operational problem (i.e. y_p = y_p^k as in pecci)
-    instance.BendersLinkingConstraints = ConstraintList()
-
-    # print(
-    #     f"Worker started for {key}. "
-    #     f"Components: {len(list(instance.component_objects()))}"
-    # )
-
-    # ---------------------------------------------------------
-    # Determine the linking variables for THIS subproblem
-    # ---------------------------------------------------------
-
-    linking_vars = define_linking_vars(instance)
-
-    # Tell the master that this worker is ready and provide
-    # the names of the linking variables.
-    output_queue.put(
-            {
-                "status": "READY",
-                "linking_vars": linking_vars,
-                "investment_components": shared_constraints
-            }
-    )
-
     # Solver choice INSIDE the worker.
 
     if parsed_arguments.solver_executable is not None:
@@ -148,10 +161,42 @@ def benders_subproblem_worker(
     solver_name = parsed_arguments.solver.lower()
 
     if "mosek" in solver_name:
-        optimiser.options["MSK_IPAR_LOG"] = 0
+        optimiser.options["MSK_IPAR_LOG"] = "0"
 
     elif "gurobi" in solver_name:
         optimiser.options["OutputFlag"] = 0
+
+    linking_vars_by_type = classify_linking_vars(
+        instance,
+        linking_vars,
+    )
+
+    # Identify investment-related components
+    shared_constraints = get_shared_constraints(instance,planning_constraint_names)
+
+    for name in shared_constraints:
+        instance.find_component(name).deactivate()
+
+    # Obtain global LP lower bound
+    recourse_lb = calculate_recourse_lower_bound(
+        instance,
+        optimiser,
+    )
+
+    # Create the dual variable to access the dual variables of the linking variables.
+    instance.dual = Suffix(direction=Suffix.IMPORT)
+    # Create the linking constraints for the operational problem (i.e. y_p = y_p^k as in pecci)
+    instance.BendersLinkingConstraints = ConstraintList()
+
+    # Tell the master that this worker is ready and provide
+    # the names of the linking variables.
+    output_queue.put({
+        "status": "READY",
+        "linking_vars": linking_vars,
+        "linking_vars_by_type": linking_vars_by_type,
+        "investment_components": shared_constraints,
+        "recourse_lower_bound": recourse_lb,
+    })
 
     # Remain alive for all Benders iterations
 
@@ -162,222 +207,110 @@ def benders_subproblem_worker(
         if message == "STOP":
             break
 
-        # -----------------------------------------------------
-        # Message contains information from the master problem
-        # -----------------------------------------------------
-
         planning_sol = message["planning_sol"]
 
-        # -----------------------------------------------------
-        # Solve the base operational problem
-        # -----------------------------------------------------
-
         fix_linking_variables(
             instance,
             planning_sol,
             linking_vars,
         )
 
-        results = optimiser.solve(
+        # =========================================================
+        # 1. Solve the actual operational MIP
+        # =========================================================
+
+        mip_results = optimiser.solve(
             instance,
             tee=False,
             symbolic_solver_labels=True,
         )
 
-        # -----------------------------------------------------
-        # CCGT finite-difference diagnostic
-        # -----------------------------------------------------
+        mip_term = mip_results.solver.termination_condition
 
-        ccgt_name = "GenNewLin_Build_MW[Gas_CCGT_new,2030]"
+        # =========================================================
+        # 2. If MIP is feasible, fix operational integers and
+        #    solve the resulting LP for dual information.
+        # =========================================================
 
-        ccgt_fd_diagnostic = None
+        if mip_term == TerminationCondition.optimal:
 
-        if ccgt_name in linking_vars:
+            op_cost = value(instance.MIN_OP_COSTS)
 
-            ccgt_value = planning_sol.values[ccgt_name]
+            fixed_integer_vars = fix_operational_integer_variables(
+                instance
+            )
 
-            ccgt_constraint = None
+            if fixed_integer_vars:
+                remaining_integer_vars = [
+                    var.name
+                    for var in instance.component_data_objects(
+                        pyo.Var,
+                        descend_into=True,
+                    )
+                    if (var.is_binary() or var.is_integer()) and not var.fixed
+                ]
 
-            for constraint, var_name in zip(
-                    instance.BendersLinkingConstraints.values(),
-                    linking_vars,
-            ):
-                if var_name == ccgt_name:
-                    ccgt_constraint = constraint
-                    break
+                if remaining_integer_vars:
+                    raise RuntimeError(
+                        "Fixed-integer LP still contains unfixed integer "
+                        f"variables: {remaining_integer_vars[:20]}"
+                    )
 
-            if ccgt_constraint is None:
-                raise RuntimeError(
-                    f"Could not find linking constraint for {ccgt_name}"
+            if fixed_integer_vars:
+                lp_results = optimiser.solve(
+                    instance,
+                    tee=False,
+                    symbolic_solver_labels=True,
                 )
 
-            ccgt_dual = instance.dual.get(
-                ccgt_constraint,
-                None,
-            )
+                if (
+                        lp_results.solver.termination_condition
+                        != TerminationCondition.optimal
+                ):
+                    raise RuntimeError(
+                        "Fixed-integer LP did not solve to optimality."
+                    )
 
-            base_cost = value(instance.MIN_OP_COSTS)
-
-            # -------------------------------------------------
-            # Solve at x + 1 MW
-            # -------------------------------------------------
-
-            planning_sol_plus = deepcopy(planning_sol)
-
-            planning_sol_plus.values[ccgt_name] = (
-                ccgt_value + 1.0
-            )
-
-            fix_linking_variables(
+            subop_sol = process_subproblem_solution(
                 instance,
-                planning_sol_plus,
-                linking_vars,
+                mip_results,
+                linking_vars_by_type,
+                expect_feasible,
+                optimiser,
+            )
+            # Add in discrete state assignment.
+            discrete_state = get_discrete_state(
+                planning_sol,
+                linking_vars_by_type,
+            )
+            # Identify the continuous point at the discrete state.
+            continuous_point = get_continuous_point(
+                planning_sol,
+                linking_vars_by_type,
             )
 
-            results_plus = optimiser.solve(
+            subop_sol["discrete_state"] = discrete_state
+            subop_sol["continuous_point"] = continuous_point
+
+            # Restore the MIP
+            for var, original_domain in fixed_integer_vars:
+                var.domain = original_domain
+                var.unfix()
+
+        else:
+
+            subop_sol = process_subproblem_solution(
                 instance,
-                tee=False,
-                symbolic_solver_labels=True,
+                mip_results,
+                linking_vars_by_type,
+                expect_feasible,
+                optimiser,
             )
-
-            if results_plus.solver.termination_condition == "optimal":
-                plus_cost = value(instance.MIN_OP_COSTS)
-            else:
-                plus_cost = None
-
-            # -------------------------------------------------
-            # Solve at x - 1 MW
-            # -------------------------------------------------
-
-            planning_sol_minus = deepcopy(planning_sol)
-
-            planning_sol_minus.values[ccgt_name] = max(
-                0.0,
-                ccgt_value - 1.0,
-            )
-
-            fix_linking_variables(
-                instance,
-                planning_sol_minus,
-                linking_vars,
-            )
-
-            results_minus = optimiser.solve(
-                instance,
-                tee=False,
-                symbolic_solver_labels=True,
-            )
-
-            if results_minus.solver.termination_condition == "optimal":
-                minus_cost = value(instance.MIN_OP_COSTS)
-            else:
-                minus_cost = None
-
-            # -------------------------------------------------
-            # Calculate finite differences
-            # -------------------------------------------------
-
-            if plus_cost is not None:
-                forward_difference = (
-                    plus_cost - base_cost
-                )
-            else:
-                forward_difference = None
-
-            if minus_cost is not None:
-                backward_difference = (
-                    base_cost - minus_cost
-                )
-            else:
-                backward_difference = None
-
-            if (
-                plus_cost is not None
-                and minus_cost is not None
-            ):
-                x_plus = (
-                    planning_sol_plus.values[ccgt_name]
-                )
-
-                x_minus = (
-                    planning_sol_minus.values[ccgt_name]
-                )
-
-                central_difference = (
-                    plus_cost - minus_cost
-                ) / (
-                    x_plus - x_minus
-                )
-            else:
-                central_difference = None
-
-            ccgt_fd_diagnostic = {
-                "x": ccgt_value,
-                "base_cost": base_cost,
-                "plus_cost": plus_cost,
-                "minus_cost": minus_cost,
-                "forward_difference": forward_difference,
-                "backward_difference": backward_difference,
-                "central_difference": central_difference,
-                "dual": ccgt_dual,
-            }
-
-        # -----------------------------------------------------
-        # Restore the ORIGINAL planning solution
-        # -----------------------------------------------------
-
-        fix_linking_variables(
-            instance,
-            planning_sol,
-            linking_vars,
-        )
-
-        results = optimiser.solve(
-            instance,
-            tee=False,
-            symbolic_solver_labels=True,
-        )
-
-        # -----------------------------------------------------
-        # Linking-variable diagnostics
-        # -----------------------------------------------------
-
-        linking_diagnostics = []
-
-        for name in linking_vars:
-
-            var = instance.find_component(name)
-
-            linking_diagnostics.append(
-                (
-                    name,
-                    planning_sol.values[name],
-                    value(var),
-                )
-            )
-
-        # -----------------------------------------------------
-        # Extract Benders information from BASE solution
-        # -----------------------------------------------------
-
-        subop_sol = process_subproblem_solution(
-            instance,
-            results,
-            linking_vars,
-            expect_feasible,
-            optimiser,
-        )
-
-        # -----------------------------------------------------
-        # Return exactly ONE message to master
-        # -----------------------------------------------------
 
         output_queue.put(
             (
                 key,
                 subop_sol,
-                linking_diagnostics,
-                ccgt_fd_diagnostic,
             )
         )
 
@@ -396,39 +329,52 @@ def benders_subproblem_worker(
             key.stage,
             multi_stage,
             instance,
-            results,
+            mip_results,
             dynamic_components,
             parsed_arguments,
         )
 
 def process_subproblem_solution(
     instance,
-    results,
-    linking_vars,
+    mip_results,
+    linking_vars_by_type,
     expect_feasible,
     optimiser,
 ):
-    status = results.solver.status
-    term = results.solver.termination_condition
+    mip_term = mip_results.solver.termination_condition
 
     # ---------------------------------------------------------
-    # Feasible case
+    # Feasible MIP
     # ---------------------------------------------------------
 
-    if term == "optimal":
+    if mip_term == TerminationCondition.optimal:
+
         op_cost = value(instance.MIN_OP_COSTS)
 
-        duals = [
-            # The ordinal relationship between the dual variable and variable
-            # should be maintained just through this indexing across all iterations.
-            instance.dual[constraint]
-            for constraint in instance.BendersLinkingConstraints.values()
-        ]
+        continuous_lambda = {}
+
+        for name in linking_vars_by_type["continuous"]:
+
+            constraint = instance.BendersLinkingConstraintMap[name]
+
+            dual = instance.dual.get(
+                constraint,
+                None,
+            )
+
+            if dual is None:
+                raise RuntimeError(
+                    f"No dual found for continuous linking "
+                    f"variable '{name}' after solving the "
+                    "fixed-integer LP."
+                )
+
+            continuous_lambda[name] = dual
 
         return {
+            "feasible": True,
             "op_cost": op_cost,
-
-            "lambda": duals,
+            "continuous_lambda": continuous_lambda,
             "theta_coeff": 1,
         }
 
@@ -441,145 +387,159 @@ def process_subproblem_solution(
             "Subproblem infeasible (expected feasible)."
         )
 
-    # ---------------------------------------------------------
-    # Solve feasibility problem
-    # ---------------------------------------------------------
-
     instance.slack_fix.deactivate()
-
     instance.obj.deactivate()
 
     instance.feasibility_obj = Objective(
         expr=instance.slack_max
     )
 
-    optimiser.solve(instance)
+    feasibility_results = optimiser.solve(instance)
+
+    if (
+            feasibility_results.solver.termination_condition
+            != TerminationCondition.optimal
+    ):
+        raise RuntimeError(
+            "Feasibility subproblem did not solve to optimality."
+        )
+
+    fixed_integer_vars = fix_operational_integer_variables(instance)
+
+    if fixed_integer_vars:
+        feasibility_lp_results = optimiser.solve(
+            instance,
+            tee=False,
+            symbolic_solver_labels=True,
+        )
+
+        if (
+                feasibility_lp_results.solver.termination_condition
+                != TerminationCondition.optimal
+        ):
+            raise RuntimeError(
+                "Fixed-integer feasibility LP did not solve "
+                "to optimality."
+            )
+
+    continuous_lambda = {}
+
+    for name in linking_vars_by_type["continuous"]:
+
+        constraint = instance.BendersLinkingConstraintMap[name]
+
+        dual = instance.dual.get(constraint, None)
+
+        if dual is None:
+            raise RuntimeError(
+                f"No dual found for continuous linking "
+                f"variable '{name}' in feasibility problem."
+            )
+
+        continuous_lambda[name] = dual
 
     op_cost = value(instance.feasibility_obj)
 
-    duals = [
-        instance.dual[instance.find_component(name)]
-        for name in linking_vars
-    ]
+    for var in fixed_integer_vars:
+        var.unfix()
 
     instance.feasibility_obj.deactivate()
     instance.obj.activate()
     instance.slack_fix.activate()
 
     return {
+        "feasible": False,
         "op_cost": op_cost,
-        "lambda": duals,
+        "continuous_lambda": continuous_lambda,
         "theta_coeff": 0,
     }
 
-def parallelise_solve(pool_data):
+def relax_operational_integrality(model):
+    """Relax all binary and integer variables to continuous variables."""
 
-    # Here model will be the subproblems. We will need an index with more
-    # features than this though.
-    (
-        key,
-        model,
-        planning_sol,
-        linking_variables_sub,
-        expect_feasible,
-        optimiser,
-    ) = pool_data
+    for var in model.component_data_objects(
+        Var,
+        descend_into=True,
+    ):
+        if var.is_binary() or var.is_integer():
+            var.domain = Reals
 
+def calculate_recourse_lower_bound(instance, optimiser):
+    lp_instance = instance.clone()
 
-    subop_sol = solve_subproblem(
-        model=model,
-        planning_sol=planning_sol,
-        linking_vars=linking_variables_sub,
-        expect_feasible=expect_feasible,
-        optimiser=optimiser
-    )
+    relax_operational_integrality(lp_instance)
 
-    return subop_sol
+    results = optimiser.solve(lp_instance)
 
-def solve_subproblem(model,
-                     planning_sol,
-                     linking_vars,
-                     expect_feasible,
-                     optimiser):
-
-    fix_linking_variables(model, planning_sol, linking_vars)
-
-    results = optimiser.solve(model, tee=False)
-
-    status = results.solver.status
-    term = results.solver.termination_condition
-
-
-    # feasible case
-
-    if term == "optimal":
-
-        op_cost = value(model.MIN_OP_COSTS)
-
-        duals = [
-            model.dual[model.find_component(name)]
-            for name in linking_vars
-        ]
-
-        return {
-            "op_cost": op_cost,
-            "lambda": duals,
-            "theta_coeff": 1,
-        }
-
-
-    # infeasible case
-
-    if expect_feasible:
-
-        raise RuntimeError("Subproblem infeasible (expected feasible).")
-
-
-    # feasibility cut
-
-    model.slack_fix.deactivate()
-
-    model.obj.deactivate()
-    model.feasibility_obj = Objective(expr=model.slack_max)
-
-    optimiser.solve(model)
-
-    op_cost = value(model.feasibility_obj)
-
-    duals = [
-        model.dual[model.find_component(name)]
-        for name in linking_vars
-    ]
-
-    model.feasibility_obj.deactivate()
-    model.obj.activate()
-    model.slack_fix.activate()
-
-    return {
-        "op_cost": op_cost,
-        "lambda": duals,
-        "theta_coeff": 0,
-    }
-
-def solve_local_subproblems(subproblems, planning_sol, expect_feasible, solver):
-
-    results = {}
-
-    for sp in subproblems:
-
-        m = sp["model"]
-        w = sp["subproblem_index"]
-        linking = sp["linking_variables_sub"]
-
-        results[w] = solve_subproblem(
-            m,
-            planning_sol,
-            linking,
-            expect_feasible,
-            solver,
+    if (
+        results.solver.termination_condition
+        != TerminationCondition.optimal
+    ):
+        raise RuntimeError(
+            "LP relaxation did not solve to optimality."
         )
 
-    return results
+    lower_bound = value(
+        lp_instance.MIN_OP_COSTS
+    )
+
+    return lower_bound
+
+def fix_operational_integer_variables(model):
+    fixed_vars = []
+
+    for var in model.component_data_objects(
+        pyo.Var,
+        descend_into=True,
+    ):
+        if var.is_binary() or var.is_integer():
+
+            if var.value is None:
+                raise RuntimeError(
+                    f"Operational integer variable {var.name} "
+                    "has no value after MIP solve."
+                )
+
+            original_domain = var.domain
+
+            var.fix()
+            var.domain = Reals
+
+            fixed_vars.append(
+                (var, original_domain)
+            )
+
+    return fixed_vars
+
+def classify_linking_vars(model, linking_vars):
+    classified = {
+        "continuous": [],
+        "integer": [],
+        "binary": [],
+    }
+
+    for name in linking_vars:
+        var = model.find_component(name)
+
+        if var is None:
+            continue
+
+        if var.is_binary():
+            classified["binary"].append(name)
+
+        elif var.is_integer():
+            classified["integer"].append(name)
+
+        elif var.is_continuous():
+            classified["continuous"].append(name)
+
+        else:
+            raise TypeError(
+                f"Unsupported domain for linking variable {name}: "
+                f"{var.domain}"
+            )
+
+    return classified
 
 # ==========================================
 # 1. Define the Generic Base Function

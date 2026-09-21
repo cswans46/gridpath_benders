@@ -281,6 +281,71 @@ def write_model_inputs(
         conn,
     )
 
+    if subproblem != "":
+        # Get project-vintage-lifetime combinations from database
+        c = conn.cursor()
+        # Gather vintage, project, lifetime map for filtering
+        vintage_project_lifetimes = [
+            (int(str(vintage)[:4]), project, lifetime)
+            for vintage, project, lifetime in c.execute(
+                f"""
+                SELECT vintage, project, operational_lifetime_yrs
+                FROM inputs_project_new_cost
+                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        excluded_projects = {
+            project
+            for project in {
+                project
+                for vintage, project, lifetime in vintage_project_lifetimes
+            }
+            if all(
+                period < vintage or period >= vintage + lifetime
+                for vintage, proj, lifetime in vintage_project_lifetimes
+                if proj == project
+                for period in periods
+            )
+        }
+
+        # Filter performance_standard.tab
+        project_rows = [
+            row
+            for row in project_zones.fetchall()
+            if row[0] not in excluded_projects
+        ]
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredProjectZones:
+            def __init__(self, rows):
+                self.description = project_zones.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+        project_zones = FilteredProjectZones(project_rows)
+
     with open(
         os.path.join(
             scenario_directory,

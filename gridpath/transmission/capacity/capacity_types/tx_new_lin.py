@@ -350,13 +350,17 @@ def add_model_components(
     # Constraints
     ###########################################################################
 
-    m.TxNewLin_Min_Cum_Build_Constraint = Constraint(
-        m.TX_NEW_LIN_VNTS_W_MIN_CONSTRAINT, rule=min_cum_build_rule
-    )
+    # Exclude these from Benders subproblems since they will be filtered out anyway.
+    if not m._is_benders_subproblem:
+        m.TxNewLin_Min_Cum_Build_Constraint = Constraint(
+            m.TX_NEW_LIN_VNTS_W_MIN_CONSTRAINT,
+            rule=min_cum_build_rule
+        )
 
-    m.TxNewLin_Max_Cum_Build_Constraint = Constraint(
-        m.TX_NEW_LIN_VNTS_W_MAX_CONSTRAINT, rule=max_cum_build_rule
-    )
+        m.TxNewLin_Max_Cum_Build_Constraint = Constraint(
+            m.TX_NEW_LIN_VNTS_W_MAX_CONSTRAINT,
+            rule=max_cum_build_rule
+        )
 
     # Dynamic Components
     ###########################################################################

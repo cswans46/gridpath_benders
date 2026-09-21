@@ -209,6 +209,49 @@ def write_model_inputs(
         conn,
     )
 
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        performance_standard_rows = performance_standard.fetchall()
+
+        included_rows = [
+            row
+            for row in performance_standard_rows
+            if int(row[1]) in periods
+        ]
+
+        performance_standard_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCarbonTax:
+            def __init__(self, rows):
+                self.description = performance_standard.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        performance_standard = FilteredCarbonTax(performance_standard_rows)
+
     with open(
         os.path.join(
             scenario_directory,

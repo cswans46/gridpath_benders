@@ -124,8 +124,8 @@ def solve_int_level_set_problem(
     #
     # print("===========================================")
 
-    tol = 1e-6 * max(1.0, abs(level_bound))
-
+    # tol = 1e-6 * max(1.0, abs(level_bound))
+    #
     # if level_value < level_bound - tol:
     #     raise RuntimeError(
     #         "\nLEVEL-SET SOLVE RETURNED AN INFEASIBLE SOLUTION\n"
@@ -142,11 +142,7 @@ def solve_int_level_set_problem(
     # ------------------------------------------------------------
     if (
         status == SolverStatus.ok
-        and term
-        in (
-            TerminationCondition.optimal,
-            TerminationCondition.locallyOptimal,
-        )
+        and term == TerminationCondition.optimal
     ):
         planning_sol = process_planning_sol(
             model,

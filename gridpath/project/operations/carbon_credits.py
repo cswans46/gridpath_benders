@@ -604,6 +604,152 @@ def write_model_inputs(
         conn,
     )
 
+    if subproblem != "":
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        # Fetch this subproblem's periods.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # --------------------------------------------------------------
+        # Get project-vintage-lifetime combinations.
+        # --------------------------------------------------------------
+
+        c = conn.cursor()
+
+        vintage_project_lifetimes = [
+            (int(str(vintage)[:4]), project, lifetime)
+            for vintage, project, lifetime in c.execute(
+                f"""
+                SELECT vintage, project, operational_lifetime_yrs
+                FROM inputs_project_new_cost
+                WHERE project_new_cost_scenario_id =
+                    {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+
+        # --------------------------------------------------------------
+        # Identify projects with at least one active vintage in one of
+        # this subproblem's operational periods.
+        # --------------------------------------------------------------
+
+        included_projects = {
+            project
+            for project in {
+                project
+                for _, project, _ in vintage_project_lifetimes
+            }
+            if all(
+                any(
+                    vintage <= period < vintage + lifetime
+                    for vintage, proj, lifetime in vintage_project_lifetimes
+                    if proj == project
+                )
+                for period in periods
+            )
+        }
+
+        # --------------------------------------------------------------
+        # Filter project_generation_zones.
+        # --------------------------------------------------------------
+
+        generation_zones_rows = project_generation_zones.fetchall()
+
+        generation_included_rows = [
+            row
+            for row in generation_zones_rows
+            if row[0] in included_projects
+        ]
+
+        # --------------------------------------------------------------
+        # Filter project_purchase_zones.
+        # --------------------------------------------------------------
+
+        purchase_zones_rows = project_purchase_zones.fetchall()
+
+        purchase_included_rows = [
+            row
+            for row in purchase_zones_rows
+            if row[0] in included_projects
+        ]
+
+        # --------------------------------------------------------------
+        # Filter project_carbon_credits by period.
+        #
+        # This remains a separate filter because carbon credits are
+        # themselves period-specific.
+        # --------------------------------------------------------------
+
+        carbon_credits_rows = project_carbon_credits.fetchall()
+
+        credit_included_rows = [
+            row for row in carbon_credits_rows
+            if row[0] in included_projects
+               and int(row[1]) in periods
+        ]
+
+        # ------------------------------------------------------------------
+        # Replace cursors with filtered iterable objects.
+        # ------------------------------------------------------------------
+
+        class FilteredProjectCarbonCredits:
+            def __init__(self, rows):
+                self.description = project_carbon_credits.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class FilteredProjectGenerationZones:
+            def __init__(self, rows):
+                self.description = project_generation_zones.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class FilteredProjectPurchaseZones:
+            def __init__(self, rows):
+                self.description = project_purchase_zones.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        project_carbon_credits = FilteredProjectCarbonCredits(
+            credit_included_rows
+        )
+
+        project_generation_zones = FilteredProjectGenerationZones(
+            generation_included_rows
+        )
+
+        project_purchase_zones = FilteredProjectPurchaseZones(
+            purchase_included_rows
+        )
+
     # projects.tab
     # Make a dict for easy access
     prj_zone_dict = dict()

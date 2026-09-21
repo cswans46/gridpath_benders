@@ -155,6 +155,11 @@ def get_inputs_from_database(
     :param conn: database connection
     :return:
     """
+    # Add temporary hydro iteration update here since Benders will read this in as 0
+    if hydro_iteration == 0:
+        hydro_iteration_temp = 1
+    else:
+        hydro_iteration_temp = hydro_iteration
 
     c = conn.cursor()
     water_inflows = c.execute(
@@ -179,10 +184,11 @@ def get_inputs_from_database(
                     WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
                     AND subproblem_id = {subproblem}
                     AND stage_id = {stage})
-                AND hydro_iteration = {hydro_iteration}
+                AND hydro_iteration = {hydro_iteration_temp}
                 ;
                 """
     )
+
     return water_inflows
 
 
@@ -277,6 +283,5 @@ def write_model_inputs(
                 "exogenous_water_inflow_rate_vol_per_sec",
             ]
         )
-
         for row in inflows:
             writer.writerow(row)

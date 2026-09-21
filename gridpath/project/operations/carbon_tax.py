@@ -513,6 +513,86 @@ def write_model_inputs(
         conn,
     )
 
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        # Get project-vintage-lifetime combinations from database
+        c = conn.cursor()
+
+        new_project = [
+            (int(str(vintage)[:4]), project)
+            for vintage, project in c.execute(
+                f"""
+                SELECT vintage, project
+                FROM inputs_project_new_cost
+                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+        spec_project = [
+            (int(str(period)[:4]), project)
+            for period, project in c.execute(
+                f"""
+                SELECT period, project
+                FROM inputs_project_specified_capacity
+                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+
+        project_years = spec_project + new_project
+
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        period = next(iter(periods))
+
+        carbon_tax_allowance_rows = project_carbon_tax_allowance.fetchall()
+
+        valid_projects = {
+            project
+            for vintage, project in project_years
+            if vintage == period
+        }
+
+        included_rows = [
+            row
+            for row in carbon_tax_allowance_rows
+            if row[0] in valid_projects
+               and int(str(row[1])[:4]) == period
+        ]
+
+        carbon_tax_allowance_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCarbonTax:
+            def __init__(self, rows):
+                self.description = project_carbon_tax_allowance.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        project_carbon_tax_allowance = FilteredCarbonTax(carbon_tax_allowance_rows)
+
     # projects.tab
     # Make a dict for easy access
     prj_zone_dict = dict()

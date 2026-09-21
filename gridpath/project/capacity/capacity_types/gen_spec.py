@@ -250,15 +250,17 @@ def write_model_inputs(
     :return:
     """
 
-    spec_project_params = get_model_inputs_from_database(
-        scenario_id,
-        subscenarios,
-        weather_iteration,
-        hydro_iteration,
-        availability_iteration,
-        subproblem,
-        stage,
-        conn,
+    spec_project_params = list(
+        get_model_inputs_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+            conn,
+        )
     )
 
     # If spec_capacity_period_params.tab file already exists, append

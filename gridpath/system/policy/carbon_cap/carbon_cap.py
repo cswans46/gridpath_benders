@@ -37,8 +37,8 @@ def add_model_components(
     subproblem,
     stage,
 ):
-    """
 
+    """
     :param m:
     :param d:
     :return:
@@ -203,6 +203,49 @@ def write_model_inputs(
         db_stage,
         conn,
     )
+
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        carbon_cap_targets_rows = carbon_cap_targets.fetchall()
+
+        included_rows = [
+            row
+            for row in carbon_cap_targets_rows
+            if int(row[1]) in periods
+        ]
+
+        carbon_cap_targets_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCarbonTax:
+            def __init__(self, rows):
+                self.description = carbon_cap_targets.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        carbon_cap_targets = FilteredCarbonTax(carbon_cap_targets_rows)
 
     with open(
         os.path.join(

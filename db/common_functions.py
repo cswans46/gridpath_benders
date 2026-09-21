@@ -90,9 +90,97 @@ def spin_on_database_lock(
             print("...retrying (attempt {} of {})...".format(i, max_attempts))
         try:
             if many:
-                cursor.executemany(sql, data)
+
+                for ii, row in enumerate(data):
+                    try:
+                        cursor.execute(sql, row)
+                    except sqlite3.IntegrityError as e:
+                        print("\n" + "=" * 80)
+                        print("INTEGRITY ERROR")
+                        print("Row number:", ii)
+                        print("Row:", row)
+                        print("\nSQL:")
+                        print(sql)
+                        print("\nError:", e)
+                        print("=" * 80 + "\n")
+                        raise
             else:
-                cursor.execute(sql, data)
+                try:
+                    cursor.execute(sql, data)
+                except sqlite3.IntegrityError as e:
+                    print("\n" + "=" * 100)
+                    print("INTEGRITY ERROR")
+                    print("Table: scenarios")
+                    print("Data:", data)
+                    print("\nSQL:")
+                    print(sql)
+                    print("\nError:", e)
+
+                    # Get the column names from the INSERT statement
+                    column_text = sql.split("INSERT INTO scenarios (", 1)[1].split(") VALUES", 1)[0]
+                    columns = [c.strip() for c in column_text.split(",")]
+
+                    print("\nFOREIGN KEY CHECK:")
+                    print("-" * 100)
+
+                    # Get all FK definitions for scenarios
+                    foreign_keys = cursor.execute(
+                        "PRAGMA foreign_key_list(scenarios)"
+                    ).fetchall()
+
+                    for fk in foreign_keys:
+                        # PRAGMA foreign_key_list columns:
+                        # (id, seq, table, from, to, on_update, on_delete, match, ...)
+                        fk_id = fk[0]
+                        seq = fk[1]
+                        parent_table = fk[2]
+                        local_column = fk[3]
+                        parent_column = fk[4]
+
+                        if local_column not in columns:
+                            print(f"WARNING: FK column {local_column} not found in INSERT")
+                            continue
+
+                        index = columns.index(local_column)
+                        value = data[index]
+
+                        # NULL foreign keys are allowed
+                        if value is None:
+                            continue
+
+                        # Handle pandas NaN
+                        try:
+                            if value != value:
+                                continue
+                        except TypeError:
+                            pass
+
+                        # Check whether the referenced row exists
+                        query = f"""
+                                SELECT 1
+                                FROM {parent_table}
+                                WHERE {parent_column} = ?
+                                LIMIT 1
+                            """
+
+                        result = cursor.execute(query, (value,)).fetchone()
+
+                        if result is None:
+                            print("\n*** MISSING FOREIGN KEY ***")
+                            print("FK ID:", fk_id)
+                            print("Local column:", local_column)
+                            print("Value:", value)
+                            print("Parent table:", parent_table)
+                            print("Parent column:", parent_column)
+                        else:
+                            print(
+                                f"OK: {local_column} = {value} "
+                                f"-> {parent_table}.{parent_column}"
+                            )
+
+                    print("-" * 100)
+                    print("=" * 100 + "\n")
+                    raise
             if commit_immediately:
                 conn.commit()
         except sqlite3.OperationalError as e:

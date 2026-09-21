@@ -39,6 +39,7 @@ from pyomo.environ import (
     Var,
     Expression,
     NonNegativeReals,
+    NonNegativeIntegers,
     value,
 )
 
@@ -235,8 +236,11 @@ def add_model_components(
 
     # Sets
     ###########################################################################
-
-    m.GEN_NEW_LIN_VNTS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
+    if m._is_benders_subproblem:
+        # Add this in here because vintages and periods are different things in Benders subproblems.
+        m.GEN_NEW_LIN_VNTS = Set(dimen=2, within=m.PROJECTS * NonNegativeIntegers)
+    else:
+        m.GEN_NEW_LIN_VNTS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
 
     # Required Params
     ###########################################################################
@@ -641,37 +645,75 @@ def write_model_inputs(
         conn,
     )
 
-    # # Filter new-build costs to only include vintages
-    # # that exist in this subproblem.
-    # # TODO: Need to add an if parsed_arguments.benders: here.
-    # if subproblem != "":
-    #     periods_path = os.path.join(
-    #         scenario_directory,
-    #         weather_iteration,
-    #         hydro_iteration,
-    #         availability_iteration,
-    #         subproblem,
-    #         stage,
-    #         "inputs",
-    #         "periods.tab",
-    #     )
-    #
-    #     with open(periods_path, "r", newline="") as periods_file:
-    #         reader = csv.DictReader(
-    #             periods_file,
-    #             delimiter="\t",
-    #         )
-    #
-    #         periods = {
-    #             int(row["period"])
-    #             for row in reader
-    #         }
-    #
-    #     new_gen_costs = [
-    #         row
-    #         for row in new_gen_costs
-    #         if int(row[1]) in periods
-    #     ]
+    if subproblem != "":
+
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        if stage == "":
+            stage_temp = 1
+        else:
+            stage_temp = stage
+
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_temp,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        new_gen_costs_rows = new_gen_costs.fetchall()
+
+        # Keep only project-vintage combinations that are active
+        # during at least one of this subproblem's periods.
+        included_project_vintages = {
+            (project, int(str(vintage)[:4]))
+            for project, vintage, lifetime, fixed_cost, financial_lifetime, annualized_cost
+            in new_gen_costs_rows
+            if any(
+                period >= int(str(vintage)[:4])
+                and period < int(str(vintage)[:4]) + lifetime
+                for period in periods
+            )
+        }
+
+        # Filter new_gen_costs
+        new_gen_costs_rows = [
+            row
+            for row in new_gen_costs_rows
+            if (row[0], int(str(row[1])[:4])) in included_project_vintages
+        ]
+
+        # Projects that have at least one valid vintage
+        included_projects = {
+            project
+            for project, vintage in included_project_vintages
+        }
+
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredNewGenCostLin:
+            def __init__(self, rows):
+                self.description = new_gen_costs.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        new_gen_costs = FilteredNewGenCostLin(new_gen_costs_rows)
 
     with open(
         os.path.join(

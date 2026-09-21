@@ -235,6 +235,7 @@ def all_modules_list():
         "system.policy.generic_policy.aggregate_project_policy_contributions",
         "system.policy.generic_policy.policy_target_balance",
         "system.policy.generic_policy.consolidate_results",
+        "system.policy.benders_policy_constraint",
         "system.reliability.prm.aggregate_project_simple_prm_contribution",
         "system.reliability.prm.capacity_contribution_transfers",
         "system.reliability.prm.elcc_surface",

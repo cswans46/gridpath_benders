@@ -681,6 +681,7 @@ def write_model_inputs(
         stage,
         conn,
     )
+
     fname = "variable_generator_profiles.tab"
 
     write_tab_file_model_inputs(

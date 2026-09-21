@@ -1,7 +1,7 @@
 from pyomo.environ import AbstractModel
 from pyomo.core.expr.visitor import identify_variables,identify_components
 import logging
-from pyomo.environ import Expression, Param,Set
+from pyomo.environ import Expression, Param,Set,Var
 from pyomo.core.expr.visitor import identify_variables, identify_components
 import os
 from pyomo.common.collections import ComponentSet
@@ -9,6 +9,7 @@ from pyomo.common.collections import ComponentSet
 logger = logging.getLogger(__name__)
 
 def define_linking_vars(m):
+
     investment_exprs = [
         "Capacity_MW",
         "Tx_Min_Capacity_MW",
@@ -17,9 +18,18 @@ def define_linking_vars(m):
         "Energy_Storage_Capacity_MWh",
     ]
 
+    investment_vars = [
+        "CARBON_CAP_ALLOCATION",
+    ]
+
+    if hasattr(m, "PERIOD_ENERGY_TARGET_ALLOCATION"):
+        investment_vars = investment_vars + ["PERIOD_ENERGY_TARGET_ALLOCATION"]
+
     linking_vars = set()
 
+    # Variables identified through investment expressions
     for expr_name in investment_exprs:
+
         expr_component = getattr(m, expr_name)
 
         if expr_component.is_indexed():
@@ -31,8 +41,23 @@ def define_linking_vars(m):
             expressions = [expr_component.expr]
 
         for expr in expressions:
+
             for var in identify_variables(expr):
                 linking_vars.add(var.name)
+
+    # Explicitly add all VarData objects belonging to
+    # policy allocation variables.
+    for var_name in investment_vars:
+
+        var_component = getattr(m, var_name)
+
+        if var_component.is_indexed():
+
+            for var in var_component.values():
+                linking_vars.add(var.name)
+
+        else:
+            linking_vars.add(var_component.name)
 
     return list(linking_vars)
 
@@ -47,10 +72,13 @@ def create_operational_problem_benders(
     from gridpath.run_scenario import (
         set_up_gridpath_modules,
         create_abstract_model,
-        add_slacks_to_subproblem,
         load_scenario_data,
         create_problem_instance,
         fix_variables
+    )
+
+    from gridpath.benders.subproblems import (
+        add_slacks_to_subproblem
     )
 
     """
@@ -121,7 +149,8 @@ def create_operational_problem_benders(
         key.hydro,
         key.availability,
         key.subproblem,
-        key.stage
+        key.stage,
+        temporal_subproblems=None
     )
 
     if expect_feasible:

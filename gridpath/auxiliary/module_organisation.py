@@ -6,6 +6,30 @@ from collections import Counter
 def define_benders_modules(modules_to_use):
 
     op_module = [
+        "objective.system.policy"
+        "objective.system.policy.aggregate_period_energy_target_violation_penalties",
+        "objective.system.policy.aggregate_transmission_target_violation_penalties",
+        "objective.system.policy.aggregate_instantaneous_penetration_violation_penalties",
+        "objective.system.policy.aggregate_carbon_cap_violation_penalties",
+        "objective.system.policy.aggregate_carbon_tax_costs",
+        "system.policy.carbon_tax",
+        "system.policy.carbon_tax.carbon_tax",
+        "system.policy.carbon_tax.consolidate_results",
+        "objective.system.policy.aggregate_performance_standard_violation_penalties",
+        "objective.system.policy.aggregate_fuel_burn_limit_violation_penalties",
+        "objective.system.policy.aggregate_policy_target_violation_penalties",
+        "objective.system.policy.aggregate_subsidies",
+        "objective.system.policy.aggregate_carbon_credit_sales_and_purchases",
+        "system.policy.carbon_cap.aggregate_project_carbon_emissions",
+        "system.policy.carbon_cap.aggregate_project_carbon_credits",
+        "system.policy.carbon_cap.aggregate_transmission_carbon_emissions",
+        "system.policy.carbon_tax.aggregate_project_carbon_emissions",
+        "system.policy.carbon_tax.aggregate_project_carbon_credits",
+        "system.policy.performance_standard.aggregate_project_performance_standard",
+        "system.policy.performance_standard.aggregate_project_carbon_credits",
+        "system.policy.carbon_credits.aggregate_project_carbon_credits",
+        "system.policy.generic_policy.aggregate_project_policy_contributions",
+        "system.policy.fuel_burn_limits.aggregate_project_fuel_burn",
         "system.load_balance",
         "system.load_balance.static_load_requirement",
         "project.operations.reserves.lf_reserves_up",
@@ -42,31 +66,38 @@ def define_benders_modules(modules_to_use):
         "system.load_balance.aggregate_market_participation",
         "system.load_balance.load_balance",
         "system.load_balance.consolidate_results",
-        "system.policy.energy_targets",
-        "system.policy.energy_targets.period_energy_target",
-        "system.policy.energy_targets.horizon_energy_target",
-        "system.policy.instantaneous_penetration",
-        "system.policy.transmission_targets",
-        "system.policy.transmission_targets.transmission_target",
-        "system.policy.carbon_cap",
-        "system.policy.carbon_cap.carbon_cap",
-        "system.policy.carbon_tax",
-        "system.policy.carbon_tax.carbon_tax",
-        "system.policy.performance_standard",
-        "system.policy.performance_standard.performance_standard",
-        "system.policy.fuel_burn_limits",
-        "system.policy.fuel_burn_limits.fuel_burn_limits",
-        "system.policy.generic_policy",
-        "system.policy.generic_policy.generic_policy_requirements",
         "project.policy.policy_contribution",
-        "system.reserves.requirement.lf_reserves_up",
-        "system.reserves.requirement.lf_reserves_down",
-        "system.reserves.requirement.regulation_up",
-        "system.reserves.requirement.regulation_down",
-        "system.reserves.requirement.frequency_response",
-        "system.reserves.requirement.spinning_reserves",
-        "system.reserves.requirement.inertia_reserves",
+        ".aggregate_transmission_target_contributions",
+        "objective.system.aggregate_load_balance_penalties",
+        "objective.system.reserve_violation_penalties.lf_reserves_up",
+        "objective.system.reserve_violation_penalties.lf_reserves_down",
+        "objective.system.reserve_violation_penalties.regulation_up",
+        "objective.system.reserve_violation_penalties.regulation_down",
+        "objective.system.reserve_violation_penalties.frequency_response",
+        "objective.system.reserve_violation_penalties.spinning_reserves",
+        "objective.system.reserve_violation_penalties.inertia_reserves",
+        ".aggregate_horizon_energy_target_violation_penalties",
+        ".aggregate_local_capacity_violation_penalties",
+        "objective.system.aggregate_market_revenue_and_costs",
+        "objective.system.water.aggregate_reservoir_violation_penalty_costs",
+        "objective.system.water.aggregate_flow_violation_penalty_costs",
+        "objective.min_op_costs",
+        "project.fuels",
+        "project.operations",
+        "project.operations.operational_types",
+        "project.operations.power_output_groups",
+        "project.operations.carbon_emissions",
+        "system.policy.instantaneous_penetration",
         "system.policy.instantaneous_penetration.instantaneous_penetration_requirements",
+        "project.operations.instantaneous_penetration_contributions",
+        "project.operations.fuel_burn",
+        "transmission.operations.hurdle_costs_by_timepoint",
+        "system.markets.prices",
+        "transmission.operations.carbon_emissions",
+        "system.water.water_flows",
+        "system.water.powerhouses",
+        "system.water.water_system_params",
+        "system.water.water_node_inflows_outflows",
         "system.reserves.aggregation.lf_reserves_up",
         "system.reserves.aggregation.regulation_up",
         "system.reserves.aggregation.lf_reserves_down",
@@ -81,81 +112,6 @@ def define_benders_modules(modules_to_use):
         "system.reserves.balance.frequency_response",
         "system.reserves.balance.spinning_reserves",
         "system.reserves.balance.inertia_reserves",
-        "system.policy.energy_targets.aggregate_period_energy_target_contributions",
-        "system.policy.energy_targets.aggregate_horizon_energy_target_contributions",
-        "system.policy.energy_targets.period_energy_target_balance",
-        "system.policy.energy_targets.horizon_energy_target_balance",
-        "system.policy.energy_targets.consolidate_results",
-        "system.policy.instantaneous_penetration.instantaneous_penetration_aggregation",
-        "system.policy.instantaneous_penetration.instantaneous_penetration_balance",
-        "system.policy.transmission_targets"
-        ".aggregate_transmission_target_contributions",
-        "system.policy.transmission_targets.transmission_target_balance",
-        "system.policy.transmission_targets.consolidate_results",
-        "system.policy.carbon_cap.aggregate_project_carbon_emissions",
-        "system.policy.carbon_cap.aggregate_project_carbon_credits",
-        "system.policy.carbon_cap.aggregate_transmission_carbon_emissions",
-        "system.policy.carbon_cap.carbon_balance",
-        "system.policy.carbon_cap.consolidate_results",
-        "system.policy.carbon_tax.aggregate_project_carbon_emissions",
-        "system.policy.carbon_tax.aggregate_project_carbon_credits",
-        "system.policy.carbon_tax.carbon_tax_costs",
-        "system.policy.carbon_tax.consolidate_results",
-        "system.policy.subsidies",
-        "system.policy.performance_standard.aggregate_project_performance_standard",
-        "system.policy.performance_standard.aggregate_project_carbon_credits",
-        "system.policy.performance_standard.performance_standard_balance",
-        "system.policy.performance_standard.consolidate_results",
-        "system.policy.carbon_credits",
-        "system.policy.carbon_credits.aggregate_project_carbon_credits",
-        "system.policy.carbon_credits.sell_and_buy_credits",
-        "system.policy.carbon_credits.carbon_credits_balance",
-        "system.policy.carbon_credits.consolidate_results",
-        "system.policy.fuel_burn_limits.aggregate_project_fuel_burn",
-        "system.policy.fuel_burn_limits.fuel_burn_limit_balance",
-        "system.policy.fuel_burn_limits.consolidate_results",
-        "system.policy.generic_policy.aggregate_project_policy_contributions",
-        "system.policy.generic_policy.policy_target_balance",
-        "system.policy.generic_policy.consolidate_results",
-        "objective.system.aggregate_load_balance_penalties",
-        "objective.system.reserve_violation_penalties.lf_reserves_up",
-        "objective.system.reserve_violation_penalties.lf_reserves_down",
-        "objective.system.reserve_violation_penalties.regulation_up",
-        "objective.system.reserve_violation_penalties.regulation_down",
-        "objective.system.reserve_violation_penalties.frequency_response",
-        "objective.system.reserve_violation_penalties.spinning_reserves",
-        "objective.system.reserve_violation_penalties.inertia_reserves",
-        "objective.system.policy.aggregate_period_energy_target_violation_penalties",
-        "objective.system.policy"
-        ".aggregate_horizon_energy_target_violation_penalties",
-        "objective.system.policy.aggregate_transmission_target_violation_penalties",
-        "objective.system.policy.aggregate_instantaneous_penetration_violation_penalties",
-        "objective.system.policy.aggregate_carbon_cap_violation_penalties",
-        "objective.system.policy.aggregate_carbon_tax_costs",
-        "objective.system.policy.aggregate_performance_standard_violation_penalties",
-        "objective.system.policy.aggregate_fuel_burn_limit_violation_penalties",
-        "objective.system.policy.aggregate_policy_target_violation_penalties",
-        "objective.system.policy.aggregate_subsidies",
-        "objective.system.policy.aggregate_carbon_credit_sales_and_purchases",
-        ".aggregate_local_capacity_violation_penalties",
-        "objective.system.aggregate_market_revenue_and_costs",
-        "objective.system.water.aggregate_reservoir_violation_penalty_costs",
-        "objective.system.water.aggregate_flow_violation_penalty_costs",
-        "objective.min_op_costs",
-        "project.fuels",
-        "project.operations",
-        "project.operations.operational_types",
-        "project.operations.power_output_groups",
-        "project.operations.carbon_emissions",
-        "project.operations.instantaneous_penetration_contributions",
-        "project.operations.fuel_burn",
-        "transmission.operations.hurdle_costs_by_timepoint",
-        "system.markets.prices",
-        "transmission.operations.carbon_emissions",
-        "system.water.water_flows",
-        "system.water.powerhouses",
-        "system.water.water_system_params",
-        "system.water.water_node_inflows_outflows",
         "project.operations.cycle_select",
         "project.operations.carbon_cap",
         "project.operations.carbon_tax",
@@ -180,6 +136,44 @@ def define_benders_modules(modules_to_use):
         "project.capacity",
         "project.capacity.capacity_types",
         "project.capacity.capacity",
+        "system.policy.carbon_tax.carbon_tax_costs",
+        "system.policy.carbon_credits",
+        "system.policy.fuel_burn_limits.consolidate_results",
+        "system.policy.carbon_credits.sell_and_buy_credits",
+        "system.policy.fuel_burn_limits.fuel_burn_limit_balance",
+        "system.policy.carbon_credits",
+        "system.policy.carbon_credits.consolidate_results",
+        "system.policy.carbon_credits.carbon_credits_balance",
+        "system.policy.carbon_cap.carbon_balance",
+        "system.policy.performance_standard.performance_standard_balance",
+        "system.policy.generic_policy.policy_target_balance",
+        "system.policy.energy_targets.aggregate_period_energy_target_contributions",
+        "system.policy.energy_targets.aggregate_horizon_energy_target_contributions",
+        "system.policy.energy_targets",
+        "system.policy.energy_targets.horizon_energy_target",
+        "system.policy.instantaneous_penetration.instantaneous_penetration_aggregation",
+        "system.policy.instantaneous_penetration.instantaneous_penetration_balance",
+        "system.policy.energy_targets.horizon_energy_target_balance",
+        "system.policy.fuel_burn_limits",
+        "system.policy.fuel_burn_limits.fuel_burn_limits",
+        "system.policy.generic_policy",
+        "system.policy.generic_policy.generic_policy_requirements",
+        "system.policy.generic_policy.consolidate_results",
+        "system.policy.transmission_targets",
+        "system.policy.transmission_targets.transmission_target",
+        "system.policy.transmission_targets.transmission_target_balance",
+        "system.policy.transmission_targets.consolidate_results",
+        "system.policy.energy_targets.period_energy_target_balance",
+        "system.policy.performance_standard",
+        "system.policy.performance_standard.performance_standard",
+        "system.policy.performance_standard.consolidate_results",
+        "system.reserves.requirement.lf_reserves_up",
+        "system.reserves.requirement.lf_reserves_down",
+        "system.reserves.requirement.regulation_up",
+        "system.reserves.requirement.regulation_down",
+        "system.reserves.requirement.frequency_response",
+        "system.reserves.requirement.spinning_reserves",
+        "system.reserves.requirement.inertia_reserves",
     ]
 
     set_definitions = [
@@ -224,9 +218,17 @@ def define_benders_modules(modules_to_use):
         "transmission.capacity.costs",
         "transmission.capacity.consolidate_results",
         "transmission.capacity.capacity_groups",
+        "system.policy.carbon_cap",
+        "system.policy.energy_targets",
     ]
 
     inv_module = [
+        "system.policy.energy_targets.period_energy_target",
+        "system.policy.energy_targets.consolidate_results",
+        "system.policy.carbon_cap.carbon_cap",
+        "system.policy.carbon_cap.consolidate_results",
+        "system.policy.subsidies",
+        "system.policy.benders_policy_constraint",
         "transmission",
         "project.summary_results",
         "project.consolidate_results",
@@ -272,44 +274,6 @@ def define_benders_modules(modules_to_use):
         "objective.max_npv_benders"
     ]
 
-    # def get_defined_variables(path_):
-    #     import ast
-    #     import importlib.util
-    #     from pathlib import Path
-    #     variables_master = []
-    #
-    #     for module_name in path_:
-    #         spec = importlib.util.find_spec(module_name)
-    #
-    #         if spec is None:
-    #             raise ImportError(f"Could not find module: {module_name}")
-    #
-    #         path = Path(spec.origin)
-    #
-    #         with open(path, "r", encoding="utf-8") as f:
-    #             tree = ast.parse(f.read(), filename=str(path))
-    #
-    #         variables = set()
-    #
-    #         for node in ast.walk(tree):
-    #             if isinstance(node, ast.Assign):
-    #                 for target in node.targets:
-    #                     if isinstance(target, ast.Name):
-    #                         variables.add(target.id)
-    #
-    #             elif isinstance(node, ast.AnnAssign):
-    #                 if isinstance(node.target, ast.Name):
-    #                     variables.add(node.target.id)
-    #
-    #         variables_master.extend(variables)
-    #
-    #     return print(variables_master)
-    #
-    # print("\n============== INVESTMENT VARIABLES ===================")
-    # get_defined_variables(inv_module)
-    # print("\n============== OPERATIONAL VARIABLES ==================")
-    # get_defined_variables(op_module)
-
     """
      Redefine operational and investment modules such that only requested modules are include
      in the Bender's scheme
@@ -325,6 +289,5 @@ def define_benders_modules(modules_to_use):
         "Investment": inv_modules,
         "Operational": op_modules
     }
-
 
     return benders_modules

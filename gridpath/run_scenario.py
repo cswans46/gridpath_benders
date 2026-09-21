@@ -98,6 +98,7 @@ def create_problem(
     stage,
     multi_stage,
     parsed_arguments,
+    temporal_subproblems
 ):
     """
     :param scenario_directory: the main scenario directory
@@ -171,6 +172,7 @@ def create_problem(
         availability_iteration,
         subproblem,
         stage,
+        temporal_subproblems
     )
 
     # Create a dual suffix component
@@ -383,6 +385,7 @@ def run_optimization_for_subproblem_stage(
                 stage=stage_directory,
                 multi_stage=multi_stage,
                 parsed_arguments=parsed_arguments,
+                temporal_subproblems=None
             )
 
             if parsed_arguments.create_lp_problem_file_only:
@@ -672,6 +675,7 @@ def run_optimization_for_subproblem_stage_benders(
             stage="",
             multi_stage=multi_stage,
             parsed_arguments=parsed_arguments,
+            temporal_subproblems=subproblem_directory
         )
 
         # Check to see if there exists already an .lp file and .pickle file for the model instance.
@@ -1687,6 +1691,7 @@ def create_abstract_model(
     availability_iteration,
     subproblem,
     stage,
+    temporal_subproblems
 ):
     """
     :param model: the Pyomo AbstractModel object
@@ -1705,17 +1710,31 @@ def create_abstract_model(
 
     for i,m in enumerate(loaded_modules):
         if hasattr(m, "add_model_components"):
-            # print(f"ADDING MODULE {i}: {m.__name__}")
-            m.add_model_components(
-                model,
-                dynamic_components,
-                scenario_directory,
-                weather_iteration,
-                hydro_iteration,
-                availability_iteration,
-                subproblem,
-                stage,
-            )
+            # Need to pass the subproblems to this function because
+            # It creates the master subproblem set used by linking policy
+            # variables.
+            if m.__name__ == "gridpath.system.policy.benders_policy_constraint":
+                m.add_model_components(
+                    model,
+                    dynamic_components,
+                    scenario_directory,
+                    weather_iteration,
+                    hydro_iteration,
+                    availability_iteration,
+                    temporal_subproblems,
+                    stage
+                )
+            else:
+                m.add_model_components(
+                    model,
+                    dynamic_components,
+                    scenario_directory,
+                    weather_iteration,
+                    hydro_iteration,
+                    availability_iteration,
+                    subproblem,
+                    stage
+                )
 
 def load_scenario_data(
     model,
@@ -2018,8 +2037,44 @@ def solve(instance,
             optimizer.options[opt] = solver_options[opt]
 
     if parsed_arguments.benders:
+        print("\n" + "=" * 60)
+        print("BENDERS MASTER MODEL DIAGNOSTIC")
+        print("=" * 60)
+
+        print("Concrete model:", type(instance))
+        print("is_benders_subproblem:",
+              getattr(instance, "_is_benders_subproblem", None))
+
+        print("\nAllocation components:")
+        print(
+            "PERIOD_ENERGY_TARGET_ALLOCATION:",
+            hasattr(instance, "PERIOD_ENERGY_TARGET_ALLOCATION")
+        )
+        print(
+            "CARBON_CAP_ALLOCATION:",
+            hasattr(instance, "CARBON_CAP_ALLOCATION")
+        )
+
+        print("\nRelevant model components:")
+        for component in instance.component_objects(active=True):
+            if (
+                    "ALLOCATION" in component.name.upper()
+                    or "ENERGY_TARGET" in component.name.upper()
+                    or "CARBON_CAP" in component.name.upper()
+            ):
+                print(
+                    " ",
+                    component.name,
+                    type(component).__name__,
+                    "indexed =", component.is_indexed()
+                )
+
+        from gridpath.benders.operational_model_creation import (
+            define_linking_vars
+        )
 
         linking_vars = define_linking_vars(instance)
+
         setup = {
             # Real: Set the maximum number of iterations
             "MaxIter": 1000,
@@ -2036,7 +2091,7 @@ def solve(instance,
             # Bool: Set to true if stabilisation is requested.
             "StabDynamic": True,
             # Real: Choose  convergenceparameter (\gamma \in (0,1)). Pecci \& Jenkins mention 0.025 performs the best on average. 0.5 is a common rule of thumb.
-            "StabParam": 0.025}
+            "StabParam": 0.0}
 
         # print("\n========== MASTER MODEL BEFORE BENDERS ==========")
         #
@@ -2129,6 +2184,38 @@ def solve(instance,
 
     else:
         return results
+
+def classify_linking_vars(model, linking_vars):
+    classified = {
+        "continuous": [],
+        "integer": [],
+        "binary": [],
+    }
+
+    for name in linking_vars:
+        var = model.find_component(name)
+
+        if var is None:
+            raise ValueError(
+                f"Linking variable {name} not found."
+            )
+
+        if var.is_binary():
+            classified["binary"].append(name)
+
+        elif var.is_integer():
+            classified["integer"].append(name)
+
+        elif var.is_continuous():
+            classified["continuous"].append(name)
+
+        else:
+            raise TypeError(
+                f"Unsupported domain for linking variable {name}: "
+                f"{var.domain}"
+            )
+
+    return classified
 
 def add_variables(model):
     for expr_name in model.component_data_objects(pyo.Expression, descend_into=True):
