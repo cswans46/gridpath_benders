@@ -1,10 +1,10 @@
 import pyomo.environ as pyo
 import mosek
+from gridpath.benders.planning import BENDERS_THETA_SCALE
 
 from pyomo.solvers.plugins.solvers.mosek_direct import (
     MOSEKDirect,
 )
-
 
 class MosekBendersDirect(MOSEKDirect):
     """
@@ -27,33 +27,170 @@ class MosekBendersDirect(MOSEKDirect):
 
     def _set_instance(self, model, kwds):
 
-        # -----------------------------------------------------
-        # First let the normal Pyomo -> MOSEK conversion happen.
-        # -----------------------------------------------------
-
+        # Pyomo creates the normal linear master problem.
+        #
+        # When L2 stabilization supplies conic metadata, its epigraph
+        # is represented as a native MOSEK affine conic constraint.
         super()._set_instance(model, kwds)
 
-        # # -----------------------------------------------------
-        # # Diagnostic: Pyomo -> MOSEK variable mapping.
-        # # -----------------------------------------------------
-        #
-        # print("\nMOSEK variable mapping:")
-        #
-        # for pyomo_var, mosek_idx in (
-        #     self._pyomo_var_to_solver_var_map.items()
-        # ):
-        #     print(
-        #         "   ",
-        #         pyomo_var.name,
-        #         "->",
-        #         mosek_idx,
-        #     )
-
-        # -----------------------------------------------------
-        # Then add native Benders DJCs.
-        # -----------------------------------------------------
+        self._add_benders_l2_cone(model)
 
         self._add_benders_djcs(model)
+
+    def _apply_solver(self):
+
+        return super()._apply_solver()
+
+    def _add_benders_l2_cone(self, model):
+        """
+        Add the exact L2 stabilization epigraph as a MOSEK
+        rotated quadratic cone.
+
+        Represents:
+
+            t >= sum_i w_i (x_i - xbar_i)^2
+
+        using:
+
+            (t, 1/2, sqrt(w_i)*(x_i-xbar_i)) in Q_r
+
+        because MOSEK's rotated quadratic cone satisfies
+
+            2*y0*y1 >= sum_i y_i^2.
+        """
+
+        data = getattr(model, "BendersL2ConicData", None)
+
+        if data is None:
+            return
+
+        variables = data["variables"]
+        weights = data["weights"]
+        points = data["points"]
+
+        if not variables:
+            return
+
+        task = self._solver_model
+
+        # ------------------------------------------------------------
+        # Get solver indices of the Pyomo variables.
+        # ------------------------------------------------------------
+
+        def solver_index(pyomo_var):
+            try:
+                return self._pyomo_var_to_solver_var_map[pyomo_var]
+            except Exception as exc:
+                raise RuntimeError(
+                    "Could not find MOSEK solver index for "
+                    f"Pyomo variable {pyomo_var.name}"
+                ) from exc
+
+        theta_var = model.BendersL2Epigraph
+
+        theta_idx = solver_index(theta_var)
+
+        # ------------------------------------------------------------
+        # Create n + 2 affine expressions:
+        #
+        #   AFE 0     = t
+        #   AFE 1     = 1/2
+        #   AFE 2+i   = sqrt(w_i) * (x_i - xbar_i)
+        # ------------------------------------------------------------
+
+        n = len(variables)
+
+        afe_start = task.getnumafe()
+
+        task.appendafes(n + 2)
+
+        # AFE 0 = t
+        task.putafefentry(
+            afe_start,
+            theta_idx,
+            1.0,
+        )
+
+        task.putafeg(
+            afe_start,
+            0.0,
+        )
+
+        # AFE 1 = 1/2
+        #
+        # This is an affine expression with no variable terms.
+        task.putafeg(
+            afe_start + 1,
+            0.5,
+        )
+
+        # AFE 2+i =
+        #
+        #     sqrt(w_i) * x_i
+        #     - sqrt(w_i) * xbar_i
+        #
+        for i, name in enumerate(variables):
+
+            var = model.find_component(name)
+
+            if var is None:
+                raise KeyError(
+                    f"Could not find L2 stabilization variable {name}"
+                )
+
+            weight = float(weights[name])
+
+            if weight < 0.0:
+                raise ValueError(
+                    f"L2 stabilization weight for {name} "
+                    f"is negative: {weight}"
+                )
+
+            sqrt_weight = weight ** 0.5
+
+            afe_idx = afe_start + 2 + i
+
+            var_idx = solver_index(var)
+
+            if abs(sqrt_weight) > 0.0:
+                task.putafefentry(
+                    afe_idx,
+                    var_idx,
+                    sqrt_weight,
+                )
+
+            task.putafeg(
+                afe_idx,
+                -sqrt_weight * float(points[name]),
+            )
+
+        # ------------------------------------------------------------
+        # Rotated quadratic cone:
+        #
+        #   2 * y0 * y1 >= sum_i y_i^2
+        #
+        # with
+        #
+        #   y0 = t
+        #   y1 = 1/2
+        #   y_i = sqrt(w_i)*(x_i-xbar_i)
+        #
+        # gives
+        #
+        #   t >= sum_i w_i*(x_i-xbar_i)^2.
+        # ------------------------------------------------------------
+
+        cone_dim = n + 2
+
+        rquad_domain = task.appendrquadraticconedomain(
+            cone_dim
+        )
+
+        task.appendaccseq(
+            rquad_domain,
+            afe_start,
+            None,
+        )
 
     def _add_benders_djcs(self, model):
 
@@ -67,6 +204,10 @@ class MosekBendersDirect(MOSEKDirect):
             return
 
         benders_states = data["benders_states"]
+        benders_feasibility_states = data.get(
+            "benders_feasibility_states",
+            {},
+        )
 
         linking_variables_sub_by_type = (
             data["linking_variables_sub_by_type"]
@@ -74,22 +215,42 @@ class MosekBendersDirect(MOSEKDirect):
 
         task = self._solver_model
 
-        # -----------------------------------------------------
-        # Add every accumulated feasible Benders cut.
-        # -----------------------------------------------------
+        task.putintparam(
+            mosek.iparam.mio_conic_outer_approximation,
+            mosek.onoffkey.on,
+        )
 
-        for (
-            subproblem_key,
-            state,
-        ), state_data in benders_states.items():
+        task.putintparam(
+            mosek.iparam.mio_qcqo_reformulation_method,
+            mosek.miqcqoreformmethod.linearization
+        )
 
-            # -------------------------------------------------
-            # Infeasible states are handled separately by the
-            # combinatorial feasibility-cut machinery.
-            # -------------------------------------------------
+        # ---------------------------------------------------------
+        # Add every accumulated Benders state-specific cut.
+        #
+        # Current structure:
+        #
+        #   benders_states[
+        #       ScenarioKey
+        #   ] = [
+        #       state_data,
+        #       state_data,
+        #       ...
+        #   ]
+        #
+        # ---------------------------------------------------------
 
-            if not state_data["feasible"]:
-                continue
+        subproblem_keys = list(
+            dict.fromkeys(
+                list(benders_states) + list(benders_feasibility_states)
+            )
+        )
+        for subproblem_key in subproblem_keys:
+
+            state_list = (
+                benders_states.get(subproblem_key, [])
+                + benders_feasibility_states.get(subproblem_key, [])
+            )
 
             variable_types = (
                 linking_variables_sub_by_type[
@@ -97,27 +258,16 @@ class MosekBendersDirect(MOSEKDirect):
                 ]
             )
 
-            binary_names = (
-                variable_types["binary"]
-            )
+            binary_names = variable_types["binary"]
+            integer_names = variable_types["integer"]
+            continuous_names = variable_types["continuous"]
 
-            integer_names = (
-                variable_types["integer"]
-            )
-
-            continuous_names = (
-                variable_types["continuous"]
-            )
-
-            # -------------------------------------------------
-            # Current native MOSEK implementation only handles
-            # binary discrete states.
-            #
-            # Do not silently ignore integer linking variables.
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Native DJCs currently support binary discrete linking
+            # variables only.
+            # -----------------------------------------------------
 
             if integer_names:
-
                 raise NotImplementedError(
                     "Native MOSEK Benders DJCs currently "
                     "support binary discrete linking variables "
@@ -126,22 +276,9 @@ class MosekBendersDirect(MOSEKDirect):
                     f"{integer_names}"
                 )
 
-            # -------------------------------------------------
-            # Validate binary state dimension.
-            # -------------------------------------------------
-
-            if len(state) != len(binary_names):
-
-                raise ValueError(
-                    f"Benders discrete state for subproblem "
-                    f"'{subproblem_key}' contains {len(state)} "
-                    f"values, but {len(binary_names)} binary "
-                    "linking variables were found."
-                )
-
-            # -------------------------------------------------
-            # Map binary linking variables.
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Map binary linking variables once per subproblem.
+            # -----------------------------------------------------
 
             binary_indices = []
 
@@ -165,13 +302,11 @@ class MosekBendersDirect(MOSEKDirect):
                         "does not have a MOSEK variable index."
                     )
 
-                binary_indices.append(
-                    solver_idx
-                )
+                binary_indices.append(solver_idx)
 
-            # -------------------------------------------------
-            # Map theta.
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Map theta once per subproblem.
+            # -----------------------------------------------------
 
             theta_var = model.vTHETA[
                 subproblem_key
@@ -191,79 +326,146 @@ class MosekBendersDirect(MOSEKDirect):
                     "a MOSEK variable index."
                 )
 
-            # -------------------------------------------------
-            # Add every cut stored for this discrete state.
-            # -------------------------------------------------
+            # -----------------------------------------------------
+            # Map continuous linking variables once per
+            # subproblem.
+            # -----------------------------------------------------
 
-            for cut_number, cut in enumerate(
-                state_data["cuts"]
-            ):
+            continuous_indices = {}
 
-                continuous_indices = {}
+            for name in continuous_names:
 
-                for name in continuous_names:
+                var = model.find_component(name)
 
-                    var = model.find_component(name)
-
-                    if var is None:
-                        raise KeyError(
-                            f"Continuous linking variable "
-                            f"'{name}' not found in planning model."
-                        )
-
-                    try:
-                        solver_idx = (
-                            self._pyomo_var_to_solver_var_map[
-                                var
-                            ]
-                        )
-                    except KeyError:
-                        raise KeyError(
-                            f"Continuous linking variable "
-                            f"'{name}' does not have a "
-                            "MOSEK variable index."
-                        )
-
-                    continuous_indices[name] = (
-                        solver_idx
+                if var is None:
+                    raise KeyError(
+                        f"Continuous linking variable "
+                        f"'{name}' not found in planning model."
                     )
 
-                # print(
-                #     f"    Adding cut {cut_number}: "
-                #     f"op_cost={cut['op_cost']:.6e}, "
-                #     f"theta_coeff="
-                #     f"{cut.get('theta_coeff', 1.0)}"
-                # )
+                try:
+                    solver_idx = (
+                        self._pyomo_var_to_solver_var_map[
+                            var
+                        ]
+                    )
+                except KeyError:
+                    raise KeyError(
+                        f"Continuous linking variable "
+                        f"'{name}' does not have a "
+                        "MOSEK variable index."
+                    )
+
+                continuous_indices[name] = solver_idx
+
+            # -----------------------------------------------------
+            # Add each accumulated state-specific Benders cut.
+            # -----------------------------------------------------
+
+            for cut_number, state_data in enumerate(
+                    state_list
+            ):
+
+                discrete_state = state_data[
+                    "master_discrete_state"
+                ]
+
+                binary_state_dict = discrete_state[
+                    "binary"
+                ]
+
+                integer_state_dict = discrete_state[
+                    "integer"
+                ]
+
+                # -------------------------------------------------
+                # This implementation only supports binary states.
+                # -------------------------------------------------
+
+                if integer_state_dict:
+                    raise NotImplementedError(
+                        "Native MOSEK Benders DJCs currently "
+                        "support binary discrete linking variables "
+                        "only. An integer discrete state was "
+                        f"found for subproblem "
+                        f"'{subproblem_key}', cut "
+                        f"{cut_number}: "
+                        f"{integer_state_dict}"
+                    )
+
+                # -------------------------------------------------
+                # Construct the binary state vector in exactly the
+                # same order as binary_names.
+                # -------------------------------------------------
+
+                missing_binary_names = [
+                    name
+                    for name in binary_names
+                    if name not in binary_state_dict
+                ]
+
+                if missing_binary_names:
+                    raise KeyError(
+                        f"Benders binary state for subproblem "
+                        f"'{subproblem_key}', cut "
+                        f"{cut_number} is missing binary "
+                        f"linking variables: "
+                        f"{missing_binary_names}"
+                    )
+
+                binary_state = [
+                    binary_state_dict[name]
+                    for name in binary_names
+                ]
+
+                # -------------------------------------------------
+                # Validate state dimension.
+                # -------------------------------------------------
+
+                if len(binary_state) != len(binary_indices):
+                    raise ValueError(
+                        f"Benders discrete state for subproblem "
+                        f"'{subproblem_key}', cut "
+                        f"{cut_number} contains "
+                        f"{len(binary_state)} values, but "
+                        f"{len(binary_indices)} binary MOSEK "
+                        "indices were found."
+                    )
+
+                # -------------------------------------------------
+                # Add native DJC.
+                # -------------------------------------------------
+
+                theta_coeff = state_data.get(
+                    "theta_coeff",
+                    1.0,
+                )
+                cut_scale = (
+                    BENDERS_THETA_SCALE
+                    if abs(float(theta_coeff)) > 1e-12
+                    else 1.0
+                )
 
                 add_benders_djc(
                     task=task,
                     theta_idx=theta_idx,
                     binary_indices=binary_indices,
-                    binary_state=state,
+                    binary_state=binary_state,
                     continuous_indices=continuous_indices,
-                    continuous_lambda=cut[
-                        "continuous_lambda"
-                    ],
-                    continuous_point=cut[
+                    continuous_point=state_data[
                         "continuous_point"
                     ],
-                    op_cost=cut[
+                    op_cost=state_data[
                         "op_cost"
-                    ],
-                    theta_coeff=cut.get(
-                        "theta_coeff",
-                        1.0,
-                    ),
+                    ] / cut_scale,
+                    continuous_lambda={
+                        name: float(value) / cut_scale
+                        for name, value in state_data[
+                            "continuous_lambda"
+                        ].items()
+                    },
+                    theta_coeff=theta_coeff,
                 )
-
-        # -----------------------------------------------------
-        # Ensure all native DJCs are registered before solve.
-        # -----------------------------------------------------
-
-        task.putintparam(
-            mosek.iparam.intpnt_solve_form,
-            mosek.solveform.primal,
-        )
 
 
 def add_benders_djc(
@@ -278,8 +480,9 @@ def add_benders_djc(
     theta_coeff=1.0,
 ):
     """
-    Add one state-specific Benders optimality cut as a
-    native MOSEK disjunctive constraint.
+    Add one state-specific Benders optimality or feasibility cut as a
+    native MOSEK disjunctive constraint. Set ``theta_coeff=0`` for a
+    restoration-dual feasibility cut.
 
     Mathematically:
 
@@ -505,11 +708,6 @@ def add_benders_djc(
         inactive_afe,
         mismatch_constant - 1.0,
     )
-
-    # print(
-    #     f"      inactive constant = "
-    #     f"{mismatch_constant - 1.0}"
-    # )
 
     # =========================================================
     # 5. MOSEK domains

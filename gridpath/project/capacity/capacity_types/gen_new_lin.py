@@ -236,7 +236,7 @@ def add_model_components(
 
     # Sets
     ###########################################################################
-    if m._is_benders_subproblem:
+    if getattr(m, "_is_benders_subproblem", False):
         # Add this in here because vintages and periods are different things in Benders subproblems.
         m.GEN_NEW_LIN_VNTS = Set(dimen=2, within=m.PROJECTS * NonNegativeIntegers)
     else:
@@ -318,7 +318,7 @@ def add_model_components(
 
 def operational_periods_by_generator_vintage(mod, prj, v):
     # For Benders, we need to ensure that this
-    if mod._is_benders_subproblem:
+    if getattr(mod, "_is_benders_subproblem", False):
         # In Benders, PERIODS contains only the periods in this subproblem.
         # The vintage itself may be earlier than the first subproblem period.
         future_trajectory_periods = list(mod.PERIODS)
@@ -355,7 +355,7 @@ def gen_new_lin_vintages_operational_in_period(mod, p):
 
 def financial_periods_by_generator_vintage(mod, prj, v):
     # For Benders, we need to ensure that this
-    if mod._is_benders_subproblem:
+    if getattr(mod, "_is_benders_subproblem", False):
         # In Benders, PERIODS contains only the periods in this subproblem.
         # The vintage itself may be earlier than the first subproblem period.
         future_trajectory_periods = list(mod.PERIODS)

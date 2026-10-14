@@ -40,11 +40,6 @@ def add_model_components(
     :param d:
     :return:
     """
-    # Add this set in the case of a benders subproblem (this is otherwise defined in the planning problem)
-    if m._is_benders_subproblem:
-        m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
-            dimen=2, within=m.CARBON_CAP_ZONES * m.PERIODS
-        )
 
     def total_carbon_emissions_rule(mod, z, p):
         """

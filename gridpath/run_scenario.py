@@ -477,7 +477,7 @@ def run_optimization_for_subproblem_stage(
         # this is actually used)
         if results.solver.termination_condition != "infeasible":
             if parsed_arguments.testing:
-                return solved_instance.NPV()
+                return get_reported_objective_value(solved_instance)
         else:
             warnings.warn("WARNING: the problem was infeasible!")
 
@@ -695,7 +695,7 @@ def run_optimization_for_subproblem_stage_benders(
                     os.makedirs(prob_sol_files_directory)
                 if parsed_arguments.benders:
                     with open(
-                        os.path.join(prob_sol_files_directory, "instance_investment.pickle".format(i)), "wb"
+                        os.path.join(prob_sol_files_directory, "instance_investment.pickle"), "wb"
                     ) as f_out:
                         dill.dump(instance,   f_out)
                 else:
@@ -798,7 +798,7 @@ def run_optimization_for_subproblem_stage_benders(
         # this is actually used)
         if results.planning_results.solver.termination_condition != "infeasible":
             if parsed_arguments.testing:
-                return solved_instance.NPV()
+                return get_reported_objective_value(solved_instance)
         else:
             warnings.warn("WARNING: the problem was infeasible!")
 
@@ -2037,38 +2037,6 @@ def solve(instance,
             optimizer.options[opt] = solver_options[opt]
 
     if parsed_arguments.benders:
-        print("\n" + "=" * 60)
-        print("BENDERS MASTER MODEL DIAGNOSTIC")
-        print("=" * 60)
-
-        print("Concrete model:", type(instance))
-        print("is_benders_subproblem:",
-              getattr(instance, "_is_benders_subproblem", None))
-
-        print("\nAllocation components:")
-        print(
-            "PERIOD_ENERGY_TARGET_ALLOCATION:",
-            hasattr(instance, "PERIOD_ENERGY_TARGET_ALLOCATION")
-        )
-        print(
-            "CARBON_CAP_ALLOCATION:",
-            hasattr(instance, "CARBON_CAP_ALLOCATION")
-        )
-
-        print("\nRelevant model components:")
-        for component in instance.component_objects(active=True):
-            if (
-                    "ALLOCATION" in component.name.upper()
-                    or "ENERGY_TARGET" in component.name.upper()
-                    or "CARBON_CAP" in component.name.upper()
-            ):
-                print(
-                    " ",
-                    component.name,
-                    type(component).__name__,
-                    "indexed =", component.is_indexed()
-                )
-
         from gridpath.benders.operational_model_creation import (
             define_linking_vars
         )
@@ -2077,53 +2045,33 @@ def solve(instance,
 
         setup = {
             # Real: Set the maximum number of iterations
-            "MaxIter": 1000,
-            # Real: Set the desired convergence tolerance between normalised upper and lower bound
-            "ConvTol": 1e-10,
+            "MaxIter": parsed_arguments.max_benders_iter,
+            # Real: relative UB/LB gap target; keep this above solver-scale
+            # feasibility noise so Benders can reach its integer phase.
+            "ConvTol": parsed_arguments.benders_conv_tol,
+            # Real: require the absolute NPV bound gap to be below $10,000.
+            "AbsGapTol": parsed_arguments.benders_abs_gap_tol,
             # Real: Set the upper bound of time desired for each CPU to spend on solving a problem.
-            "MaxCpuTime":100000,
-            # Bool: Set to true if the subproblem solutions are expected to be feasible. Otherwise, slacks would be added to the constraints.
-            # While this option is kept, pyomo does not currently have the functionality to achieve this (only in JuMP in julia) so this should
-            # ALWAYS BE SET TO TRUE.
-            "ExpectFeasibleSubproblems": True,
-            # Bool: Select whether investment variables are binary or not.
-            "IntegerInvestment": False,
+            "MaxCpuTime": parsed_arguments.max_benders_cpu_time,
             # Bool: Set to true if stabilisation is requested.
-            "StabDynamic": True,
+            "StabDynamic": parsed_arguments.benders_stab_dynamic,
             # Real: Choose  convergenceparameter (\gamma \in (0,1)). Pecci \& Jenkins mention 0.025 performs the best on average. 0.5 is a common rule of thumb.
-            "StabParam": 0.0}
+            # IMPORTANT: if stabilisation is requested, this parameter must be defined.
+            "StabParam": parsed_arguments.benders_stab_param,
+            # Select which method to employ in the presence of binary investment linking variables
+            "MasterDiscreteMethod": parsed_arguments.benders_master_discrete_method,
+            # Select which method to employ in the presence of binary operational non-linking variables
+            "OperationalDiscreteMethod": parsed_arguments.benders_operational_discrete_method,
+            # Employ which program to use for stabilisation (l1,l2, or none for P&J-style regularisation).
+            "StabilizationMethod": parsed_arguments.benders_stabilization_method
+        }
 
-        # print("\n========== MASTER MODEL BEFORE BENDERS ==========")
-        #
-        # print("ConcreteModel:", instance)
-        # print("Number of components:", len(list(instance.component_objects())))
-        #
-        # print("\n--- Variables ---")
-        # for var in instance.component_objects(Var, active=True):
-        #     print(
-        #         var.name,
-        #         "indexed =", var.is_indexed(),
-        #         "entries =", len(var) if var.is_indexed() else 1,
-        #     )
-        #     if var.is_indexed():
-        #         for i in var:
-        #             print("   ", i, "=", value(var[i], exception=False))
-        #     else:
-        #         print("   =", value(var, exception=False))
-        #
-        # print("\n--- Constraints ---")
-        # for con in instance.component_objects(Constraint, active=True):
-        #     print(
-        #         con.name,
-        #         "indexed =", con.is_indexed(),
-        #         "entries =", len(con) if con.is_indexed() else 1,
-        #     )
+        # Optional override of the Benders setup, e.g. for permutation tests:
+        # GRIDPATH_BENDERS_SETUP='{"StabilizationMethod": "l1"}'
+        if os.environ.get("GRIDPATH_BENDERS_SETUP"):
+            import json
 
-        # print("\n--- Objectives ---")
-        # for obj in instance.component_objects(Objective, active=True):
-        #     print(obj.name)
-        #     print("   expression:", obj.expr)
-        #     print("   sense:", obj.sense)
+            setup.update(json.loads(os.environ["GRIDPATH_BENDERS_SETUP"]))
 
         results = benders(
             instance,
@@ -2406,9 +2354,9 @@ def save_objective_function_value(
     :return:
     """
     if not instance._is_benders_subproblem:
-        objective_function_value = instance.NPV()
+        objective_function_value = get_reported_objective_value(instance)
     else:
-        objective_function_value = instance.MIN_OP_COSTS()
+        objective_function_value = instance.OP_NPV()
 
     # Round objective function value of test examples
     if os.path.dirname(scenario_directory)[-8:] == "examples":
@@ -2429,6 +2377,22 @@ def save_objective_function_value(
         newline="",
     ) as objective_file:
         objective_file.write(str(objective_function_value))
+
+def get_reported_objective_value(instance):
+    """Return the realized Benders objective when available."""
+    benders_objective = getattr(
+        instance,
+        "_benders_best_feasible_objective",
+        None,
+    )
+    if benders_objective is not None:
+        return float(benders_objective)
+    if hasattr(instance, "MasterObjective"):
+        raise RuntimeError(
+            "Benders produced no fully feasible incumbent; refusing to "
+            "report planning-only NPV as the total objective."
+        )
+    return instance.NPV()
 
 
 def save_duals(

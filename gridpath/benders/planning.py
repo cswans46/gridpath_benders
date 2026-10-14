@@ -1,4 +1,5 @@
 import logging
+import os
 from dataclasses import dataclass
 # from pyomo.environ import Expression
 # instance.ePlanningCost = Expression(expr=expr)
@@ -7,16 +8,15 @@ from pyomo.environ import (
     Var,
     ConstraintList,
     Objective,
-    ObjectiveList,
     value,
-    Constraint,
     maximize,
+    Reals,
     SolverFactory,
-    Reals
 )
 from pyomo.opt import SolverStatus, TerminationCondition
 
 logger = logging.getLogger(__name__)
+BENDERS_THETA_SCALE = 1e9
 
 
 # -------------------------------------------------------------------------
@@ -26,108 +26,116 @@ logger = logging.getLogger(__name__)
 @dataclass
 class PlanningSolution:
     planning_cost: float
-    values: dict
+    values: dict[str, float]
 
 
 # -------------------------------------------------------------------------
 # Solve the master/planning problem
 # -------------------------------------------------------------------------
 
+BENDERS_MASTER_VARIABLE_CAP = 1e8
+
+
 def solve_planning_problem(instance, planning_variables, optimiser):
     """
-    Solve the planning (master) problem.
+    Solve the planning/master problem.
 
     Parameters
     ----------
     instance : ConcreteModel
-        Instantiated Pyomo model.
+        Instantiated Pyomo master model.
     planning_variables : list[str]
-        Names of the linking variables.
-    optimiser : SolverFactory solver predetermined in Benders
+        Names of linking/planning variables.
+    optimiser : SolverFactory
+        Solver selected by the Benders algorithm.
 
     Returns
     -------
-    PlanningSolution
-    float
-        (planning solution, lower bound)
+    planning_sol : PlanningSolution
+    UB : float
+        Current master objective value.
+    results : SolverResults
     """
 
     results = optimiser.solve(instance, tee=False)
 
-    # print("Results of Planning Problem: ", results)
-
-    # print("\n========== MASTER MODEL AFTER SOLVE ==========")
-    #
-    # print("ConcreteModel:", instance)
-    # print("Number of components:", len(list(instance.component_objects())))
-    #
-    # print("\n--- Variables ---")
-    # for var in instance.component_objects(Var, active=True):
-    #     print(
-    #         var.name,
-    #         "indexed =", var.is_indexed(),
-    #         "entries =", len(var) if var.is_indexed() else 1,
-    #     )
-    #     if var.is_indexed():
-    #         for i in var:
-    #             print("   ", i, "=", value(var[i], exception=False))
-    #     else:
-    #         print("   =", value(var, exception=False))
-    #
-    # print("\n--- Constraints ---")
-    # for con in instance.component_objects(Constraint, active=True):
-    #     print(
-    #         con.name,
-    #         "indexed =", con.is_indexed(),
-    #         "entries =", len(con) if con.is_indexed() else 1,
-    #     )
-    #
-    # print("\n--- Objectives ---")
-    # for obj in instance.component_objects(Objective, active=True):
-    #     print(obj.name)
-    #     print("   expression:", obj.expr)
-    #     print("   sense:", obj.sense)
-
     status = results.solver.status
     termination = results.solver.termination_condition
 
-    if (
-        status == SolverStatus.ok
-        and termination
-        in (
-            TerminationCondition.optimal,
-            TerminationCondition.locallyOptimal,
-        )
+    if status != SolverStatus.ok or termination != TerminationCondition.optimal:
+        solver_name = getattr(optimiser, "name", None)
+        if solver_name:
+            fresh_optimiser = SolverFactory(solver_name)
+            if fresh_optimiser.available(exception_flag=False):
+                fresh_optimiser.options.update(optimiser.options)
+                results = fresh_optimiser.solve(instance, tee=False)
+                status = results.solver.status
+                termination = results.solver.termination_condition
+
+    if termination in (
+        TerminationCondition.unbounded,
+        TerminationCondition.infeasibleOrUnbounded,
     ):
-
-        planning_sol = process_planning_sol(
-            instance,
-            planning_variables,
+        # Cuts may not yet bound every planning variable (e.g. builds that
+        # only appear in cuts). Cap unbounded continuous variables at a
+        # value far above any physical one and re-solve.
+        capped = 0
+        names = set(planning_variables)
+        for var in instance.component_data_objects(Var, active=True):
+            if (
+                var.name in names
+                and not var.is_integer()
+                and not var.is_binary()
+                and not var.has_ub()
+            ):
+                var.setub(BENDERS_MASTER_VARIABLE_CAP)
+                capped += 1
+        if capped:
+            logger.warning(
+                "Planning problem unbounded; capped %d variable(s) at %g.",
+                capped,
+                BENDERS_MASTER_VARIABLE_CAP,
+            )
+            results = optimiser.solve(instance, tee=False)
+            status = results.solver.status
+            termination = results.solver.termination_condition
+    if status != SolverStatus.ok or termination != TerminationCondition.optimal:
+        failed_master_path = os.environ.get(
+            "GRIDPATH_BENDERS_FAILURE_LP"
+        )
+        if failed_master_path:
+            instance.write(
+                failed_master_path,
+                io_options={"symbolic_solver_labels": True},
+            )
+        raise RuntimeError(
+            f"Planning problem failed.\n"
+            f"Status: {status}\n"
+            f"Termination: {termination}"
         )
 
-        UB = value(instance.MasterObjective)
-
-        return planning_sol, UB, results
-
-    raise RuntimeError(
-        f"Planning problem failed.\n"
-        f"Status: {status}\n"
-        f"Termination: {termination}"
+    planning_sol = process_planning_sol(
+        instance,
+        planning_variables,
     )
+
+    # Evaluate the objective directly from the solved model.
+    UB = value(instance.MasterObjective)
+
+    return planning_sol, UB, results
 
 
 # -------------------------------------------------------------------------
 # Add theta variables and modify the objective
 # -------------------------------------------------------------------------
 
-def add_approximate_variable_cost(instance,
-                                  benders_subproblems):
+def add_approximate_variable_cost(instance, benders_subproblems):
     """
-    Adds theta variables and replaces the objective by
+    Add theta variables and modify the objective to
 
-        planning_cost + sum(theta)
+        ePlanningNPV - BENDERS_THETA_SCALE * sum(theta_w)
 
-    exactly as done in the Julia implementation.
+    where theta_w represents net operational cost in billions of dollars.
     """
 
     if hasattr(instance, "vTHETA"):
@@ -139,36 +147,44 @@ def add_approximate_variable_cost(instance,
         domain=Reals,
     )
 
-    # print("What is theta", sum(instance.vTHETA[w] for w in instance.vTHETA))
+    # -------------------------------------------------------------
+    # Benders cut containers
+    # -------------------------------------------------------------
 
-    #
-    # Lower bounds
-    #
+    # Standard affine Benders optimality cuts.
+    instance.BendersOptimalityCuts = ConstraintList()
 
-    instance.BendersCuts = ConstraintList()
+    # Benders feasibility cuts.
+    instance.BendersFeasibilityCuts = ConstraintList()
+
+    # Discrete/combinatorial Benders optimality cuts.
+    instance.BendersDiscreteOptimalityCuts = ConstraintList()
+
+    # -------------------------------------------------------------
+    # Theta lower bounds
+    # -------------------------------------------------------------
+
+    instance.ThetaLowerBound = ConstraintList()
 
     if hasattr(instance, "eLowerBoundOperatingCost"):
-
-        instance.ThetaLowerBound = ConstraintList()
 
         for key in benders_subproblems:
             instance.ThetaLowerBound.add(
                 instance.vTHETA[key]
                 >= instance.eLowerBoundOperatingCost[key]
+                / BENDERS_THETA_SCALE
             )
 
     else:
-
-        instance.ThetaLowerBound = ConstraintList()
 
         for key in benders_subproblems:
             instance.ThetaLowerBound.add(
                 instance.vTHETA[key] >= 0.0
             )
 
-    #
-    # Save original objective
-    #
+    # -------------------------------------------------------------
+    # Original objective
+    # -------------------------------------------------------------
 
     if not hasattr(instance, "NPV"):
         raise RuntimeError(
@@ -176,63 +192,44 @@ def add_approximate_variable_cost(instance,
         )
 
     original_obj = instance.NPV
-    #
-    # Store planning cost expression
-    #
 
     instance.ePlanningNPV = original_obj.expr
 
-    #
-    # Replace objective
-    #
-
     original_obj.deactivate()
 
+    # -------------------------------------------------------------
+    # Benders master objective
+    # -------------------------------------------------------------
+
     instance.MasterObjective = Objective(
-        expr=instance.ePlanningNPV
-        # Because this is a NPV maximising problem, not a cost minimisation problem
-        # Need to subtract approximate variable cost from subproblems.
-        - sum(
-            instance.vTHETA[key]
-            for key in benders_subproblems
+        expr=(
+            instance.ePlanningNPV
+            - BENDERS_THETA_SCALE * sum(
+                instance.vTHETA[key]
+                for key in benders_subproblems
+            )
         ),
-        sense=maximize
+        sense=maximize,
     )
 
 
-# -------------------------------------------------------------------------
-# Extract solution
-# -------------------------------------------------------------------------
-
-def process_planning_sol(instance,
-                         planning_variables):
-    """
-    Create the PlanningSolution object.
-    """
-
-    planning_values = {}
-
-    #
-    # Capacity variables (if available)
-    #
-
-    negative_capacity = False
-
-    if hasattr(instance, "eAvailableCapacity"):
-
-        capacity_values = [
-            value(v)
-            for v in instance.eAvailableCapacity.values()
-        ]
-
-        negative_capacity = any(
-            x < -1e-8
-            for x in capacity_values
+def set_recourse_cost_lower_bounds(instance, recourse_cost_lower_bounds):
+    """Set valid lower bounds on net operational cost theta variables."""
+    instance.ThetaLowerBound.clear()
+    for subproblem_key, lower_bound in recourse_cost_lower_bounds.items():
+        instance.ThetaLowerBound.add(
+            instance.vTHETA[subproblem_key] >= float(lower_bound)
+            / BENDERS_THETA_SCALE
         )
 
-    #
-    # Build lookup dictionary
-    #
+def process_planning_sol(instance, planning_variables):
+    """
+    Create a PlanningSolution from the current master solution.
+
+    Values are returned without integer/binary rounding. This is
+    important because the P&J relaxed phase intentionally permits
+    fractional values for originally discrete linking variables.
+    """
 
     var_lookup = {
         var.name: var
@@ -242,41 +239,30 @@ def process_planning_sol(instance,
         )
     }
 
-    #
-    # Extract values
-    #
+    planning_values = {}
 
     for name in planning_variables:
 
-        val = value(var_lookup[name])
+        if name not in var_lookup:
+            raise KeyError(
+                f"Planning variable '{name}' was not found in the "
+                f"active master variables."
+            )
 
-        if negative_capacity:
-            val = round_small_values(val)
+        val = value(var_lookup[name], exception=True)
 
-        planning_values[name] = val
+        if val is None:
+            raise ValueError(
+                f"Planning variable '{name}' has no value after "
+                f"the master solve."
+            )
 
-    #
-    # Planning cost
-    #
+        # Preserve fractional values. Do not round here.
+        planning_values[name] = float(val)
 
-    planning_cost = value(instance.ePlanningNPV)
+    planning_cost = float(value(instance.ePlanningNPV))
 
     return PlanningSolution(
         planning_cost=planning_cost,
         values=planning_values,
     )
-
-
-# -------------------------------------------------------------------------
-# Round numerical noise
-# -------------------------------------------------------------------------
-
-def round_small_values(z):
-    """
-    Replace tiny negative values by zero.
-    """
-
-    if z < -1e-8:
-        return 0.0
-
-    return z

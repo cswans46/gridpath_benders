@@ -135,6 +135,67 @@ def get_benders_flag_parser():
         type=int,
         help="Flag to determine whether to run scenario with Bender's decomposition.",
     )
+    parser.add_argument(
+        "--max_benders_iter",
+        default=200,
+        type=int,
+        help="The maximum number of Benders iterations. Defaults to 200.",
+    )
+    parser.add_argument(
+        "--benders_conv_tol",
+        default=1e-10,
+        type=float,
+        help="The convergence tolerance for Benders decomposition. Defaults to 1e-10.",
+    )
+    parser.add_argument(
+        "--benders_abs_gap_tol",
+        default=1e-4,
+        type=float,
+        help="The absolute gap tolerance for Benders decomposition. Defaults to 1e-4.",
+    )
+    parser.add_argument(
+        "--max_benders_cpu_time",
+        default=3600,
+        type=float,
+        help="The maximum CPU time for each Benders subproblem. Defaults to 3600 seconds.",
+    )
+    parser.add_argument(
+        "--benders_stab_dynamic",
+        default=True,
+        type=bool,
+        help="Flag to enable dynamic stabilization in Benders decomposition (this must be true if stab_param is defined). Defaults to True.",
+    )
+    parser.add_argument(
+        "--benders_stab_param",
+        default=0.025,
+        type=float,
+        help="The stabilization parameter for Benders decomposition. Defaults to 0.025",
+    )
+    parser.add_argument(
+        "--benders_master_discrete_method",
+        default="pj_relax",
+        type=str,
+        help="The method for handling binary investment linking variables ('djc' or 'pj_relax') in the master problem. Defaults to 'pj_relax'.",
+    )
+    parser.add_argument(
+        "--benders_operational_discrete_method",
+        default="fixed_z",
+        type=str,
+        help="The method for handling binary operational non-linking variables ('fixed_z' or 'pj_relax'). Defaults to 'fixed_z'.",
+    )
+    parser.add_argument(
+        "--benders_stabilization_method",
+        default="none",
+        type=str,
+        help="The stabilization method for Benders decomposition (l1, l2, or none). Defaults to 'none'. 'none' without stabparam means no stabilisation. 'none' with stabparam means P&J-style regularisation.",
+    )
+    parser.add_argument(
+        "--benders_operational_solver",
+        default="automatic",
+        choices=("automatic", "interior_point", "primal_simplex"),
+        type=str,
+        help="The MOSEK or Gurobi LP algorithm for pj_relax operational subproblems in Benders decomposition: automatic (default), interior_point, or primal_simplex.",
+    )
 
     return parser
 

@@ -23,22 +23,6 @@ class GurobiBendersDirect(GurobiDirect):
     def _add_benders_indicators(self, model):
 
         # --------------------------------------------------------
-        # Diagnostic: Pyomo -> Gurobi variable mapping
-        # --------------------------------------------------------
-
-        print("\nGurobi variable mapping:")
-
-        for pyomo_var, gurobi_var in (
-            self._pyomo_var_to_solver_var_map.items()
-        ):
-            print(
-                "   ",
-                pyomo_var.name,
-                "->",
-                gurobi_var.VarName,
-            )
-
-        # --------------------------------------------------------
         # Retrieve Benders data stored by algorithms.py
         # --------------------------------------------------------
 

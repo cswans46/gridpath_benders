@@ -279,7 +279,7 @@ def all_modules_list():
         "objective.system.aggregate_market_revenue_and_costs",
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
-        "objective.min_op_costs",
+        "objective.op_npv_benders",
         "objective.max_npv",
         "objective.max_npv_benders"
     ]
@@ -713,8 +713,9 @@ def determine_modules(
         modules_to_use.remove("system.markets.fix_market_participation")
 
     if not parsed_arguments.benders:
-        modules_to_use.remove("objective.min_op_costs")
+        modules_to_use.remove("objective.op_npv_benders")
         modules_to_use.remove("objective.max_npv_benders")
+        modules_to_use.remove("system.policy.benders_policy_constraint")
 
     # Remove modules associated with features that are not requested
     optional_modules = optional_modules_list()

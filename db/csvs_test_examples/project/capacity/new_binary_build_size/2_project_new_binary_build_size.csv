@@ -1,0 +1,6 @@
+project,binary_build_size_mw,binary_build_size_mwh
+Solar,10,
+Battery_bin,10,40
+Wind_new,20,
+Gas_CCGT_new_bin,10,
+Gas_CT_new_bin,10,

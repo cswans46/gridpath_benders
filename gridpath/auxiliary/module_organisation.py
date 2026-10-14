@@ -81,7 +81,7 @@ def define_benders_modules(modules_to_use):
         "objective.system.aggregate_market_revenue_and_costs",
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
-        "objective.min_op_costs",
+        "objective.op_npv_benders",
         "project.fuels",
         "project.operations",
         "project.operations.operational_types",
@@ -219,14 +219,15 @@ def define_benders_modules(modules_to_use):
         "transmission.capacity.consolidate_results",
         "transmission.capacity.capacity_groups",
         "system.policy.carbon_cap",
+        "system.policy.carbon_cap.carbon_cap",
         "system.policy.energy_targets",
+        "system.policy.energy_targets.period_energy_target",
+        "system.policy.performance_standard.performance_standard",
+        "system.policy.energy_targets.consolidate_results",
+        "system.policy.carbon_cap.consolidate_results",
     ]
 
     inv_module = [
-        "system.policy.energy_targets.period_energy_target",
-        "system.policy.energy_targets.consolidate_results",
-        "system.policy.carbon_cap.carbon_cap",
-        "system.policy.carbon_cap.consolidate_results",
         "system.policy.subsidies",
         "system.policy.benders_policy_constraint",
         "transmission",

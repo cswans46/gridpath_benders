@@ -237,7 +237,7 @@ def add_model_components(
 
     m.STOR_NEW_BIN = Set()
 
-    if m._is_benders_subproblem:
+    if getattr(m, "_is_benders_subproblem", False):
         m.STOR_NEW_BIN_VNTS = Set(dimen=2, within=m.STOR_NEW_BIN * NonNegativeIntegers)
     else:
         m.STOR_NEW_BIN_VNTS = Set(dimen=2, within=m.STOR_NEW_BIN * m.PERIODS)
@@ -330,7 +330,7 @@ def add_model_components(
 
 def operational_periods_by_storage_vintage(mod, prj, v):
     # For Benders, we need to ensure that this
-    if mod._is_benders_subproblem:
+    if getattr(mod, "_is_benders_subproblem", False):
         # In Benders, PERIODS contains only the periods in this subproblem.
         # The vintage itself may be earlier than the first subproblem period.
         future_trajectory_periods = list(mod.PERIODS)
@@ -367,7 +367,7 @@ def stor_new_bin_vintages_operational_in_period(mod, p):
 
 def financial_periods_by_storage_vintage(mod, prj, v):
     # For Benders, we need to ensure that this
-    if mod._is_benders_subproblem:
+    if getattr(mod, "_is_benders_subproblem", False):
         # In Benders, PERIODS contains only the periods in this subproblem.
         # The vintage itself may be earlier than the first subproblem period.
         future_trajectory_periods = list(mod.PERIODS)

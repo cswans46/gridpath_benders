@@ -92,8 +92,15 @@ def load_subtype_modules(required_subtype_modules, package, required_attributes)
 
 
 def join_sets(mod, set_name_list):
+    for s in set_name_list:
+        if not hasattr(mod, s):
+            raise AttributeError(
+                f"join_sets expected model component {s!r}, but it is missing."
+            )
+
+        component = getattr(mod, s)
     """
-    Join sets in a list.
+    Join set in a list.
     If list contains only a single set, return just that set.
 
     :param mod:
@@ -107,16 +114,13 @@ def join_sets(mod, set_name_list):
     else:
         joined_set = []
         for s in set_name_list:
+
             component = getattr(mod, s)
 
-            if not mod._is_benders_subproblem:
-                print(
-                    f"join_sets: trying to access {s} | "
-                    f"type={type(component).__name__} | "
-                    f"constructed={component.is_constructed()}"
-                )
-
-            if not component.is_constructed():
+            if (
+                hasattr(component, "is_constructed")
+                and not component.is_constructed()
+            ):
                 raise RuntimeError(
                     f"DEPENDENCY ERROR: {s} has not been constructed "
                     f"while join_sets is being called."

@@ -5,6 +5,7 @@ from pyomo.environ import Expression, Param,Set,Var
 from pyomo.core.expr.visitor import identify_variables, identify_components
 import os
 from pyomo.common.collections import ComponentSet
+import csv
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +19,21 @@ def define_linking_vars(m):
         "Energy_Storage_Capacity_MWh",
     ]
 
-    investment_vars = [
+    budgeted_policy_components = (
         "CARBON_CAP_ALLOCATION",
+        "PERIOD_ENERGY_TARGET_ALLOCATION",
+        "PERFORMANCE_STANDARD_MWH_ALLOCATION",
+        "PERFORMANCE_STANDARD_MW_ALLOCATION",
+        "BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION",
+        "BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION",
+        "BENDERS_CARBON_CREDIT_GENERATED_TOTAL",
+        "BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION",
+    )
+    investment_vars = [
+        component_name
+        for component_name in budgeted_policy_components
+        if hasattr(m, component_name)
     ]
-
-    if hasattr(m, "PERIOD_ENERGY_TARGET_ALLOCATION"):
-        investment_vars = investment_vars + ["PERIOD_ENERGY_TARGET_ALLOCATION"]
 
     linking_vars = set()
 
@@ -59,13 +69,12 @@ def define_linking_vars(m):
         else:
             linking_vars.add(var_component.name)
 
-    return list(linking_vars)
+    return sorted(linking_vars)
 
 def create_operational_problem_benders(
         scenario_directory,
         key,
         dynamic_components,
-        expect_feasible,
         multi_stage,
         parsed_arguments,
 ):
@@ -75,10 +84,6 @@ def create_operational_problem_benders(
         load_scenario_data,
         create_problem_instance,
         fix_variables
-    )
-
-    from gridpath.benders.subproblems import (
-        add_slacks_to_subproblem
     )
 
     """
@@ -111,38 +116,22 @@ def create_operational_problem_benders(
         parsed_arguments=parsed_arguments
     )
 
-    inputs_path = os.path.join(
-        scenario_directory,
-        str(key.weather),
-        str(key.hydro),
-        str(key.availability),
-        str(key.subproblem),
-        str(key.stage),
-        "inputs",
-    )
-
-    projects_path = os.path.join(
-        inputs_path,
-        "projects.tab",
-    )
-
-    # print(
-    #     "\n--- BENDERS WORKER ---"
-    #     f"\nPID: {os.getpid()}"
-    #     f"\nkey: {key}"
-    #     f"\ninputs_path: {inputs_path}"
-    #     f"\nprojects_path: {projects_path}"
-    #     f"\ninputs exists: {os.path.isdir(inputs_path)}"
-    #     f"\nprojects exists: {os.path.isfile(projects_path)}"
-    # )
+    # if not hasattr(model, "CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP"):
+    #     model.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
+    #         dimen=2,
+    #         initialize=_get_carbon_cap_zone_periods(
+    #             scenario_directory,
+    #             key.weather,
+    #             key.hydro,
+    #             key.availability,
+    #             key.subproblem,
+    #             key.stage,
+    #         ),
+    #     )
 
     create_abstract_model(
-        # Also have to create two separate models (operational and investment) to facilitate benders
-        # Because it implies a change to the optimisation structure.
         model,
         dynamic_components,
-        # This is why need to make loaded_modules a dictionary.
-        # This is to create the model from the loaded modules from module_list.py and model_organisation.py.
         loaded_modules["Operational"],
         scenario_directory,
         key.weather,
@@ -152,13 +141,6 @@ def create_operational_problem_benders(
         key.stage,
         temporal_subproblems=None
     )
-
-    if expect_feasible:
-        # print("Skipping feasibility cuts.")
-        logger.info("Skipping feasibility cuts.")
-    else:
-        # We can add slacks to subproblem here because we haven't instantiated the model yet.
-        add_slacks_to_subproblem(model)
 
     scenario_data_benders = load_scenario_data(
         model,
@@ -173,117 +155,7 @@ def create_operational_problem_benders(
         key.stage,
     )
 
-    # print("Scenario data: ",scenario_data.data())
-    # if not parsed_arguments.quiet:
-        # print("Creating problem instance for operational subproblems...")
     instance = create_problem_instance(model, scenario_data_benders)
-
-    # print("\n--- Sets ---")
-    # for s in instance.component_objects(Set):
-    #     print(
-    #         "SET:",
-    #         s.name,
-    #         "constructed:",
-    #         s.is_constructed(),
-    #         "size:",
-    #         len(s) if s.is_constructed() else "NOT CONSTRUCTED",
-    #     )
-    #
-    # print("\n--- Variables ---")
-    # for var in instance.component_objects(Var, active=True):
-    #     print(
-    #         var.name,
-    #         "indexed =", var.is_indexed(),
-    #         "entries =", len(var) if var.is_indexed() else 1,
-    #     )
-    #     if var.is_indexed():
-    #         for i in var:
-    #             print("   ", i, "=", value(var[i], exception=False))
-    #     else:
-    #         print("   =", value(var, exception=False))
-    #
-    # print("\n--- Constraints ---")
-    # for con in instance.component_objects(Constraint, active=True):
-    #     print(
-    #         con.name,
-    #         "indexed =", con.is_indexed(),
-    #         "entries =", len(con) if con.is_indexed() else 1,
-    #     )
-    #
-    # print("\n--- Objectives ---")
-    # for obj in instance.component_objects(Objective, active=True):
-    #     print(obj.name)
-    #     print("   expression:", obj.expr)
-    #     print("   sense:", obj.sense)
-    #
-    # print("\n================== CHECKING CAPACITY SETS ====================")
-    # print("PRJ_OPR_PRDS:")
-    # for i in instance.PRJ_OPR_PRDS:
-    #     print("   ", i)
-
-    # print("\n================== EXPRESSION VARIABLE DEPENDENCIES ==================")
-    #
-    # for expr_component in instance.component_objects(
-    #         Expression, active=True
-    # ):
-    #
-    #     print(f"\n--- {expr_component.name} ---")
-    #     print("indexed:", expr_component.is_indexed())
-    #     print("constructed:", expr_component.is_constructed())
-    #
-    #     if expr_component.is_indexed():
-    #
-    #         # Indexed Expression
-    #         for index in expr_component:
-    #
-    #             expr_data = expr_component[index]
-    #             expr = expr_data.expr
-    #
-    #             variables = list(identify_variables(expr))
-    #             params = list(identify_components(expr, {Param}))
-    #
-    #             print(f"\n{expr_data.name}[{index}]")
-    #             print(f"  EXPR: {expr}")
-    #
-    #             if variables:
-    #                 print("  VARIABLES:")
-    #                 for var in variables:
-    #                     print(f"    {var.name}")
-    #             else:
-    #                 print("  VARIABLES: NONE")
-    #
-    #             if params:
-    #                 print("  PARAMS:")
-    #                 for param in params:
-    #                     print(f"    {param.name}")
-    #             else:
-    #                 print("  PARAMS: NONE")
-
-        # else:
-        #
-        #     # Scalar Expression
-        #     expr_data = expr_component
-        #     expr = expr_data.expr
-        #
-        #     variables = list(identify_variables(expr))
-        #     params = list(identify_components(expr, {Param}))
-        #
-        #     print(f"\n{expr_data.name}")
-        #     print(f"  EXPR: {expr}")
-        #
-        #     if variables:
-        #         print("  VARIABLES:")
-        #         for var in variables:
-        #             print(f"    {var.name}")
-        #     else:
-        #         print("  VARIABLES: NONE")
-        #
-        #     if params:
-        #         print("  PARAMS:")
-        #         for param in params:
-        #             print(f"    {param.name}")
-        #     else:
-        #         print("  PARAMS: NONE")
 
     # Fix variables if modules request so
     instance = fix_variables(
@@ -299,3 +171,34 @@ def create_operational_problem_benders(
     )
 
     return instance
+
+def _get_carbon_cap_zone_periods(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        subproblem,
+        stage,
+):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "carbon_cap.tab",
+    )
+
+    def initialize(model):
+        with open(filename, "r") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+
+            for row in reader:
+                yield (
+                    row["carbon_cap_zone"],
+                    int(row["period"]),
+                )
+
+    return initialize

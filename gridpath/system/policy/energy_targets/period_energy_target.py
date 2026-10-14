@@ -41,7 +41,16 @@ def add_model_components(
     """
 
     m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET = Set(
-        dimen=2, within=m.ENERGY_TARGET_ZONES * m.PERIODS
+        dimen=2, within=m.ENERGY_TARGET_ZONES * m.PERIODS,
+        initialize=_period_energy_target_zone_periods_init(
+            m,
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+        )
     )
 
     # RPS target specified in energy terms
@@ -124,6 +133,7 @@ def load_model_data(
     :param stage:
     :return:
     """
+
     # Load the targets
     data_portal.load(
         filename=os.path.join(
@@ -162,6 +172,31 @@ def load_model_data(
     else:
         data_portal.data()["PERIOD_ENERGY_TARGET_ZONE_LOAD_ZONES"] = {None: []}
 
+def _period_energy_target_zone_periods_init(m,
+                                  scenario_directory,
+                                  weather_iteration,
+                                  hydro_iteration,
+                                  availability_iteration,
+                                  subproblem,
+                                  stage):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "period_energy_targets.tab",
+    )
+    with open(filename, "r") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+
+        for row in reader:
+            yield (
+                row["energy_target_zone"],
+                int(row["period"]),
+            )
 
 def get_inputs_from_database(
     scenario_id,

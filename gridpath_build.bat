@@ -37,7 +37,12 @@ echo running end to end
 python gridpath/run_end_to_end.py --scenario_location C:\Users\SwansonC\ECD\gridpath_ana\examples --database %stem%/database%database_it%.db --scenario_id %scn_id% --solver %solver% --benders %benders% --n_parallel_get_inputs=%n_parallel_get_inputs% --n_parallel_solve=%n_parallel_get_inputs%
 @REM  > output.log 2>&1
 @REM --load_gurobi_solution
-goto:eof
+if not errorlevel 1 goto:eof
+echo.
+echo Run FAILED. Press Ctrl+C to exit.
+:wait_for_ctrl_c
+ping -n 3600 127.0.0.1 >nul
+goto wait_for_ctrl_c
 :load_problem_file
 @REM python gridpath\auxiliary\plugins\gurobi_solve.py --problem_file_directory C:\Users\SwansonC\ECD\gridpath_ana\examples\single_stage_prod_cost_w_startup_limit\3\prob_sol_files\ --problem_file_name problem_file.lp
 pause

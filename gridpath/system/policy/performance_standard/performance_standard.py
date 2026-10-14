@@ -47,8 +47,17 @@ def add_model_components(
     """
 
     m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD = Set(
-        dimen=2, within=m.PERFORMANCE_STANDARD_ZONES * m.PERIODS
+        dimen=2, within=m.PERFORMANCE_STANDARD_ZONES * m.PERIODS,
+        initialize=_performance_standard_zone_periods_init(m,
+                                 scenario_directory,
+                                 weather_iteration,
+                                 hydro_iteration,
+                                 availability_iteration,
+                                 subproblem,
+                                 stage,
+                                 )
     )
+
     m.performance_standard_tco2_per_mwh = Param(
         m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD,
         within=NonNegativeReals,
@@ -82,6 +91,7 @@ def load_model_data(
     :param stage:
     :return:
     """
+
     data_portal.load(
         filename=os.path.join(
             scenario_directory,
@@ -97,6 +107,32 @@ def load_model_data(
         param=(m.performance_standard_tco2_per_mwh, m.performance_standard_tco2_per_mw),
     )
 
+def _performance_standard_zone_periods_init(m,
+                                  scenario_directory,
+                                  weather_iteration,
+                                  hydro_iteration,
+                                  availability_iteration,
+                                  subproblem,
+                                  stage):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "performance_standard.tab",
+    )
+
+    with open(filename, "r") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+
+        for row in reader:
+            yield (
+                row["performance_standard_zone"],
+                int(row["period"]),
+            )
 
 def get_inputs_from_database(
     scenario_id,

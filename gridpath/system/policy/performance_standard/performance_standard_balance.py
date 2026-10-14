@@ -16,8 +16,7 @@
 """
 Constrain total carbon emissions to be less than performance standard
 """
-
-from pyomo.environ import Var, Constraint, Expression, NonNegativeReals, value
+from pyomo.environ import Constraint, Expression, NonNegativeReals, Set, Var, value
 
 from gridpath.auxiliary.dynamic_components import (
     performance_standard_balance_emission_components,
@@ -45,6 +44,48 @@ def add_model_components(
     :param d:
     :return:
     """
+    if m._is_benders_subproblem:
+
+        if not hasattr(m, "SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[str(subproblem)])
+
+        # For Benders subproblems, explicitly construct the set from
+        # the subproblem's carbon_cap.tab.
+        # m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
+        #     dimen=2,
+        #     within=m.CARBON_CAP_ZONES * m.PERIODS,
+        #     initialize=_get_carbon_cap_zone_periods(
+        #         scenario_directory,
+        #         weather_iteration,
+        #         hydro_iteration,
+        #         availability_iteration,
+        #         subproblem,
+        #         stage,
+        #     ),
+        # )
+
+        m.PERFORMANCE_STANDARD_MWH_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (zone, period, str(subproblem))
+                for zone, period in mod.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD
+                if mod.performance_standard_tco2_per_mwh[zone, period] != Infinity
+            ],
+        )
+        m.PERFORMANCE_STANDARD_MWH_ALLOCATION = Var(
+            m.PERFORMANCE_STANDARD_MWH_ALLOCATION_INDEX
+        )
+        m.PERFORMANCE_STANDARD_MW_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (zone, period, str(subproblem))
+                for zone, period in mod.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD
+                if mod.performance_standard_tco2_per_mw[zone, period] != Infinity
+            ],
+        )
+        m.PERFORMANCE_STANDARD_MW_ALLOCATION = Var(
+            m.PERFORMANCE_STANDARD_MW_ALLOCATION_INDEX
+        )
 
     # Performance standard per energy unit
     m.Performance_Standard_Energy_Unit_Overage = Var(
@@ -89,22 +130,28 @@ def add_model_components(
         :param p:
         :return:
         """
+
         var = mod.performance_standard_tco2_per_mwh[z, p]
         if var == Infinity:
             return Constraint.Skip
         else:
+
+            if mod._is_benders_subproblem:
+                allocation = mod.PERFORMANCE_STANDARD_MWH_ALLOCATION[z, p, subproblem]
+            else:
+                allocation = 0
+
             return (
                 mod.Total_Performance_Standard_Emissions_from_All_Sources_Expression[
                     z, p
                 ]
                 - mod.Performance_Standard_Energy_Unit_Overage_Expression[z, p]
-                <= (
-                    mod.Total_Performance_Standard_Project_Energy[z, p]
-                    * mod.performance_standard_tco2_per_mwh[z, p]
-                )
-                + mod.Total_Performance_Standard_Credits_from_All_Sources_Expression[
+                - mod.Total_Performance_Standard_Project_Energy[z, p]
+                * mod.performance_standard_tco2_per_mwh[z, p]
+                - mod.Total_Performance_Standard_Credits_from_All_Sources_Expression[
                     z, p
                 ]
+                <= allocation
             )
 
     m.Performance_Standard_Energy_Unit_Constraint = Constraint(
@@ -141,18 +188,23 @@ def add_model_components(
         if var == Infinity:
             return Constraint.Skip
         else:
+
+            if mod._is_benders_subproblem:
+                allocation = mod.PERFORMANCE_STANDARD_MW_ALLOCATION[z, p, subproblem]
+            else:
+                allocation = 0
+
             return (
                 mod.Total_Performance_Standard_Emissions_from_All_Sources_Expression[
                     z, p
                 ]
                 - mod.Performance_Standard_Power_Unit_Overage_Expression[z, p]
-                <= (
-                    mod.Total_Performance_Standard_Project_Capacity[z, p]
-                    * mod.performance_standard_tco2_per_mw[z, p]
-                )
-                + mod.Total_Performance_Standard_Credits_from_All_Sources_Expression[
+                - mod.Total_Performance_Standard_Project_Capacity[z, p]
+                * mod.performance_standard_tco2_per_mw[z, p]
+                - mod.Total_Performance_Standard_Credits_from_All_Sources_Expression[
                     z, p
                 ]
+                <= allocation
             )
 
     m.Performance_Standard_Power_Unit_Constraint = Constraint(

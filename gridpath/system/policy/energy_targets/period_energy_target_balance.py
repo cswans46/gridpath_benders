@@ -18,6 +18,7 @@ Simplest implementation with a MWh target by period.
 
 import csv
 import os.path
+import os
 import pandas as pd
 
 from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value, Param, Set
@@ -62,7 +63,8 @@ def add_model_components(
     )
 
     if m._is_benders_subproblem:
-        m.SUBPROBLEM = Set(initialize=[subproblem])
+        if not hasattr(m, "SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[subproblem])
 
         m.PERIOD_ENERGY_TARGET_ALLOCATION = Var(
             m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
@@ -180,6 +182,48 @@ def export_results(
         getattr(d, ENERGY_TARGET_ZONE_PRD_DF)[c] = None
     getattr(d, ENERGY_TARGET_ZONE_PRD_DF).update(results_df)
 
+def load_model_data(
+    m,
+    d,
+    data_portal,
+    scenario_directory,
+    weather_iteration,
+    hydro_iteration,
+    availability_iteration,
+    subproblem,
+    stage,
+):
+    """
+
+    :param m:
+    :param d:
+    :param data_portal:
+    :param scenario_directory:
+    :param subproblem:
+    :param stage:
+    :return:
+    """
+    if not m._is_benders_subproblem:
+        return
+
+    # Load the targets
+    data_portal.load(
+        filename=os.path.join(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+            "inputs",
+            "period_energy_targets.tab",
+        ),
+        index=m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
+        param=(
+            m.period_energy_target_mwh,
+            m.period_energy_target_fraction,
+        ),
+    )
 
 def save_duals(
     scenario_directory,

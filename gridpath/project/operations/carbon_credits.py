@@ -180,6 +180,24 @@ def add_model_components(
         ),  # pick one of intensity-based and absolute thresholds
     )
 
+    if getattr(m, "_is_benders_subproblem", False):
+        m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (prj, prd, str(subproblem))
+                for prj, prd in mod.CARBON_CREDITS_GENERATION_PRJ_OPR_PRDS
+                if mod.absolute_threshold_emissions_toCO2[prj, prd] < Infinity
+            ],
+        )
+        m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION = Var(
+            m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+            bounds=lambda mod, prj, prd, worker: (
+                0,
+                mod.absolute_threshold_emissions_toCO2[prj, prd],
+            ),
+        )
+
     # Derived Sets
     ###########################################################################
 
@@ -307,11 +325,25 @@ def add_model_components(
 
         var1 = mod.intensity_threshold_emissions_toCO2_per_MWh[prj, prd]
         var2 = mod.absolute_threshold_emissions_toCO2[prj, prd]
+        absolute_threshold = var2
+        if (
+            hasattr(
+                mod,
+                "BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION",
+            )
+            and var2 < Infinity
+        ):
+            absolute_threshold = (
+                mod.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION[
+                    prj, prd, str(subproblem)
+                ]
+            )
+
         if (var1 == Infinity) and (var2 == Infinity):
             return mod.Project_Carbon_Credits_Generated[prj, prd] == 0
         elif var1 == Infinity:
             return mod.Project_Carbon_Credits_Generated[prj, prd] <= (
-                mod.absolute_threshold_emissions_toCO2[prj, prd]
+                absolute_threshold
                 - sum(
                     mod.Project_Carbon_Emissions[p, tmp]
                     * mod.hrs_in_tmp[tmp]
@@ -336,7 +368,7 @@ def add_model_components(
             return mod.Project_Carbon_Credits_Generated[prj, prd] <= (
                 total_power_provision_in_prd
                 * mod.intensity_threshold_emissions_toCO2_per_MWh[prj, prd]
-                + mod.absolute_threshold_emissions_toCO2[prj, prd]
+                + absolute_threshold
                 - sum(
                     mod.Project_Carbon_Emissions[p, tmp]
                     * mod.hrs_in_tmp[tmp]
@@ -623,23 +655,37 @@ def write_model_inputs(
 
         periods = {int(row[0]) for row in periods_for_filtering}
 
+        # Identify project/vintage combinations that should be included
+        period = next(iter(periods))
+
         # --------------------------------------------------------------
         # Get project-vintage-lifetime combinations.
         # --------------------------------------------------------------
 
         c = conn.cursor()
 
-        vintage_project_lifetimes = [
-            (int(str(vintage)[:4]), project, lifetime)
-            for vintage, project, lifetime in c.execute(
+        new_project = [
+            (int(str(vintage)[:4]), project)
+            for vintage, project in c.execute(
                 f"""
-                SELECT vintage, project, operational_lifetime_yrs
+                SELECT vintage, project
                 FROM inputs_project_new_cost
-                WHERE project_new_cost_scenario_id =
-                    {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
+                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
                 """
             ).fetchall()
         ]
+        spec_project = [
+            (int(str(period)[:4]), project)
+            for period, project in c.execute(
+                f"""
+                SELECT period, project
+                FROM inputs_project_specified_capacity
+                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+
+        project_years = spec_project + new_project
 
         # --------------------------------------------------------------
         # Identify projects with at least one active vintage in one of
@@ -648,18 +694,8 @@ def write_model_inputs(
 
         included_projects = {
             project
-            for project in {
-                project
-                for _, project, _ in vintage_project_lifetimes
-            }
-            if all(
-                any(
-                    vintage <= period < vintage + lifetime
-                    for vintage, proj, lifetime in vintage_project_lifetimes
-                    if proj == project
-                )
-                for period in periods
-            )
+            for vintage, project in project_years
+            if vintage == period
         }
 
         # --------------------------------------------------------------

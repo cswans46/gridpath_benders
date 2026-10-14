@@ -16,7 +16,7 @@
 Constraint total carbon emissions to be less than cap
 """
 
-from pyomo.environ import Var, Constraint, Expression, NonNegativeReals, value, Set
+from pyomo.environ import Var, Param,Constraint, Expression, NonNegativeReals, value, Set
 
 from gridpath.auxiliary.dynamic_components import (
     carbon_cap_balance_emission_components,
@@ -27,8 +27,9 @@ from gridpath.common_functions import (
     duals_wrapper,
     none_dual_type_error_wrapper,
 )
+import os
+import csv
 from gridpath.system.policy.carbon_cap import CARBON_CAP_ZONE_PRD_DF
-
 
 def add_model_components(
     m,
@@ -46,6 +47,34 @@ def add_model_components(
     :param d:
     :return:
     """
+
+    # For Benders subproblems, explicitly construct the set from
+    # the subproblem's carbon_cap.tab.
+    if m._is_benders_subproblem:
+
+        if not hasattr(m, "SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[str(subproblem)])
+
+        # For Benders subproblems, explicitly construct the set from
+        # the subproblem's carbon_cap.tab.
+        # m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
+        #     dimen=2,
+        #     within=m.CARBON_CAP_ZONES * m.PERIODS,
+        #     initialize=_get_carbon_cap_zone_periods(
+        #         scenario_directory,
+        #         weather_iteration,
+        #         hydro_iteration,
+        #         availability_iteration,
+        #         subproblem,
+        #         stage,
+        #     ),
+        # )
+
+        m.CARBON_CAP_ALLOCATION = Var(
+            m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP,
+            m.SUBPROBLEM,
+            within=NonNegativeReals,
+        )
 
     m.Carbon_Cap_Overage = Var(
         m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP, within=NonNegativeReals
@@ -76,16 +105,6 @@ def add_model_components(
             for component in getattr(d, carbon_cap_balance_credit_components)
         ),
     )
-
-    if m._is_benders_subproblem:
-        if not hasattr(m,"SUBPROBLEM"):
-            m.SUBPROBLEM = Set(initialize=[subproblem])
-
-        m.CARBON_CAP_ALLOCATION = Var(
-            m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP,
-            m.SUBPROBLEM,
-            within=NonNegativeReals,
-        )
 
     def carbon_cap_target_rule(mod, z, p):
         """
@@ -171,6 +190,37 @@ def export_results(
         getattr(d, CARBON_CAP_ZONE_PRD_DF)[c] = None
     getattr(d, CARBON_CAP_ZONE_PRD_DF).update(results_df)
 
+# Add load_model_data here for Benders.
+def _get_carbon_cap_zone_periods(
+    scenario_directory,
+    weather_iteration,
+    hydro_iteration,
+    availability_iteration,
+    subproblem,
+    stage,
+):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "carbon_cap.tab",
+    )
+
+    def initialize(model):
+        with open(filename, "r") as f:
+            reader = csv.DictReader(f, delimiter="\t")
+
+            for row in reader:
+                yield (
+                    row["carbon_cap_zone"],
+                    int(row["period"]),
+                )
+
+    return initialize
 
 def save_duals(
     scenario_directory,

@@ -35,3 +35,4 @@ GridPath Documentation
    ui
    architecture
    advanced_docs
+   benders_decomposition

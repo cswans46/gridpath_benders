@@ -18,7 +18,15 @@ Sell carbon credits to other sectors and buy credits from other sectors.
 
 import csv
 import os.path
-from pyomo.environ import Param, Var, NonNegativeReals, value, Boolean, Constraint
+from pyomo.environ import (
+    Boolean,
+    Constraint,
+    NonNegativeReals,
+    Param,
+    Set,
+    Var,
+    value,
+)
 
 from gridpath.auxiliary.auxiliary import cursor_to_df
 from gridpath.auxiliary.validations import (
@@ -83,8 +91,75 @@ def add_model_components(
         m.CARBON_CREDITS_ZONES, m.PERIODS, within=NonNegativeReals, initialize=0
     )
 
+    if getattr(m, "_is_benders_subproblem", False):
+        m.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (z, prd, str(subproblem))
+                for z in mod.CARBON_CREDITS_ZONES
+                for prd in mod.PERIODS
+            ],
+        )
+        m.BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (z, prd, str(subproblem))
+                for z in mod.CARBON_CREDITS_ZONES
+                for prd in mod.PERIODS
+                if not mod.allow_carbon_credits_infinite_supply[z, prd]
+            ],
+        )
+        m.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION = Var(
+            m.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+            bounds=lambda mod, z, prd, worker: (0, None)
+            if mod.allow_carbon_credits_infinite_demand[z, prd]
+            else (0, mod.carbon_credits_demand_tco2[z, prd]),
+        )
+        m.BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION = Var(
+            m.BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+            bounds=lambda mod, z, prd, worker: (0, None)
+            if mod.allow_carbon_credits_infinite_supply[z, prd]
+            else (0, mod.carbon_credits_supply_tco2[z, prd]),
+        )
+        m.BENDERS_CARBON_CREDIT_GENERATED_TOTAL = Var(
+            m.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+        )
+        def generated_credit_total_rule(mod, z, prd):
+            if not hasattr(mod, "Project_Carbon_Credits_Generated"):
+                project_credits = 0
+            else:
+                project_credits = sum(
+                    mod.Project_Carbon_Credits_Generated[prj, prd]
+                    for prj in mod.CARBON_CREDITS_GENERATION_PRJS_BY_CARBON_CREDITS_ZONE[z]
+                    if (prj, prd) in mod.CARBON_CREDITS_GENERATION_PRJ_OPR_PRDS
+                )
+            return mod.BENDERS_CARBON_CREDIT_GENERATED_TOTAL[
+                z, prd, str(subproblem)
+            ] == project_credits
+
+        m.Benders_Carbon_Credit_Generated_Total_Constraint = Constraint(
+            m.CARBON_CREDITS_ZONES,
+            m.PERIODS,
+            rule=generated_credit_total_rule,
+        )
+
+        m.Benders_Carbon_Credit_Demand_Physical_Limit_Constraint = Constraint(
+            m.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION_INDEX,
+            rule=lambda mod, z, prd, worker: mod.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[
+                z, prd, worker
+            ]
+            <= mod.BENDERS_CARBON_CREDIT_GENERATED_TOTAL[z, prd, worker],
+        )
+
     def max_sell_carbon_credits_rule(mod, z, prd):
-        if mod.allow_carbon_credits_infinite_demand[z, prd]:
+        if getattr(mod, "_is_benders_subproblem", False):
+            return mod.Sell_Carbon_Credits[z, prd] <= (
+                mod.BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[z, prd, str(subproblem)]
+            )
+        elif mod.allow_carbon_credits_infinite_demand[z, prd]:
             return Constraint.Skip
         else:
             return (
@@ -97,7 +172,17 @@ def add_model_components(
     )
 
     def max_buy_carbon_credits_rule(mod, z, prd):
-        if mod.allow_carbon_credits_infinite_supply[z, prd]:
+        if getattr(mod, "_is_benders_subproblem", False):
+            if mod.allow_carbon_credits_infinite_supply[z, prd]:
+                if hasattr(mod, "Total_Project_Carbon_Credits_Purchased"):
+                    return mod.Buy_Carbon_Credits[z, prd] <= (
+                        mod.Total_Project_Carbon_Credits_Purchased[z, prd]
+                    )
+                return mod.Buy_Carbon_Credits[z, prd] <= 0
+            return mod.Buy_Carbon_Credits[z, prd] <= (
+                mod.BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION[z, prd, str(subproblem)]
+            )
+        elif mod.allow_carbon_credits_infinite_supply[z, prd]:
             return Constraint.Skip
         else:
             return (

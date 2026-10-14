@@ -157,6 +157,8 @@ def add_model_components(
     # Sets
     ###########################################################################
 
+    capacity_type_sets = getattr(d, capacity_type_operational_period_sets)
+
     m.PRJ_OPR_PRDS = Set(
         dimen=2,
         within=m.PROJECTS * m.PERIODS,

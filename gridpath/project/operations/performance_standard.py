@@ -285,16 +285,34 @@ def write_model_inputs(
         # Get project-vintage-lifetime combinations from database
         c = conn.cursor()
         # Gather vintage, project, lifetime map for filtering
-        vintage_project_lifetimes = [
-            (int(str(vintage)[:4]), project, lifetime)
-            for vintage, project, lifetime in c.execute(
+        new_project = [
+            (int(str(vintage)[:4]), project)
+            for vintage, project in c.execute(
                 f"""
-                SELECT vintage, project, operational_lifetime_yrs
+                SELECT vintage, project
                 FROM inputs_project_new_cost
                 WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
                 """
             ).fetchall()
         ]
+        spec_project = [
+            (int(str(period)[:4]), project)
+            for period, project in c.execute(
+                f"""
+                SELECT period, project
+                FROM inputs_project_specified_capacity
+                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+        
+        project_years = spec_project + new_project
+
+        # --------------------------------------------------------------
+        # Identify projects with at least one active vintage in one of
+        # this subproblem's operational periods.
+        # --------------------------------------------------------------
+        
         # Call in locally the sql query for periods.tab for this subproblem
         from gridpath.temporal.investment.periods import (
             get_inputs_from_database as get_periods_from_database
@@ -314,25 +332,20 @@ def write_model_inputs(
         periods = {int(row[0]) for row in periods_for_filtering}
 
         # Identify project/vintage combinations that should be included
-        excluded_projects = {
+        period = next(iter(periods))
+
+        # Identify project/vintage combinations that should be included
+        included_projects = {
             project
-            for project in {
-                project
-                for vintage, project, lifetime in vintage_project_lifetimes
-            }
-            if all(
-                period < vintage or period >= vintage + lifetime
-                for vintage, proj, lifetime in vintage_project_lifetimes
-                if proj == project
-                for period in periods
-            )
+            for vintage, project in project_years
+            if vintage == period
         }
 
         # Filter performance_standard.tab
         project_rows = [
             row
             for row in project_zones.fetchall()
-            if row[0] not in excluded_projects
+            if row[0] in included_projects
         ]
         # Create a separate filtered projects class to avoid consuming the projects component before later
         # project.tab is actually written.
