@@ -65,6 +65,7 @@ from gridpath.common_functions import (
     get_required_e2e_arguments_parser,
     get_temporal_structure_csv_overwrite_parser,
     get_import_results_parser,
+    get_benders_flag_parser,
     get_version_parser,
     results_export_complete,
 )
@@ -177,7 +178,7 @@ def import_scenario_results_into_database(
             if current_suproblem.endswith("/"):
                 current_suproblem = current_suproblem[:-1]
 
-            print(f"--- subproblem: {current_suproblem}")
+                            # print(f"--- subproblem: {current_suproblem}")
 
         # Import termination condition data
         c = db.cursor()
@@ -494,6 +495,7 @@ def parse_arguments(args):
         add_help=True,
         parents=[
             get_db_parser(),
+            get_benders_flag_parser(),
             get_required_e2e_arguments_parser(),
             get_temporal_structure_csv_overwrite_parser(),
             get_import_results_parser(),
@@ -611,8 +613,8 @@ def main(args=None):
         delete_scenario_results(conn=conn, scenario_id=scenario_id)
 
         # Go through modules
-        modules_to_use = determine_modules(scenario_directory=scenario_directory)
-        loaded_modules = load_modules(modules_to_use)
+        modules_to_use = determine_modules(parsed_arguments=parsed_arguments,scenario_directory=scenario_directory)
+        loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
         # Import appropriate results into database
         import_statuses, termination_conditions = import_scenario_results_into_database(

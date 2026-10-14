@@ -355,6 +355,12 @@ def parse_arguments(args):
     parser.add_argument(
         "--quiet", default=False, action="store_true", help="Don't print run output."
     )
+    parser.add_argument(
+        "--benders",
+        default=True,
+        action="store_true",
+        help="Flag for using Benders decomposition."
+    )
 
     parsed_arguments = parser.parse_known_args(args=args)[0]
 
@@ -436,9 +442,9 @@ def main(args=None):
         # stages-related modules
         stages_flag = scenario_structure.STAGE_FLAG
         modules_to_use = determine_modules(
-            features=feature_list, multi_stage=stages_flag
+            parsed_arguments=parsed_arguments,features=feature_list, multi_stage=stages_flag
         )
-        loaded_modules = load_modules(modules_to_use=modules_to_use)
+        loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
         # Read in inputs from db and validate inputs for loaded modules
         for (

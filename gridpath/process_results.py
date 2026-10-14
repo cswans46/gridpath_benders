@@ -31,6 +31,7 @@ from gridpath.common_functions import (
     get_db_parser,
     get_required_e2e_arguments_parser,
     get_version_parser,
+    get_benders_flag_parser
 )
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
 from gridpath.auxiliary.module_list import determine_modules, load_modules
@@ -65,9 +66,11 @@ def parse_arguments(args):
         parents=[
             get_db_parser(),
             get_required_e2e_arguments_parser(),
+            get_benders_flag_parser(),
             get_version_parser(),
         ],
     )
+
     parsed_arguments = parser.parse_known_args(args=args)[0]
 
     return parsed_arguments
@@ -114,8 +117,8 @@ def main(args=None):
         )
 
         # Go through modules
-        modules_to_use = determine_modules(scenario_directory=scenario_directory)
-        loaded_modules = load_modules(modules_to_use)
+        modules_to_use = determine_modules(parsed_arguments=parsed_arguments,scenario_directory=scenario_directory)
+        loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
         # Subscenarios
         subscenarios = SubScenarios(conn=conn, scenario_id=scenario_id)

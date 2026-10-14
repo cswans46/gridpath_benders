@@ -17,7 +17,7 @@ Aggregate carbon emissions from the project-timepoint level to
 the carbon cap zone - period level.
 """
 
-from pyomo.environ import Expression, value
+from pyomo.environ import Expression, value, Set
 
 from gridpath.auxiliary.dynamic_components import carbon_cap_balance_emission_components
 from gridpath.common_functions import create_results_df, update_results_df

@@ -31,7 +31,7 @@ import os.path
 from pathlib import Path
 
 import pandas as pd
-from pyomo.environ import Set, Param, Var, NonNegativeReals, Binary, Constraint, value
+from pyomo.environ import Set, Param, Var, NonNegativeReals, Binary, Constraint, value,NonNegativeIntegers
 
 from gridpath.auxiliary.auxiliary import cursor_to_df
 from gridpath.auxiliary.dynamic_components import (
@@ -202,7 +202,10 @@ def add_model_components(
 
     m.GEN_NEW_BIN = Set(within=m.PROJECTS)
 
-    m.GEN_NEW_BIN_VNTS = Set(dimen=2, within=m.PROJECTS * m.PERIODS)
+    if getattr(m, "_is_benders_subproblem", False):
+        m.GEN_NEW_BIN_VNTS = Set(dimen=2, within=m.GEN_NEW_BIN * NonNegativeIntegers)
+    else:
+        m.GEN_NEW_BIN_VNTS = Set(dimen=2, within=m.GEN_NEW_BIN * m.PERIODS)
 
     # Required Params
     ###########################################################################
@@ -281,14 +284,25 @@ def add_model_components(
 
 
 def operational_periods_by_generator_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if getattr(mod, "_is_benders_subproblem", False):
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.gen_new_bin_operational_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
-
 
 def gen_new_bin_operational_periods(mod):
     return project_relevant_periods(
@@ -306,12 +320,24 @@ def gen_new_bin_vintages_operational_in_period(mod, p):
 
 
 def financial_periods_by_generator_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if getattr(mod, "_is_benders_subproblem", False):
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.gen_new_bin_financial_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -644,6 +670,95 @@ def write_model_inputs(
         stage,
         conn,
     )
+
+    if subproblem != "":
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        if stage == "":
+            stage_temp = 1
+        else:
+            stage_temp = stage
+
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_temp,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        new_gen_costs_rows = new_gen_costs.fetchall()
+        new_gen_build_size_rows = new_gen_build_size.fetchall()
+
+        # Keep only project-vintage combinations that are active
+        # during at least one of this subproblem's periods.
+        included_project_vintages = {
+            (project, int(str(vintage)[:4]))
+            for project, vintage, lifetime, fixed_cost, financial_lifetime, annualized_cost
+            in new_gen_costs_rows
+            if any(
+                period >= int(str(vintage)[:4])
+                and period < int(str(vintage)[:4]) + lifetime
+                for period in periods
+            )
+        }
+
+        # Filter new_gen_costs
+        new_gen_costs_rows = [
+            row
+            for row in new_gen_costs_rows
+            if (row[0], int(str(row[1])[:4])) in included_project_vintages
+        ]
+
+        # Projects that have at least one valid vintage
+        included_projects = {
+            project
+            for project, vintage in included_project_vintages
+        }
+
+        # Filter new_gen_build_size
+        new_gen_build_size_rows = [
+            row
+            for row in new_gen_build_size_rows
+            if row[0] in included_projects
+        ]
+
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredNewGenCostBin:
+            def __init__(self, rows):
+                self.description = new_gen_costs.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class FilteredNewGenSizeBin:
+            def __init__(self, rows):
+                self.description = new_gen_build_size.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        new_gen_costs = FilteredNewGenCostBin(new_gen_costs_rows)
+        new_gen_build_size = FilteredNewGenSizeBin(new_gen_build_size_rows)
 
     with open(
         os.path.join(

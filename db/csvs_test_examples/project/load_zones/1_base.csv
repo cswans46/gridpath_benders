@@ -1,10 +1,16 @@
 project,load_zone
 Nuclear,Zone1
 Coal,Zone1
+Coal_ret,Zone1
 Gas_CCGT,Zone1
 Gas_CT,Zone1
+Gas_CCGT_ret,Zone2
+Gas_CT_ret,Zone2
+Gas_CCGT_new_bin,Zone2
+Gas_CT_new_bin,Zone2
 Wind,Zone1
 Battery,Zone1
+Battery_bin,Zone2
 Hydro,Zone1
 Gas_CCGT_new,Zone1
 Gas_CT_new,Zone1

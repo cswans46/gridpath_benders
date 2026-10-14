@@ -1333,7 +1333,13 @@ def get_inputs_from_database(
         curtailment_cost,
         n_startup_limits,
     )
-
+# Create a helper function to filter projects in a Bender's decomposition subproblem
+# Only to those that exist in the subproblem's projects.tab file.
+def filter_to_projects(df, projects):
+    if "project" in df.columns:
+        return df[df["project"].isin(projects)].copy()
+    else:
+        return df
 
 def write_model_inputs(
     scenario_directory,
@@ -1455,8 +1461,18 @@ def write_model_inputs(
         new_column_names=new_columns,
     )
 
+    # Filter projects
+    projects_path = os.path.join(inputs_directory, "projects.tab")
+
+    projects_df = pd.read_csv(
+        projects_path,
+        sep="\t",
+    )
+
+    included_projects = set(projects_df["project"])
+
     # Write var cost by period file
-    var_om_by_prd_df = cursor_to_df(var_om_by_prd)
+    var_om_by_prd_df = filter_to_projects(cursor_to_df(var_om_by_prd), included_projects)
     write_additional_opchar_file(
         opchar_df=var_om_by_prd_df,
         inputs_directory=inputs_directory,
@@ -1464,7 +1480,7 @@ def write_model_inputs(
     )
 
     # Write var cost by tmp file
-    var_om_by_tmp_df = cursor_to_df(var_om_by_tmp)
+    var_om_by_tmp_df = filter_to_projects(cursor_to_df(var_om_by_tmp),included_projects)
     write_additional_opchar_file(
         opchar_df=var_om_by_tmp_df,
         inputs_directory=inputs_directory,
@@ -1472,7 +1488,7 @@ def write_model_inputs(
     )
 
     # Write fuels file
-    fuels_df = cursor_to_df(fuels)
+    fuels_df = filter_to_projects(cursor_to_df(fuels), included_projects)
     write_additional_opchar_file(
         opchar_df=fuels_df,
         inputs_directory=inputs_directory,
@@ -1480,7 +1496,7 @@ def write_model_inputs(
     )
 
     # Write heat rates file
-    hr_df = cursor_to_df(heat_rate_curves)
+    hr_df = filter_to_projects(cursor_to_df(heat_rate_curves), included_projects)
     write_additional_opchar_file(
         opchar_df=hr_df,
         inputs_directory=inputs_directory,
@@ -1488,7 +1504,7 @@ def write_model_inputs(
     )
 
     # Write VOM file
-    vom_df = cursor_to_df(vom_curves)
+    vom_df = filter_to_projects(cursor_to_df(vom_curves), included_projects)
     write_additional_opchar_file(
         opchar_df=vom_df,
         inputs_directory=inputs_directory,
@@ -1496,13 +1512,13 @@ def write_model_inputs(
     )
 
     # Write startup chars file
-    su_df = cursor_to_df(startup_chars)
+    su_df = filter_to_projects(cursor_to_df(startup_chars), included_projects)
     write_additional_opchar_file(
         opchar_df=su_df, inputs_directory=inputs_directory, filename="startup_chars.tab"
     )
 
     # Write the cycle selection file
-    cs_df = cursor_to_df(cycle_selection)
+    cs_df = filter_to_projects(cursor_to_df(cycle_selection), included_projects)
     write_additional_opchar_file(
         opchar_df=cs_df,
         inputs_directory=inputs_directory,
@@ -1510,7 +1526,7 @@ def write_model_inputs(
     )
 
     # Write the cap_factor_limits file
-    cfl_df = cursor_to_df(cap_factor_limits)
+    cfl_df = filter_to_projects(cursor_to_df(cap_factor_limits), included_projects)
     write_additional_opchar_file(
         opchar_df=cfl_df,
         inputs_directory=inputs_directory,
@@ -1518,7 +1534,7 @@ def write_model_inputs(
     )
 
     # Write the supplemental firing file
-    sf_df = cursor_to_df(supplemental_firing)
+    sf_df = filter_to_projects(cursor_to_df(supplemental_firing), included_projects)
     write_additional_opchar_file(
         opchar_df=sf_df,
         inputs_directory=inputs_directory,
@@ -1526,7 +1542,7 @@ def write_model_inputs(
     )
 
     # Write curtailment cost by period file
-    curtailment_cost_df = cursor_to_df(curtailment_cost)
+    curtailment_cost_df = filter_to_projects(cursor_to_df(curtailment_cost), included_projects)
     write_additional_opchar_file(
         opchar_df=curtailment_cost_df,
         inputs_directory=inputs_directory,
@@ -1534,7 +1550,7 @@ def write_model_inputs(
     )
 
     # Startup limits
-    startup_limits_df = cursor_to_df(n_startup_limits)
+    startup_limits_df = filter_to_projects(cursor_to_df(n_startup_limits), included_projects)
     write_additional_opchar_file(
         opchar_df=startup_limits_df,
         inputs_directory=inputs_directory,

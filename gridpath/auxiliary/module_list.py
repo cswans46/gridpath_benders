@@ -79,6 +79,7 @@ def all_modules_list():
         "project",
         "project.capacity",
         "project.capacity.capacity_types",
+        # "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
         "project.capacity.capacity_groups",
@@ -241,6 +242,7 @@ def all_modules_list():
         "system.policy.generic_policy.aggregate_transmission_policy_contributions",
         "system.policy.generic_policy.policy_target_balance",
         "system.policy.generic_policy.consolidate_results",
+        "system.policy.benders_policy_constraint",
         "system.reliability.prm.aggregate_project_simple_prm_contribution",
         "system.reliability.prm.capacity_contribution_transfers",
         "system.reliability.prm.elcc_surface",
@@ -285,7 +287,9 @@ def all_modules_list():
         "objective.system.aggregate_market_revenue_and_costs",
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
+        "objective.op_npv_benders",
         "objective.max_npv",
+        "objective.max_npv_benders"
     ]
     return all_modules
 
@@ -638,14 +642,16 @@ def feature_remove_modules_list():
 
 
 def determine_modules(
+    parsed_arguments,
     features=None,
     scenario_directory=None,
-    multi_stage=None,
+    multi_stage=None
 ):
     """
     :param features: List of requested features. Optional input; if
         not specified, function will try to load 'features.csv' file to
         determine the requested features.
+    :param parsed_arguments: list of command-line arguments.
     :param scenario_directory: the scenario directory, where we will look
         for the list of requested features. Optional input; if not specified,
         function will look for the 'features' input parameter
@@ -729,6 +735,11 @@ def determine_modules(
         modules_to_use.remove("project.operations.fix_commitment")
         modules_to_use.remove("system.markets.fix_market_participation")
 
+    if not parsed_arguments.benders:
+        modules_to_use.remove("objective.op_npv_benders")
+        modules_to_use.remove("objective.max_npv_benders")
+        modules_to_use.remove("system.policy.benders_policy_constraint")
+
     # Remove modules associated with features that are not requested
     optional_modules = optional_modules_list()
     for feature in list(optional_modules.keys()):
@@ -777,22 +788,92 @@ def determine_modules(
     return modules_to_use
 
 
-def load_modules(modules_to_use):
+def load_modules(modules_to_use, parsed_arguments):
     """
     :param modules_to_use: a list of the names of the modules to use
+    :param parsed_arguments: parsed command-line arguments, including the
+        benders flag used to determine which modules to load
     :return: list of imported modules (Python <class 'module'> objects)
 
     Load the requested modules and return them as a list of Python module
     objects.
     """
-    loaded_modules = list()
-    for m in modules_to_use:
-        try:
-            imported_module = import_module("." + m, package="gridpath")
-            loaded_modules.append(imported_module)
-        except ImportError:
-            print("ERROR! Unable to import module " + str(m) + ".")
-            traceback.print_exc()
-            sys.exit(1)
+
+    if parsed_arguments.benders:
+        # Initialise loaded_modules for each abstract model and instance.
+        loaded_modules = {
+            "Investment": [],
+            "Operational": []
+        }
+
+        from gridpath.auxiliary.module_organisation import define_benders_modules
+        # Must ensure that the original order of modules_to_use is preserved (for interdependencies).
+        benders_modules = define_benders_modules(modules_to_use)
+        # Add the required sets to both investment and operational constraints
+        benders_modules["Investment"] = (
+                benders_modules["Sets"]
+                + benders_modules["Investment"]
+        )
+
+        benders_modules["Operational"] = (
+                benders_modules["Sets"]
+                + benders_modules["Operational"]
+        )
+
+        del benders_modules["Sets"]
+
+        # This code preserves the original order of modules_to_use in each of the sets of
+        # modules.
+        modules_to_use = {
+            key: [m for m in modules_to_use if m in values]
+            for key, values in benders_modules.items()
+        }
+
+        # Here, modules_to_use becomes a dictionary.
+        # TODO: Change code to allow for modules_to_use to be a dictionary in the case of benders.
+        # modules_to_use = benders_modules
+
+        # for m in modules_to_use.values():
+        #     try:
+        #         imported_module = import_module("." + m, package="gridpath")
+        #         loaded_modules.append(imported_module)
+        #     except ImportError:
+        #         print("ERROR! Unable to import module " + str(m) + ".")
+        #         traceback.print_exc()
+        #         sys.exit(1)
+    #
+    #     for o,i in zip(op_modules,inv_modules):
+    #         try:
+    #             imported_op_module = import_module("." + o, package="gridpath")
+    #             imported_inv_module = import_module("." + i, package="gridpath")
+    #             operational_modules.append(imported_op_module)
+    #             investment_modules.append(imported_inv_module)
+    #         except ImportError:
+    #             print("ERROR! Unable to import module " + str(o) + ".")
+    #             print("ERROR! Unable to import module " + str(i) + ".")
+    #             traceback.print_exc()
+    #             sys.exit(1)
+    #     return operational_modules, investment_modules
+    #
+        for name in modules_to_use.keys():
+            for m in modules_to_use[name]:
+                try:
+                    imported_module = import_module("." + m, package="gridpath")
+                    loaded_modules[name].append(imported_module)
+                except ImportError:
+                    print("ERROR! Unable to import module " + str(m) + ".")
+                    traceback.print_exc()
+                    sys.exit(1)
+    else:
+        loaded_modules = list()
+
+        for m in modules_to_use:
+            try:
+                imported_module = import_module("." + m, package="gridpath")
+                loaded_modules.append(imported_module)
+            except ImportError:
+                print("ERROR! Unable to import module " + str(m) + ".")
+                traceback.print_exc()
+                sys.exit(1)
 
     return loaded_modules

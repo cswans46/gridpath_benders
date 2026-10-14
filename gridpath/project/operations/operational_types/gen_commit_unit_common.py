@@ -2028,12 +2028,27 @@ def add_model_components(
             # If this is the first timepoint of a linked horizon, set the
             # previous timepoint's commitment to that in the closest linked
             # timepoint (the linked timepoint with index 0)
+
             if check_if_boundary_type_and_first_timepoint(
                 mod=mod,
                 tmp=tmp,
                 balancing_type=mod.balancing_type_project[g],
                 boundary_type="linked",
             ):
+                arr = mod.gen_commit_lin_linked_shutdown
+                print(type(arr))
+
+                if len(arr) == 0:
+                    print("Rien a demontrer ici")
+
+                for idx in arr:
+                    if len(idx) != 0:
+                        print("Vois ceci: ",idx)
+                    else:
+                        print("Rien a demontrer ici")
+
+                print("length of set", len(mod.GEN_COMMIT_LIN_LINKED_TMPS))
+
                 prev_timepoint_commit = getattr(
                     mod, "gen_commit_{}_linked_commit".format(bin_or_lin)
                 )[g, 0]
@@ -2058,6 +2073,8 @@ def add_model_components(
             rule=binary_logic_constraint_rule,
         ),
     )
+
+    # print("Here is the GenCommitlin_binary_logic_constraint: ", m.GenCommitLin_Binary_Logic_Constraint.pprint())
 
     # Power
     def max_power_constraint_rule(mod, g, tmp):
@@ -3572,6 +3589,7 @@ def load_model_data(
         "inputs",
         "gen_commit_{}_linked_timepoint_params.tab".format(bin_or_lin),
     )
+
     if os.path.exists(linked_inputs_filename):
         data_portal.load(
             filename=linked_inputs_filename,
@@ -3752,12 +3770,38 @@ def export_linked_subproblem_inputs(
     BIN_OR_LIN,
     bin_or_lin,
 ):
+    # Trying to find out where this function is being called
+    import inspect, traceback
+
+    caller = inspect.currentframe().f_back
+
+    print(
+        "Called by:",
+        caller.f_code.co_name,
+        "in",
+        caller.f_code.co_filename,
+        "line",
+        caller.f_lineno,
+    )
+
+    print("Call stack:")
+    traceback.print_stack()
+
+    print("are we here?")
     # If there's a linked_subproblems_map CSV file, check which of the
     # current subproblem TMPS we should export results for to link to the
     # next subproblem
+
+    print("BEFORE check_for_tmps_to_link")
+    print("subproblem =", subproblem)
+    print("stage =", stage)
+
     tmps_to_link, tmp_linked_tmp_dict = check_for_tmps_to_link(
         scenario_directory=scenario_directory, subproblem=subproblem, stage=stage
     )
+
+    print("AFTER check_for_tmps_to_link")
+    print("subproblem =", subproblem)
 
     # If the list of timepoints to link is not empty, write the linked
     # timepoint results for this module in the next subproblem's input

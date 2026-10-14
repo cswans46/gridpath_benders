@@ -178,6 +178,24 @@ def add_model_components(
         ),  # pick one of intensity-based and absolute thresholds
     )
 
+    if getattr(m, "_is_benders_subproblem", False):
+        m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION_INDEX = Set(
+            dimen=3,
+            initialize=lambda mod: [
+                (prj, prd, str(subproblem))
+                for prj, prd in mod.CARBON_CREDITS_GENERATION_PRJ_OPR_PRDS
+                if mod.absolute_threshold_emissions_toCO2[prj, prd] < Infinity
+            ],
+        )
+        m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION = Var(
+            m.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+            bounds=lambda mod, prj, prd, worker: (
+                0,
+                mod.absolute_threshold_emissions_toCO2[prj, prd],
+            ),
+        )
+
     # Derived Sets
     ###########################################################################
 
@@ -304,11 +322,25 @@ def add_model_components(
 
         var1 = mod.intensity_threshold_emissions_toCO2_per_MWh[prj, prd]
         var2 = mod.absolute_threshold_emissions_toCO2[prj, prd]
+        absolute_threshold = var2
+        if (
+            hasattr(
+                mod,
+                "BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION",
+            )
+            and var2 < Infinity
+        ):
+            absolute_threshold = (
+                mod.BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION[
+                    prj, prd, str(subproblem)
+                ]
+            )
+
         if (var1 == Infinity) and (var2 == Infinity):
             return mod.Project_Carbon_Credits_Generated[prj, prd] == 0
         elif var1 == Infinity:
             return mod.Project_Carbon_Credits_Generated[prj, prd] <= (
-                mod.absolute_threshold_emissions_toCO2[prj, prd]
+                absolute_threshold
                 - sum(
                     mod.Project_Carbon_Emissions[p, tmp]
                     * mod.hrs_in_tmp[tmp]
@@ -333,7 +365,7 @@ def add_model_components(
             return mod.Project_Carbon_Credits_Generated[prj, prd] <= (
                 total_power_provision_in_prd
                 * mod.intensity_threshold_emissions_toCO2_per_MWh[prj, prd]
-                + mod.absolute_threshold_emissions_toCO2[prj, prd]
+                + absolute_threshold
                 - sum(
                     mod.Project_Carbon_Emissions[p, tmp]
                     * mod.hrs_in_tmp[tmp]
@@ -600,6 +632,156 @@ def write_model_inputs(
         db_stage,
         conn,
     )
+
+    if subproblem != "":
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        # Fetch this subproblem's periods.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        period = next(iter(periods))
+
+        # --------------------------------------------------------------
+        # Get project-vintage-lifetime combinations.
+        # --------------------------------------------------------------
+
+        c = conn.cursor()
+
+        new_project = [
+            (int(str(vintage)[:4]), project)
+            for vintage, project in c.execute(
+                f"""
+                SELECT vintage, project
+                FROM inputs_project_new_cost
+                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+        spec_project = [
+            (int(str(period)[:4]), project)
+            for period, project in c.execute(
+                f"""
+                SELECT period, project
+                FROM inputs_project_specified_capacity
+                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+        ]
+
+        project_years = spec_project + new_project
+
+        # --------------------------------------------------------------
+        # Identify projects with at least one active vintage in one of
+        # this subproblem's operational periods.
+        # --------------------------------------------------------------
+
+        included_projects = {
+            project
+            for vintage, project in project_years
+            if vintage == period
+        }
+
+        # --------------------------------------------------------------
+        # Filter project_generation_zones.
+        # --------------------------------------------------------------
+
+        generation_zones_rows = project_generation_zones.fetchall()
+
+        generation_included_rows = [
+            row
+            for row in generation_zones_rows
+            if row[0] in included_projects
+        ]
+
+        # --------------------------------------------------------------
+        # Filter project_purchase_zones.
+        # --------------------------------------------------------------
+
+        purchase_zones_rows = project_purchase_zones.fetchall()
+
+        purchase_included_rows = [
+            row
+            for row in purchase_zones_rows
+            if row[0] in included_projects
+        ]
+
+        # --------------------------------------------------------------
+        # Filter project_carbon_credits by period.
+        #
+        # This remains a separate filter because carbon credits are
+        # themselves period-specific.
+        # --------------------------------------------------------------
+
+        carbon_credits_rows = project_carbon_credits.fetchall()
+
+        credit_included_rows = [
+            row for row in carbon_credits_rows
+            if row[0] in included_projects
+               and int(row[1]) in periods
+        ]
+
+        # ------------------------------------------------------------------
+        # Replace cursors with filtered iterable objects.
+        # ------------------------------------------------------------------
+
+        class FilteredProjectCarbonCredits:
+            def __init__(self, rows):
+                self.description = project_carbon_credits.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class FilteredProjectGenerationZones:
+            def __init__(self, rows):
+                self.description = project_generation_zones.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        class FilteredProjectPurchaseZones:
+            def __init__(self, rows):
+                self.description = project_purchase_zones.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        project_carbon_credits = FilteredProjectCarbonCredits(
+            credit_included_rows
+        )
+
+        project_generation_zones = FilteredProjectGenerationZones(
+            generation_included_rows
+        )
+
+        project_purchase_zones = FilteredProjectPurchaseZones(
+            purchase_included_rows
+        )
 
     # projects.tab
     # Make a dict for easy access

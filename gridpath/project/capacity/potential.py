@@ -643,6 +643,55 @@ def write_model_inputs(
         ).fetchall()
     ]
 
+    # TODO: Need to add an if parsed_arguments.benders: here.
+    if subproblem != "":
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        stage_for_periods = 1 if stage == "" else stage
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_for_periods,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+        current_period = max(periods)
+        # Identify transmission whose vintage is not operational in this subproblem
+
+        potentials_rows = potentials
+
+        # Filter potentials to be just for the current period because this is just the annual build
+        # limit (i.e. don't need to keep vintages).
+        potentials_rows = [
+            row
+            for row in potentials_rows
+            if int(str(row[1])[:4]) == current_period
+        ]
+
+        potentials = potentials_rows
+
+        # class FilteredPotentials:
+        #     def __init__(self, rows):
+        #         self.description = potentials.description
+        #         self.rows = rows
+        #
+        #     def fetchall(self):
+        #         return self.rows
+        #
+        #     def __iter__(self):
+        #         return iter(self.rows)
+        #
+        # potentials = FilteredPotentials(potentials_rows)
+
     if potentials:
         with open(
             os.path.join(

@@ -96,7 +96,6 @@ def add_model_components(
     +-------------------------------------------------------------------------+
 
     """
-
     # Sets
     ###########################################################################
 
@@ -119,6 +118,18 @@ def add_model_components(
     getattr(d, capacity_type_operational_period_sets).append(
         "GEN_SPEC_OPR_PRDS",
     )
+
+    # print("\n===== INSIDE add_model_components =====")
+    # print("m:", m)
+    # print("m type:", type(m))
+    #
+    # print("\nParams currently on m:")
+    # for p in m.component_objects(Param, active=True):
+    #     print(
+    #         p.name,
+    #         "constructed =", p.is_constructed(),
+    #         "indexed =", p.is_indexed(),
+    #     )
 
 
 # Capacity Type Methods
@@ -239,15 +250,17 @@ def write_model_inputs(
     :return:
     """
 
-    spec_project_params = get_model_inputs_from_database(
-        scenario_id,
-        subscenarios,
-        weather_iteration,
-        hydro_iteration,
-        availability_iteration,
-        subproblem,
-        stage,
-        conn,
+    spec_project_params = list(
+        get_model_inputs_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+            conn,
+        )
     )
 
     # If spec_capacity_period_params.tab file already exists, append

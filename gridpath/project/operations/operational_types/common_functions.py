@@ -441,15 +441,16 @@ def write_tab_file_model_inputs(
         "inputs",
         fname,
     )
+
     f_exists = os.path.isfile(out_file)
     append_mode = "a" if f_exists else "w"
 
     # Only write if we have data
     data_list = [row for row in data.fetchall()]
+
     if data_list:
         with open(out_file, append_mode, newline="") as f:
             writer = csv.writer(f, delimiter="\t", lineterminator="\n")
-
             # If file doesn't exist, write header first
             if not f_exists:
                 cols = [s[0] for s in data.description]

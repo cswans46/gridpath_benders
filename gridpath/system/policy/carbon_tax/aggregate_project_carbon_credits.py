@@ -292,6 +292,49 @@ def write_model_inputs(
     if not df.empty:
         df.to_csv(fpath, index=False, sep="\t")
 
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        credit_limits_rows = credit_limits.fetchall()
+
+        included_rows = [
+            row
+            for row in credit_limits_rows
+            if int(row[2]) in periods
+        ]
+
+        credit_limits_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCreditLimits:
+            def __init__(self, rows):
+                self.description = credit_limits.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        credit_limits = FilteredCreditLimits(credit_limits_rows)
+
     # project_carbon_credits_purchase_limits.tab
     cred_lim_df = cursor_to_df(credit_limits)
     cred_lim_df = cred_lim_df.fillna(".")

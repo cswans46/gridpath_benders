@@ -31,6 +31,7 @@ def relevant_periods_by_project_vintage(
     vintage,
     lifetime_yrs,
     quiet=False,
+    vintage_start_year=None
 ):
     """
     :param future_trajectory_periods: the study periods in a list
@@ -78,21 +79,26 @@ def relevant_periods_by_project_vintage(
     # trajectory periods;
     # this shouldn't happen.
     relevant_periods = list()
-    if vintage not in future_trajectory_periods:
-        if not quiet:
-            warnings.warn(
-                f"Vintage {vintage} is not in the future trajectory periods. "
-                f"This shouldn't happen."
-            )
-    else:
-        first_lifetime_year = period_start_year[vintage]
-        last_lifetime_year = period_start_year[vintage] + lifetime_yrs
-        for p in future_trajectory_periods:
-            if (
-                first_lifetime_year <= period_start_year[p]
-                and last_lifetime_year >= period_end_year[p]
-            ):
-                relevant_periods.append(p)
+    # Need to get rid of this for BENDERS since vintage can contain periods, but periods
+    # for each subproblem may not contain all vintages.
+    # if vintage not in future_trajectory_periods:
+    #     if not quiet:
+    #         warnings.warn(
+    #             f"Vintage {vintage} is not in the future trajectory periods. "
+    #             f"This shouldn't happen."
+    #         )
+    # else:
+    if vintage_start_year is None:
+        vintage_start_year = period_start_year[vintage]
+
+    first_lifetime_year = vintage_start_year
+    last_lifetime_year = first_lifetime_year + lifetime_yrs
+    for p in future_trajectory_periods:
+        if (
+            first_lifetime_year <= period_start_year[p]
+            and last_lifetime_year >= period_end_year[p]
+        ):
+            relevant_periods.append(p)
 
     return relevant_periods
 
@@ -276,7 +282,6 @@ def spec_write_tab_file(
                     "fuel_storage_capacity_fixed_cost_per_fuelunit_yr",
                 ]
             )
-
             # Write input data
             write_from_query(spec_project_params=spec_project_params, writer=writer_w)
 

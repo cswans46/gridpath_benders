@@ -48,6 +48,7 @@ from pyomo.environ import (
     Var,
     Expression,
     NonNegativeReals,
+    NonNegativeIntegers,
     Constraint,
     value,
 )
@@ -309,7 +310,11 @@ def add_model_components(
     ###########################################################################
 
     m.STOR_NEW_LIN = Set()
-    m.STOR_NEW_LIN_VNTS = Set(dimen=2, within=m.STOR_NEW_LIN * m.PERIODS)
+
+    if getattr(m, "_is_benders_subproblem", False):
+        m.STOR_NEW_LIN_VNTS = Set(dimen=2, within=m.STOR_NEW_LIN * NonNegativeIntegers)
+    else:
+        m.STOR_NEW_LIN_VNTS = Set(dimen=2, within=m.STOR_NEW_LIN * m.PERIODS)
 
     # Required Params
     ###########################################################################
@@ -419,12 +424,24 @@ def add_model_components(
 
 
 def operational_periods_by_storage_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if getattr(mod, "_is_benders_subproblem", False):
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.stor_new_lin_operational_lifetime_yrs[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -444,12 +461,24 @@ def stor_new_lin_vintages_operational_in_period(mod, p):
 
 
 def financial_periods_by_storage_vintage(mod, prj, v):
+    # For Benders, we need to ensure that this
+    if getattr(mod, "_is_benders_subproblem", False):
+        # In Benders, PERIODS contains only the periods in this subproblem.
+        # The vintage itself may be earlier than the first subproblem period.
+        future_trajectory_periods = list(mod.PERIODS)
+        vintage_start_year = v
+    else:
+        # Original behavior for the planning/master model.
+        future_trajectory_periods = mod.PERIOD_FUTURE_TRAJECTORY[v]
+        vintage_start_year = None
+
     return relevant_periods_by_project_vintage(
-        future_trajectory_periods=getattr(mod, "PERIOD_FUTURE_TRAJECTORY")[v],
+        future_trajectory_periods=future_trajectory_periods,
         period_start_year=getattr(mod, "period_start_year"),
         period_end_year=getattr(mod, "period_end_year"),
         vintage=v,
         lifetime_yrs=mod.stor_new_lin_financial_lifetime_yrs_by_vintage[prj, v],
+        vintage_start_year=vintage_start_year
     )
 
 
@@ -868,6 +897,75 @@ def write_model_inputs(
         stage,
         conn,
     )
+
+    if subproblem != "":
+
+        # Call in locally the sql query for periods.tab for this subproblem
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+
+        if stage == "":
+            stage_temp = 1
+        else:
+            stage_temp = stage
+
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage_temp,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        # Identify project/vintage combinations that should be included
+        new_stor_costs_rows = new_stor_costs.fetchall()
+
+        # Keep only project-vintage combinations that are active
+        # during at least one of this subproblem's periods.
+        included_project_vintages = {
+            (project, int(str(vintage)[:4]))
+            for project, vintage, lifetime, *_ in new_stor_costs_rows
+            if any(
+                period >= int(str(vintage)[:4])
+                and period < int(str(vintage)[:4]) + lifetime
+                for period in periods
+            )
+        }
+
+        # Filter new_stor_costs
+        new_stor_costs_rows = [
+            row
+            for row in new_stor_costs_rows
+            if (row[0], int(str(row[1])[:4])) in included_project_vintages
+        ]
+
+        # Projects that have at least one valid vintage
+        included_projects = {
+            project
+            for project, vintage in included_project_vintages
+        }
+
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredNewStorCostLin:
+            def __init__(self, rows):
+                self.description = new_stor_costs.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        new_stor_costs = FilteredNewStorCostLin(new_stor_costs_rows)
 
     with open(
         os.path.join(

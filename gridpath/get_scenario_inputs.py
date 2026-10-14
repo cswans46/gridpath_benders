@@ -53,6 +53,9 @@ import os.path
 import pandas as pd
 import sys
 import warnings
+from functools import partial
+import shutil
+from pathlib import Path
 
 from db.common_functions import connect_to_database
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
@@ -66,6 +69,7 @@ from gridpath.common_functions import (
     get_single_draw_parser,
     get_version_parser,
     ensure_empty_string,
+    get_benders_flag_parser
 )
 from gridpath.auxiliary.module_list import determine_modules, load_modules
 from gridpath.scenario_directory_cleanup import (
@@ -87,6 +91,7 @@ from gridpath.auxiliary.scenario_chars import (
 
 
 def write_model_inputs(
+    parsed_arguments,
     scenario_directory,
     scenario_structure,
     modules_to_use,
@@ -100,6 +105,7 @@ def write_model_inputs(
     For each module, load the inputs from the database and write out the inputs
     into .tab files, which will be used to construct the optimization problem.
 
+    :param parsed_arguments: needed for benders flag
     :param scenario_directory: local scenario directory
     :param scenario_structure: ScenarioStructure object with info on the
         weather/hydro iterations and subproblem/stage structure
@@ -172,7 +178,9 @@ def write_model_inputs(
                         ][hydro_iteration_str][availability_iteration_str][
                             subproblem_str
                         ]:
+
                             write_inputs(
+                                parsed_arguments=parsed_arguments,
                                 scenario_directory=scenario_directory,
                                 weather_iteration_str=weather_iteration_str,
                                 hydro_iteration_str=hydro_iteration_str,
@@ -182,7 +190,7 @@ def write_model_inputs(
                                 modules_to_use=modules_to_use,
                                 scenario_id=scenario_id,
                                 subscenarios=subscenarios,
-                                db_path=db_path,
+                                db_path=db_path
                             )
     else:
         pool_data = []
@@ -226,15 +234,20 @@ def write_model_inputs(
                             )
 
         pool_data = tuple(pool_data)
-
         # Pool must use spawn to work properly on Linux
         pool = get_context("spawn").Pool(n_parallel_subproblems)
-        pool.map(get_inputs_for_subproblem_pool, pool_data)
+        worker = partial(
+            get_inputs_for_subproblem_pool,
+            parsed_arguments=parsed_arguments,
+        )
+
+        pool.map(worker, pool_data)
         pool.close()
         pool.join()
 
 
 def write_inputs(
+    parsed_arguments,
     scenario_directory,
     weather_iteration_str,
     hydro_iteration_str,
@@ -244,9 +257,10 @@ def write_inputs(
     modules_to_use,
     scenario_id,
     subscenarios,
-    db_path,
+    db_path
 ):
-    loaded_modules = load_modules(modules_to_use=modules_to_use)
+
+    loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
     inputs_directory = os.path.join(
         scenario_directory,
@@ -271,7 +285,20 @@ def write_inputs(
     # dependent on the subproblem or stage. This simplifies the file
     # structure at the expense of unnecessarily duplicating
     # non-temporal input files such as projects.tab.
+
     conn = connect_to_database(db_path=db_path)
+
+    # Only putting Operational here because this is the only one that matters
+    # at this nesting level (i.e. the investment .tab files will be aggregated from the
+    # individual scenarios below in main().
+    if parsed_arguments.benders:
+        loaded_modules = (
+                loaded_modules["Investment"]
+                + loaded_modules["Operational"]
+        )
+        # Drop duplicates
+        loaded_modules = list(dict.fromkeys(loaded_modules))
+
     for m in loaded_modules:
         if hasattr(m, "write_model_inputs"):
             m.write_model_inputs(
@@ -290,7 +317,7 @@ def write_inputs(
     conn.close()
 
 
-def get_inputs_for_subproblem_pool(pool_datum):
+def get_inputs_for_subproblem_pool(pool_datum,parsed_arguments):
     """
     Helper function to easily pass to pool.map if running subproblems in
     parallel
@@ -309,6 +336,7 @@ def get_inputs_for_subproblem_pool(pool_datum):
     ] = pool_datum
 
     write_inputs(
+        parsed_arguments=parsed_arguments,
         scenario_directory=scenario_directory,
         weather_iteration_str=weather_iteration_str,
         hydro_iteration_str=hydro_iteration_str,
@@ -318,8 +346,46 @@ def get_inputs_for_subproblem_pool(pool_datum):
         modules_to_use=modules_to_use,
         scenario_id=scenario_id,
         subscenarios=subscenarios,
-        db_path=db_path,
+        db_path=db_path
     )
+
+
+def write_scenario_level_files(
+    scenario_directory,
+    conn,
+    scenario_id,
+    scenario_name,
+    scenario_structure,
+    optional_features,
+    subscenarios,
+    solver_options,
+    feature_list,
+):
+    """
+    Write the scenario-level (draw-independent) files: the multi-stage flag,
+    the features list, the scenario description, the units file, the solver
+    options file, and the linked-subproblems map.
+    """
+    write_multi_stage_flag(scenario_directory, scenario_structure.STAGE_FLAG)
+    # Save the list of optional features to a file (will be used to
+    # determine modules without database connection)
+    write_features_csv(scenario_directory=scenario_directory, feature_list=feature_list)
+    # Write full scenario description
+    write_scenario_description(
+        scenario_directory=scenario_directory,
+        scenario_id=scenario_id,
+        scenario_name=scenario_name,
+        optional_features=optional_features,
+        subscenarios=subscenarios,
+    )
+    # Write the units used for all metrics
+    write_units_csv(scenario_directory, conn)
+    # Write the solver options file if needed
+    write_solver_options(
+        scenario_directory=scenario_directory, solver_options=solver_options
+    )
+    # Write the subproblem linked timepoints map file if needed
+    write_linked_subproblems_map(scenario_directory, conn, subscenarios)
 
 
 def write_scenario_level_files(
@@ -382,8 +448,12 @@ def delete_prior_inputs(inputs_directory):
     """
     Delete all .tab files that may exist in the specified directory
     :param inputs_directory: local directory where .tab files are saved
+    :param scenario_directory: the scenario directory
     :return:
     """
+    # First, in case a scenario changes, folders in the main scenario
+    # directory must also be deleted
+
     prior_input_tab_files = [
         f for f in os.listdir(inputs_directory) if f.endswith(".tab")
     ]
@@ -416,6 +486,7 @@ def parse_arguments(args):
                 "--ignore_cleanup_marker."
             ),
             get_version_parser(),
+            get_benders_flag_parser()
         ],
     )
 
@@ -551,6 +622,197 @@ def write_linked_subproblems_map(scenario_directory, conn, subscenarios):
             os.path.join(scenario_directory, "linked_subproblems_map.csv"), index=False
         )
 
+def write_inputs_for_benders_planning_problem(
+    scenario_directory,
+    scenario_structure,
+):
+    """
+    Collect all realization-specific .tab files into a single
+    investment/planning inputs directory.
+
+    Each .tab file is aggregated by filename across all
+    weather/hydro/availability/subproblem/stage combinations.
+
+    For example:
+
+        scenario/
+            1/2010/1/1/1/inputs/foo.tab
+            1/2010/1/2/1/inputs/foo.tab
+            2/2011/2/1/1/inputs/foo.tab
+
+    becomes:
+
+        scenario/
+            inputs/foo.tab
+
+    containing the rows from all realization-specific foo.tab files.
+    """
+
+    delete_prior_aux_files(
+        scenario_directory=scenario_directory
+    )
+
+    # Get the directory structure from the scenario structure
+    scenario_directory_structure = ScenarioDirectoryStructure(
+        scenario_structure
+    ).SCENARIO_DIRECTORY_STRUCTURE
+
+    # Planning/investment input directory
+    investment_inputs_directory = os.path.join(
+        scenario_directory,
+        "inputs",
+    )
+    # Write the planning problem directory.
+    os.makedirs(
+        investment_inputs_directory,
+        exist_ok=True,
+    )
+
+    # Keep track of which output files have already had
+    # their headers written.
+    headers_written = set()
+    seen_rows = {}
+
+    for weather_iteration_str in scenario_directory_structure.keys():
+
+        for hydro_iteration_str in scenario_directory_structure[
+            weather_iteration_str
+        ].keys():
+
+            for availability_iteration_str in scenario_directory_structure[
+                weather_iteration_str
+            ][hydro_iteration_str].keys():
+
+                weather_iteration_str = ensure_empty_string(
+                    weather_iteration_str
+                )
+
+                hydro_iteration_str = ensure_empty_string(
+                    hydro_iteration_str
+                )
+
+                availability_iteration_str = ensure_empty_string(
+                    availability_iteration_str
+                )
+
+                for subproblem_str in scenario_directory_structure[
+                    weather_iteration_str
+                ][hydro_iteration_str][
+                    availability_iteration_str
+                ].keys():
+
+                    for stage_str in scenario_directory_structure[
+                        weather_iteration_str
+                    ][hydro_iteration_str][
+                        availability_iteration_str
+                    ][subproblem_str]:
+
+                        # Directory containing the realization-specific
+                        # input files
+                        source_inputs_directory = os.path.join(
+                            scenario_directory,
+                            weather_iteration_str,
+                            hydro_iteration_str,
+                            availability_iteration_str,
+                            subproblem_str,
+                            stage_str,
+                            "inputs",
+                        )
+
+                        if not os.path.isdir(
+                            source_inputs_directory
+                        ):
+                            continue
+
+                        # Find all .tab files for this realization
+                        for fname in os.listdir(
+                            source_inputs_directory
+                        ):
+
+                            if not fname.endswith(".tab"):
+                                continue
+
+                            source_file = os.path.join(
+                                source_inputs_directory,
+                                fname,
+                            )
+
+                            destination_file = os.path.join(
+                                investment_inputs_directory,
+                                fname,
+                            )
+
+                            # Initialize set for this particular .tab file
+                            if fname not in seen_rows:
+                                seen_rows[fname] = set()
+
+                            # Read source file
+                            with open(
+                                source_file,
+                                "r",
+                                newline="",
+                            ) as source:
+
+                                reader = csv.reader(
+                                    source,
+                                    delimiter="\t",
+                                )
+
+                                # Read header
+                                header = next(reader, None)
+
+                                if header is None:
+                                    continue
+
+                                # If this is the first time we've seen this file,
+                                # create it and write the header.
+                                if fname not in headers_written:
+
+                                    with open(
+                                            destination_file,
+                                            "w",
+                                            newline="",
+                                    ) as destination:
+
+                                        writer = csv.writer(
+                                            destination,
+                                            delimiter="\t",
+                                            lineterminator="\n",
+                                        )
+
+                                        writer.writerow(header)
+
+                                        for row in reader:
+
+                                            row_tuple = tuple(row)
+
+                                            if row_tuple not in seen_rows[fname]:
+                                                writer.writerow(row)
+                                                seen_rows[fname].add(row_tuple)
+
+                                    headers_written.add(fname)
+
+                                else:
+
+                                    with open(
+                                            destination_file,
+                                            "a",
+                                            newline="",
+                                    ) as destination:
+
+                                        writer = csv.writer(
+                                            destination,
+                                            delimiter="\t",
+                                            lineterminator="\n",
+                                        )
+
+                                        for row in reader:
+
+                                            row_tuple = tuple(row)
+
+                                            if row_tuple not in seen_rows[fname]:
+                                                writer.writerow(row)
+                                                seen_rows[fname].add(row_tuple)
 
 def main(args=None):
     """
@@ -688,20 +950,28 @@ def main(args=None):
 
         # Figure out which modules to use and load the modules
         modules_to_use = determine_modules(
-            features=feature_list, multi_stage=scenario_structure.STAGE_FLAG
+            parsed_arguments=parsed_arguments,features=feature_list, multi_stage=scenario_structure.STAGE_FLAG
         )
 
         # Get appropriate inputs from database and write the .tab file model
         # inputs
         write_model_inputs(
-            scenario_directory=scenario_directory,
+            parsed_arguments=parsed_arguments,
+        scenario_directory=scenario_directory,
             scenario_structure=scenario_structure,
             modules_to_use=modules_to_use,
             scenario_id=scenario_id,
             subscenarios=subscenarios,
             db_path=db_path,
             n_parallel_subproblems=int(parsed_arguments.n_parallel_get_inputs),
-            delete_prior_aux=not single_draw_requested,
+    )
+
+    # Write the planning problem map
+    if parsed_arguments.benders:
+        write_inputs_for_benders_planning_problem(
+            scenario_directory,
+            scenario_structure,
+                delete_prior_aux=not single_draw_requested,
         )
 
         write_scenario_level_files(

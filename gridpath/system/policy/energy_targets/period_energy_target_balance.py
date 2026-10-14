@@ -18,9 +18,10 @@ Simplest implementation with a MWh target by period.
 
 import csv
 import os.path
+import os
 import pandas as pd
 
-from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value
+from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value, Param, Set
 
 from gridpath.auxiliary.dynamic_components import (
     period_energy_target_balance_contribution_components,
@@ -65,6 +66,16 @@ def add_model_components(
         m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET, rule=violation_expression_rule
     )
 
+    if m._is_benders_subproblem:
+        if not hasattr(m, "SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[subproblem])
+
+        m.PERIOD_ENERGY_TARGET_ALLOCATION = Var(
+            m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
+            m.SUBPROBLEM,
+            within=NonNegativeReals,
+        )
+
     m.Total_Period_Energy_Target_Contributions_from_All_Sources_Expression = Expression(
         m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
         rule=lambda mod, z, p: sum(
@@ -85,18 +96,23 @@ def add_model_components(
         :param p:
         :return:
         """
+
+        if mod._is_benders_subproblem:
+            target = mod.PERIOD_ENERGY_TARGET_ALLOCATION[z, p, subproblem]
+        else:
+            target = mod.Period_Energy_Target[z, p]
+
         return (
             mod.Total_Period_Energy_Target_Contributions_from_All_Sources_Expression[
                 z, p
             ]
             + mod.Period_Energy_Target_Shortage_MWh_Expression[z, p]
-            >= mod.Period_Energy_Target[z, p]
+            >= target
         )
 
     m.Period_Energy_Target_Constraint = Constraint(
         m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET, rule=energy_target_rule
     )
-
 
 def export_results(
     scenario_directory,
@@ -182,6 +198,48 @@ def export_results(
 
     update_results_df(getattr(d, ENERGY_TARGET_ZONE_PRD_DF), results_df)
 
+def load_model_data(
+    m,
+    d,
+    data_portal,
+    scenario_directory,
+    weather_iteration,
+    hydro_iteration,
+    availability_iteration,
+    subproblem,
+    stage,
+):
+    """
+
+    :param m:
+    :param d:
+    :param data_portal:
+    :param scenario_directory:
+    :param subproblem:
+    :param stage:
+    :return:
+    """
+    if not m._is_benders_subproblem:
+        return
+
+    # Load the targets
+    data_portal.load(
+        filename=os.path.join(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+            "inputs",
+            "period_energy_targets.tab",
+        ),
+        index=m.ENERGY_TARGET_ZONE_PERIODS_WITH_ENERGY_TARGET,
+        param=(
+            m.period_energy_target_mwh,
+            m.period_energy_target_fraction,
+        ),
+    )
 
 def save_duals(
     scenario_directory,

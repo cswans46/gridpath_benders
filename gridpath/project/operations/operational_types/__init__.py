@@ -61,7 +61,6 @@ def add_model_components(
         stage=stage,
         which_type="operational_type",
     )
-
     imported_operational_modules = load_operational_type_modules(
         required_operational_modules
     )

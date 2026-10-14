@@ -47,8 +47,17 @@ def add_model_components(
     """
 
     m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD = Set(
-        dimen=2, within=m.PERFORMANCE_STANDARD_ZONES * m.PERIODS
+        dimen=2, within=m.PERFORMANCE_STANDARD_ZONES * m.PERIODS,
+        initialize=_performance_standard_zone_periods_init(m,
+                                 scenario_directory,
+                                 weather_iteration,
+                                 hydro_iteration,
+                                 availability_iteration,
+                                 subproblem,
+                                 stage,
+                                 )
     )
+
     m.performance_standard_tco2_per_mwh = Param(
         m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD,
         within=NonNegativeReals,
@@ -82,6 +91,7 @@ def load_model_data(
     :param stage:
     :return:
     """
+
     data_portal.load(
         filename=os.path.join(
             scenario_directory,
@@ -97,6 +107,32 @@ def load_model_data(
         param=(m.performance_standard_tco2_per_mwh, m.performance_standard_tco2_per_mw),
     )
 
+def _performance_standard_zone_periods_init(m,
+                                  scenario_directory,
+                                  weather_iteration,
+                                  hydro_iteration,
+                                  availability_iteration,
+                                  subproblem,
+                                  stage):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "performance_standard.tab",
+    )
+
+    with open(filename, "r") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+
+        for row in reader:
+            yield (
+                row["performance_standard_zone"],
+                int(row["period"]),
+            )
 
 def get_inputs_from_database(
     scenario_id,
@@ -208,6 +244,49 @@ def write_model_inputs(
         db_stage,
         conn,
     )
+
+    if subproblem != "":
+        # Gather vintage, project, lifetime map for filtering
+        from gridpath.temporal.investment.periods import (
+            get_inputs_from_database as get_periods_from_database
+        )
+        # Fetch this subproblem's associated period.
+        periods_for_filtering = get_periods_from_database(
+            scenario_id,
+            subscenarios,
+            db_weather_iteration,
+            db_hydro_iteration,
+            db_availability_iteration,
+            db_subproblem,
+            db_stage,
+            conn,
+        ).fetchall()
+        # In case there are several periods (this should never happen)
+        periods = {int(row[0]) for row in periods_for_filtering}
+
+        performance_standard_rows = performance_standard.fetchall()
+
+        included_rows = [
+            row
+            for row in performance_standard_rows
+            if int(row[1]) in periods
+        ]
+
+        performance_standard_rows = included_rows
+        # Create a separate filtered projects class to avoid consuming the projects component before later
+        # project.tab is actually written.
+        class FilteredCarbonTax:
+            def __init__(self, rows):
+                self.description = performance_standard.description
+                self.rows = rows
+
+            def fetchall(self):
+                return self.rows
+
+            def __iter__(self):
+                return iter(self.rows)
+
+        performance_standard = FilteredCarbonTax(performance_standard_rows)
 
     with open(
         os.path.join(

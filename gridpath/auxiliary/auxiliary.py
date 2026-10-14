@@ -73,6 +73,7 @@ def load_subtype_modules(required_subtype_modules, package, required_attributes)
     for m in required_subtype_modules:
         try:
             imp_m = import_module("." + m, package=package)
+            # print("============ SUBTYPE MODULE ============", imp_m)
             imported_subtype_modules[m] = imp_m
             for a in required_attributes:
                 if not hasattr(imp_m, a):
@@ -91,8 +92,15 @@ def load_subtype_modules(required_subtype_modules, package, required_attributes)
 
 
 def join_sets(mod, set_name_list):
+    for s in set_name_list:
+        if not hasattr(mod, s):
+            raise AttributeError(
+                f"join_sets expected model component {s!r}, but it is missing."
+            )
+
+        component = getattr(mod, s)
     """
-    Join sets in a list.
+    Join set in a list.
     If list contains only a single set, return just that set.
 
     :param mod:
@@ -106,7 +114,18 @@ def join_sets(mod, set_name_list):
     else:
         joined_set = []
         for s in set_name_list:
-            for element in getattr(mod, s):
+
+            component = getattr(mod, s)
+
+            if (
+                hasattr(component, "is_constructed")
+                and not component.is_constructed()
+            ):
+                raise RuntimeError(
+                    f"DEPENDENCY ERROR: {s} has not been constructed "
+                    f"while join_sets is being called."
+                )
+            for element in component:
                 joined_set.append(element)
     return joined_set
 
@@ -123,7 +142,6 @@ def subset_init_by_param_value(mod, set_name, param_name, param_value):
     return list(
         i for i in getattr(mod, set_name) if getattr(mod, param_name)[i] == param_value
     )
-
 
 def subset_init_by_set_membership(mod, superset, index, membership_set):
     """

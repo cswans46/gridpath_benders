@@ -24,7 +24,7 @@ reliability constraints, etc.
 
 import os.path
 import pandas as pd
-from pyomo.environ import Set, Expression, value
+from pyomo.environ import Set, Expression, value, Var
 
 from gridpath.auxiliary.auxiliary import (
     get_required_subtype_modules,
@@ -52,7 +52,7 @@ def add_model_components(
     """
     First, we iterate over all required *capacity_types* modules (this is the
     set of distinct project capacity types in the list of projects specified
-    by the user) and add the components specific to the respective
+    by the user) and add the componentés specific to the respective
     *capacity_type* module. We do this by calling the
     *add_model_components* method of the capacity_type module if
     the method exists.
@@ -136,10 +136,13 @@ def add_model_components(
         required_capacity_modules
     )
 
+    # print("see the capacity variables", imported_capacity_modules)
+
     # Add any components specific to the capacity type modules
-    for op_m in required_capacity_modules:
+    for (i,op_m) in enumerate(required_capacity_modules):
         imp_op_m = imported_capacity_modules[op_m]
         if hasattr(imp_op_m, "add_model_components"):
+            # print(f"ADDING MODULE {i}: {imp_op_m.__name__}")
             imp_op_m.add_model_components(
                 m,
                 d,
@@ -153,6 +156,8 @@ def add_model_components(
 
     # Sets
     ###########################################################################
+
+    capacity_type_sets = getattr(d, capacity_type_operational_period_sets)
 
     m.PRJ_OPR_PRDS = Set(
         dimen=2,
@@ -180,10 +185,7 @@ def add_model_components(
         ],
     )
 
-    m.OPR_PRJS_IN_TMP = Set(
-        m.TMPS,
-        initialize=op_gens_by_tmp,
-    )
+    m.OPR_PRJS_IN_TMP = Set(m.TMPS, initialize=op_gens_by_tmp)
 
     # Expressions
     ###########################################################################
@@ -285,18 +287,18 @@ def add_model_components(
 ###############################################################################
 
 
-def op_gens_by_tmp(mod):
+# TODO: the creation of the OPR_PRJS_IN_TMPS is by far
+#  the most time-consuming step in instantiating the problem; is there
+#  any way to speed it up? It is perhaps inefficient to iterate over all
+#  (g, t) for every timepoint, but how do we get around having to do that?
+#  Also, this is a more general problem with all the indexed sets,
+#  but the larger timepoints-based sets are more of a problem
+def op_gens_by_tmp(mod, tmp):
     """
-    Figure out which generators are operational in each timepoint.
+    Figure out which generators are operational in each timepoins.
     """
-    tmp_to_projects = {}
-    for g, tmp in mod.PRJ_OPR_TMPS:
-        tmp_to_projects.setdefault(tmp, set()).add(g)
-
-    for tmp in tmp_to_projects:
-        tmp_to_projects[tmp] = list(tmp_to_projects[tmp])
-
-    return tmp_to_projects
+    gens = list(g for (g, t) in mod.PRJ_OPR_TMPS if t == tmp)
+    return gens
 
 
 def operational_periods_by_project(prj, project_operational_periods):

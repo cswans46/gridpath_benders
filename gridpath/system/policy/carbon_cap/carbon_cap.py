@@ -37,19 +37,30 @@ def add_model_components(
     subproblem,
     stage,
 ):
-    """
 
+    """
     :param m:
     :param d:
     :return:
     """
 
     m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP = Set(
-        dimen=2, within=m.CARBON_CAP_ZONES * m.PERIODS
+        dimen=2, within=m.CARBON_CAP_ZONES * m.PERIODS,
+        initialize=_carbon_cap_zone_periods_init(m,
+                                 scenario_directory,
+                                 weather_iteration,
+                                 hydro_iteration,
+                                 availability_iteration,
+                                 subproblem,
+                                 stage,
+                                 )
     )
-    m.carbon_cap_target = Param(
-        m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP, within=NonNegativeReals
-    )
+
+    if not m._is_benders_subproblem:
+        m.carbon_cap_target = Param(
+            m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP,
+            within=NonNegativeReals
+        )
 
 
 def load_model_data(
@@ -63,16 +74,10 @@ def load_model_data(
     subproblem,
     stage,
 ):
-    """
 
-    :param m:
-    :param d:
-    :param data_portal:
-    :param scenario_directory:
-    :param subproblem:
-    :param stage:
-    :return:
-    """
+    if m._is_benders_subproblem:
+        return
+
     data_portal.load(
         filename=os.path.join(
             scenario_directory,
@@ -86,9 +91,39 @@ def load_model_data(
         ),
         index=m.CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP,
         param=m.carbon_cap_target,
-        select=("carbon_cap_zone", "period", "carbon_cap_target"),
+        select=(
+            "carbon_cap_zone",
+            "period",
+            "carbon_cap_target",
+        ),
     )
 
+def _carbon_cap_zone_periods_init(m,
+                                  scenario_directory,
+                                  weather_iteration,
+                                  hydro_iteration,
+                                  availability_iteration,
+                                  subproblem,
+                                  stage):
+    filename = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        str(subproblem),
+        stage,
+        "inputs",
+        "carbon_cap.tab",
+    )
+
+    with open(filename, "r") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+
+        for row in reader:
+            yield (
+                row["carbon_cap_zone"],
+                int(row["period"]),
+            )
 
 def get_inputs_from_database(
     scenario_id,
@@ -203,6 +238,49 @@ def write_model_inputs(
         db_stage,
         conn,
     )
+
+    # if subproblem != "":
+    #     # Gather vintage, project, lifetime map for filtering
+    #     from gridpath.temporal.investment.periods import (
+    #         get_inputs_from_database as get_periods_from_database
+    #     )
+    #     # Fetch this subproblem's associated period.
+    #     periods_for_filtering = get_periods_from_database(
+    #         scenario_id,
+    #         subscenarios,
+    #         db_weather_iteration,
+    #         db_hydro_iteration,
+    #         db_availability_iteration,
+    #         db_subproblem,
+    #         db_stage,
+    #         conn,
+    #     ).fetchall()
+    #     # In case there are several periods (this should never happen)
+    #     periods = {int(row[0]) for row in periods_for_filtering}
+    #
+    #     carbon_cap_targets_rows = carbon_cap_targets.fetchall()
+    #
+    #     included_rows = [
+    #         row
+    #         for row in carbon_cap_targets_rows
+    #         if int(row[1]) in periods
+    #     ]
+    #
+    #     carbon_cap_targets_rows = included_rows
+    #     # Create a separate filtered projects class to avoid consuming the projects component before later
+    #     # project.tab is actually written.
+    #     class FilteredCarbonTax:
+    #         def __init__(self, rows):
+    #             self.description = carbon_cap_targets.description
+    #             self.rows = rows
+    #
+    #         def fetchall(self):
+    #             return self.rows
+    #
+    #         def __iter__(self):
+    #             return iter(self.rows)
+    #
+    #     carbon_cap_targets = FilteredCarbonTax(included_rows)
 
     with open(
         os.path.join(
