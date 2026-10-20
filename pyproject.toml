@@ -15,6 +15,7 @@ keywords = ["energy", "electricity", "power", "renewables", "planning", "operati
 requires-python = ">=3.11"
 dependencies = [
     "Pyomo==6.10.1", # Optimization modeling language
+    "mosek", # Solver required for some benders functionalities
     "pandas==3.0.3", # Data-processing
     "bokeh==3.9.1", # Visualization library
     "pscript==0.8.1", # Python to JavaScript compiler (for viz)

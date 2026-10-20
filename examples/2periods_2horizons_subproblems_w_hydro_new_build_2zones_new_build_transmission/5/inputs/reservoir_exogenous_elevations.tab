@@ -1,0 +1,5 @@
+reservoir	timepoint	exogenous_elevation
+Water_Node_1	20300201	950
+Water_Node_1	20300202	950
+Water_Node_2	20300201	600
+Water_Node_2	20300202	600

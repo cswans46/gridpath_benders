@@ -346,46 +346,8 @@ def get_inputs_for_subproblem_pool(pool_datum,parsed_arguments):
         modules_to_use=modules_to_use,
         scenario_id=scenario_id,
         subscenarios=subscenarios,
-        db_path=db_path
+        db_path=db_path,
     )
-
-
-def write_scenario_level_files(
-    scenario_directory,
-    conn,
-    scenario_id,
-    scenario_name,
-    scenario_structure,
-    optional_features,
-    subscenarios,
-    solver_options,
-    feature_list,
-):
-    """
-    Write the scenario-level (draw-independent) files: the multi-stage flag,
-    the features list, the scenario description, the units file, the solver
-    options file, and the linked-subproblems map.
-    """
-    write_multi_stage_flag(scenario_directory, scenario_structure.STAGE_FLAG)
-    # Save the list of optional features to a file (will be used to
-    # determine modules without database connection)
-    write_features_csv(scenario_directory=scenario_directory, feature_list=feature_list)
-    # Write full scenario description
-    write_scenario_description(
-        scenario_directory=scenario_directory,
-        scenario_id=scenario_id,
-        scenario_name=scenario_name,
-        optional_features=optional_features,
-        subscenarios=subscenarios,
-    )
-    # Write the units used for all metrics
-    write_units_csv(scenario_directory, conn)
-    # Write the solver options file if needed
-    write_solver_options(
-        scenario_directory=scenario_directory, solver_options=solver_options
-    )
-    # Write the subproblem linked timepoints map file if needed
-    write_linked_subproblems_map(scenario_directory, conn, subscenarios)
 
 
 def write_scenario_level_files(
@@ -957,22 +919,22 @@ def main(args=None):
         # inputs
         write_model_inputs(
             parsed_arguments=parsed_arguments,
-        scenario_directory=scenario_directory,
+            scenario_directory=scenario_directory,
             scenario_structure=scenario_structure,
             modules_to_use=modules_to_use,
             scenario_id=scenario_id,
             subscenarios=subscenarios,
             db_path=db_path,
             n_parallel_subproblems=int(parsed_arguments.n_parallel_get_inputs),
-    )
-
-    # Write the planning problem map
-    if parsed_arguments.benders:
-        write_inputs_for_benders_planning_problem(
-            scenario_directory,
-            scenario_structure,
-                delete_prior_aux=not single_draw_requested,
+            delete_prior_aux=not single_draw_requested,
         )
+
+        # Write the planning problem map
+        if parsed_arguments.benders:
+            write_inputs_for_benders_planning_problem(
+                scenario_directory,
+                scenario_structure,
+            )
 
         write_scenario_level_files(
             scenario_directory=scenario_directory,

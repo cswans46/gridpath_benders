@@ -1,0 +1,11 @@
+water_node	timepoint	exogenous_water_inflow_rate_vol_per_sec
+Water_Node_1	20200201.0	0.003
+Water_Node_1	20200202.0	0.003
+Water_Node_2	20200201.0	0.0001
+Water_Node_2	20200202.0	0.0001
+Water_Node_3	20200201.0	0.0001
+Water_Node_3	20200202.0	0.0001
+Water_Node_4	20200201.0	5.0e-05
+Water_Node_4	20200202.0	5.0e-05
+Water_Node_5	20200201.0	5.0e-05
+Water_Node_5	20200202.0	5.0e-05

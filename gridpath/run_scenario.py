@@ -155,7 +155,7 @@ def create_problem(
     multi_stage,
     parsed_arguments,
     timing_summary_file_path=None,
-    temporal_subproblems
+    temporal_subproblems=1
 ):
     """
     :param scenario_directory: the main scenario directory
@@ -938,13 +938,12 @@ def run_optimization_for_subproblem_stage_benders(
                     #     print(key)
 
                 solved_instance, results = solve_problem(
-                    # Note that this doesn't get used unless Benders is activated.
-                    parsed_arguments,
-                    instance,
-                    benders_subproblems,
-                    dynamic_components,
-                    multi_stage,
-                    prob_sol_files_directory
+                    parsed_arguments=parsed_arguments,
+                    instance=instance,
+                    benders_subproblems=benders_subproblems,
+                    dynamic_components=dynamic_components,
+                    multi_stage=multi_stage,
+                    prob_sol_files_directory=prob_sol_files_directory,
                 )
 
         save_results(
@@ -1267,13 +1266,12 @@ def run_optimization_for_subproblem_stage_benders(
                     #     print(key)
 
                 solved_instance, results = solve_problem(
-                    # Note that this doesn't get used unless Benders is activated.
-                    parsed_arguments,
-                    instance,
-                    benders_subproblems,
-                    dynamic_components,
-                    multi_stage,
-                    prob_sol_files_directory
+                    parsed_arguments=parsed_arguments,
+                    instance=instance,
+                    benders_subproblems=benders_subproblems,
+                    dynamic_components=dynamic_components,
+                    multi_stage=multi_stage,
+                    prob_sol_files_directory=prob_sol_files_directory,
                 )
 
         save_results(
@@ -2084,8 +2082,7 @@ def save_results(
     Save objective function value.
     Save constraint duals.
     """
-    if not parsed_arguments.benders:
-        step_start_time = start_step(step="Saving results", quiet=parsed_arguments.quiet)
+    step_start_time = start_step(step="Saving results", quiet=parsed_arguments.quiet)
 
     # TODO: how best to handle non-empty results directories?
     results_directory = os.path.join(
@@ -2763,12 +2760,12 @@ def solve(instance,
         if not parsed_arguments.benders:
             # Benders has a separate algorithm for dealing with MIPs.
             if hasattr(instance, "dual") and any(
-            not v.is_continuous()
-            for v in instance.component_data_objects(Var, active=True)
-            ):
-                instance.del_component(instance.dual)
+                not v.is_continuous()
+                for v in instance.component_data_objects(Var, active=True)
+                ):
+                    instance.del_component(instance.dual)
 
-            solve_kwargs = {"tee": not parsed_arguments.mute_solver_output,
+        solve_kwargs = {"tee": not parsed_arguments.mute_solver_output,
             "symbolic_solver_labels": parsed_arguments.symbolic,
             }
             
@@ -2863,64 +2860,6 @@ def solve(instance,
             multi_stage,
             parsed_arguments,
         )
-
-        if solver_name != "gams":
-            solve_kwargs = {
-                "tee": not parsed_arguments.mute_solver_output,
-                "symbolic_solver_labels": parsed_arguments.symbolic,
-            }
-
-            # On the legacy interfaces, keeping the solver files is a solve
-            # argument and they are written to the temporary file directory
-            # (which --write_solver_files_to_logs_dir points at the logs
-            # directory). On the new interfaces, *keepfiles* is deprecated in
-            # favor of a working directory: passing it would both warn and
-            # silently point the solver's files at the current working directory
-            # instead of the logs directory, so set the working directory
-            # ourselves instead
-            if new_interface:
-                if (
-                    parsed_arguments.write_solver_files_to_logs_dir
-                    and "working_dir" in optimizer.config
-                ):
-                    optimizer.config.working_dir = TempfileManager.tempdir
-            else:
-                solve_kwargs["keepfiles"] = parsed_arguments.keepfiles
-
-            # If we are logging, pass the log file and the terminal as separate
-            # tee streams to solvers on Pyomo's new solver interface (e.g.
-            # HiGHS): those interfaces capture solver output at the
-            # file-descriptor level and, to avoid an output loop, replace any
-            # tee stream that reports the captured file descriptor with a
-            # direct terminal handle -- the Logging object assigned to
-            # sys.stdout reports the terminal's file descriptor, so its write()
-            # method gets bypassed and solver output never reaches the log file
-            if (
-                solve_kwargs["tee"]
-                and isinstance(optimizer, LegacySolverWrapper)
-                and isinstance(sys.stdout, Logging)
-            ):
-                solve_kwargs["tee"] = [sys.stdout.log_file, sys.stdout.terminal]
-
-            # Solve without loading the solution into the instance right away:
-            # some solver interfaces (e.g. HiGHS) raise an exception when asked
-            # to load a solution from a solve that didn't produce one (e.g. an
-            # infeasible problem), whereas we want to inspect the termination
-            # condition and continue gracefully
-            # Note: HiGHS's default LP algorithm (dual simplex after presolve)
-            # can fail without a conclusive status (termination condition
-            # 'unknown' or 'error') on numerically challenging problems, e.g.
-            # those with very large objective coefficients such as GridPath's
-            # constraint-violation penalties; setting 'presolve, off' in the
-            # scenario's solver options makes HiGHS take a different (slower
-            # but more robust) solution path
-            results = optimizer.solve(instance, load_solutions=False, **solve_kwargs)
-
-            # Load the solution into the model instance if one was found
-            if len(results.solution) > 0:
-                instance.solutions.load_from(
-                    results, default_variable_value=optimizer.default_variable_value()
-                )
 
     # Can optionally log infeasibilities but this has resulted in false
     # positives due to rounding errors larger than the default tolerance

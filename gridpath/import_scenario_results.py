@@ -48,6 +48,9 @@ skips everything leaves the scenario with no results in the database while
 appearing to have succeeded. Subproblems/stages skipped because the solver
 status was not 'ok' are reported by their solver termination condition
 (e.g. 'infeasible'), so the warning says WHY there are no results for them.
+
+Benders imports use one root-level results cell, keyed by (0, 0, 0, 0, 0),
+rather than the operational subproblem directory structure.
 """
 
 import warnings
@@ -56,6 +59,7 @@ import datetime
 import os.path
 import pandas as pd
 import sys
+from gridpath.auxiliary.scenario_chars import ScenarioStructure
 
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
 from gridpath.auxiliary.import_export_rules import import_export_rules
@@ -616,12 +620,25 @@ def main(args=None):
         modules_to_use = determine_modules(parsed_arguments=parsed_arguments,scenario_directory=scenario_directory)
         loaded_modules = load_modules(modules_to_use,parsed_arguments)
 
+        import_structure = scenario_structure
+        if parsed_arguments.benders:
+            import_structure = ScenarioStructure(
+                weather_hydro_avail_subproblem_stage_dict={
+                    0: {0: {0: {0: [0]}}}
+                },
+                weather_iteration_flag=False,
+                hydro_iteration_flag=False,
+                availability_iteration_flag=False,
+                subproblem_flag=False,
+                stage_flag=False,
+            )
+
         # Import appropriate results into database
         import_statuses, termination_conditions = import_scenario_results_into_database(
             import_rule=import_rule,
             loaded_modules=loaded_modules,
             scenario_id=scenario_id,
-            scenario_structure=scenario_structure,
+            scenario_structure=import_structure,
             db=conn,
             scenario_directory=scenario_directory,
             ignore_incomplete=ignore_incomplete,

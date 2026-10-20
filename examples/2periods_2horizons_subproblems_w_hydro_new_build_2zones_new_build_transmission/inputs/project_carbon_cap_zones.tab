@@ -1,0 +1,11 @@
+project	carbon_cap_zone
+Coal	Zone1
+Coal_ret	Zone2
+Gas_CCGT	Zone1
+Gas_CCGT_ret	Zone1
+Gas_CT	Zone1
+Gas_CT_ret	Zone1
+Gas_CCGT_new	Zone2
+Gas_CCGT_new_bin	Zone2
+Gas_CT_new	Zone2
+Gas_CT_new_bin	Zone2

@@ -25,6 +25,7 @@ import sqlite3
 import tempfile
 import unittest
 import warnings
+from unittest import mock
 
 from gridpath.auxiliary.import_export_rules import import_export_rules
 from gridpath.auxiliary.scenario_chars import ScenarioStructure
@@ -457,6 +458,81 @@ class TestImportScenarioResultsStatuses(unittest.TestCase):
                         )
                     finally:
                         conn.close()
+
+
+class TestMainImportStatuses(unittest.TestCase):
+    def test_main_imports_benders_root_and_non_benders_nested_results(self):
+        for benders in (False, True):
+            for quiet in (False, True):
+                with self.subTest(benders=benders, quiet=quiet):
+                    with tempfile.TemporaryDirectory() as directory:
+                        self.check_main_import(directory, benders, quiet)
+
+    def check_main_import(self, directory, benders, quiet):
+        db_path = os.path.join(directory, "results.db")
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            with open(DB_SCHEMA_PATH) as schema_f:
+                conn.executescript(schema_f.read())
+            conn.execute(
+                "INSERT INTO scenarios (scenario_id, scenario_name) VALUES (1, ?)",
+                ("test_scenario",),
+            )
+            conn.commit()
+
+        scenario_directory = os.path.join(directory, "test_scenario")
+        os.makedirs(scenario_directory)
+        with open(os.path.join(scenario_directory, "scenario_description.csv"), "w") as f:
+            f.write("scenario_id,1\n")
+        for cell_directory in ([""] if benders else ["1", "2"]):
+            write_cell_results_files(scenario_directory, cell_directory)
+        structure = two_subproblem_structure()
+        args = [
+            "--database", db_path,
+            "--scenario", "test_scenario",
+            "--scenario_location", directory,
+            "--benders", str(int(benders)),
+        ]
+        if quiet:
+            args.append("--quiet")
+
+        with (
+            mock.patch.object(
+                import_scenario_results, "get_scenario_id_and_name",
+                return_value=(1, "test_scenario"),
+            ),
+            mock.patch.object(
+                import_scenario_results, "get_scenario_structure_from_db",
+                return_value=structure,
+            ),
+            mock.patch.object(
+                import_scenario_results, "determine_modules", return_value=[],
+            ),
+            mock.patch.object(
+                import_scenario_results, "load_modules", return_value=[],
+            ),
+            mock.patch.object(import_scenario_results, "update_db_last_modified"),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            statuses = import_scenario_results.main(args)
+
+        expected_cells = (
+            [(0, 0, 0, 0, 0)]
+            if benders else [(0, 0, 0, 1, 0), (0, 0, 0, 2, 0)]
+        )
+        self.assertEqual(
+            statuses, {cell: IMPORT_STATUS_IMPORTED for cell in expected_cells}
+        )
+        with contextlib.closing(sqlite3.connect(db_path)) as conn:
+            rows = conn.execute(
+                """SELECT weather_iteration, hydro_iteration, availability_iteration,
+                subproblem_id, stage_id, solver_termination_condition,
+                objective_function_value FROM results_scenario"""
+            ).fetchall()
+        self.assertEqual(
+            set(rows), {cell + ("optimal", 42.0) for cell in expected_cells}
+        )
+        self.assertTrue(structure.SUBPROBLEM_FLAG)
+        self.assertEqual(structure.N_SUBPROBLEMS, 2)
 
 
 class TestSingleDrawRefused(unittest.TestCase):
