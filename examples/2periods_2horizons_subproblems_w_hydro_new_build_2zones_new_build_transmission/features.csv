@@ -4,8 +4,11 @@ lf_reserves_up
 lf_reserves_down
 regulation_up
 regulation_down
+period_energy_target
+transmission_target
 carbon_cap
 carbon_tax
 performance_standard
 carbon_credits
+fuel_burn_limit
 water

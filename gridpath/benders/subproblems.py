@@ -15,6 +15,7 @@ from pyomo.environ import (
     Suffix
 )
 from pyomo.repn.standard_repn import generate_standard_repn
+from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
@@ -28,7 +29,6 @@ import logging
 class BendersState(NamedTuple):
     values: tuple
 
-FEASIBILITY_RELATIVE_TOLERANCE = 5e-5
 BENDERS_RECOURSE_OBJECTIVE_SCALE = 1e6
 
 def _solve_with_lp_optimizer(
@@ -54,39 +54,53 @@ def _solve_with_lp_optimizer(
             "interior_point": 2,
         }
     else:
-        return optimiser.solve(
-            instance,
-            tee=False,
-            symbolic_solver_labels=True,
-        )
+        optimizer_key = None
+        optimizer_values = {}
 
-    scoped_options = {
+    scoped_options = ({
         optimizer_key: (
             optimizer_values[optimizer_name]
             if optimizer_name is not None
             else optimiser.options.get(
                 optimizer_key, optimizer_values["automatic"]
             )
-        ),
-        **(extra_options or {}),
-    }
+        )
+    } if optimizer_key is not None else {})
+    scoped_options.update(extra_options or {})
     previous_options = {
-        key: (key in optimiser.options, optimiser.options.get(key))
+        key: (
+            key in optimiser.options,
+            optimiser.options[key] if key in optimiser.options else None,
+        )
         for key in scoped_options
     }
     try:
         optimiser.options.update(scoped_options)
-        return optimiser.solve(
-            instance,
-            tee=False,
-            symbolic_solver_labels=True,
-        )
+        try:
+            return optimiser.solve(
+                instance,
+                tee=False,
+                symbolic_solver_labels=True,
+            )
+        except NoFeasibleSolutionError:
+            logging.getLogger(__name__).warning(
+                "Solver returned no loadable incumbent; classifying termination "
+                "with solution loading disabled."
+            )
+            results = optimiser.solve(
+                instance, tee=False, symbolic_solver_labels=True, load_solutions=False,
+            )
+            if results.solver.termination_condition == TerminationCondition.optimal:
+                raise RuntimeError(
+                    "Solver reported optimality without a loadable incumbent."
+                )
+            return results
     finally:
         for key, (was_present, previous_value) in previous_options.items():
             if was_present:
                 optimiser.options[key] = previous_value
             else:
-                optimiser.options.pop(key, None)
+                del optimiser.options[key]
 
 def _solve_scaled_recourse_lp(instance, optimiser, optimizer_name=None):
     """Solve an operational NPV LP with a normalized objective."""
@@ -146,6 +160,13 @@ def add_slacks_to_subproblem(model):
             descend_into=True,
         )
     )
+    constraints = [
+        constraint for constraint in constraints
+        if any(
+            bound is not None and math.isfinite(float(pyo.value(bound)))
+            for bound in (constraint.lower, constraint.upper)
+        )
+    ]
     linking_constraints = getattr(model, "BendersLinkingConstraints", None)
     if linking_constraints is not None:
         constraints = [
@@ -168,13 +189,15 @@ def add_slacks_to_subproblem(model):
         getattr(model, "BendersLinkingConstraintMap", {})
     )
     model._feasibility_bound_info = []
-    for var in model.component_data_objects(
+    for var in list(model.component_data_objects(
         pyo.Var,
         active=True,
         descend_into=True,
-    ):
+    )):
         if (
-            var.name in linking_var_names
+            var.parent_component() is model.slack_max
+            or var.parent_component() is model.slack_eq
+            or var.name in linking_var_names
             or var.fixed
             or var.is_binary()
             or var.is_integer()
@@ -195,6 +218,7 @@ def add_slacks_to_subproblem(model):
         )
         info = {
             "var": var,
+            "domain": var.domain,
             "lower": lower,
             "upper": upper,
             "scale": scale,
@@ -221,8 +245,14 @@ def add_slacks_to_subproblem(model):
     equality_index = 0
     model._feasibility_slack_row_info = []
     for constraint in constraints:
-        lower = constraint.lower
-        upper = constraint.upper
+        lower = (
+            constraint.lower if constraint.lower is not None
+            and math.isfinite(float(pyo.value(constraint.lower))) else None
+        )
+        upper = (
+            constraint.upper if constraint.upper is not None
+            and math.isfinite(float(pyo.value(constraint.upper))) else None
+        )
         body = constraint.body
         scale = constraint_scales[constraint.name]
         row_info = {
@@ -248,8 +278,9 @@ def add_slacks_to_subproblem(model):
             )
             equality_index += 1
         elif lower is not None and upper is not None:
-            constraint.set_value(
-                (lower - scale * model.slack_max, body, upper + scale * model.slack_max)
+            constraint.set_value(body - scale * model.slack_max <= upper)
+            model.FeasibilitySlackConstraints.add(
+                body + scale * model.slack_max >= lower
             )
         elif upper is not None:
             constraint.set_value(body <= upper + scale * model.slack_max)
@@ -1030,9 +1061,11 @@ def _restore_feasibility_variable_bounds(model, elastic):
         lower = info["lower"]
         upper = info["upper"]
         if elastic:
+            var.domain = Reals
             var.setlb(None)
             var.setub(None)
         else:
+            var.domain = info["domain"]
             var.setlb(lower)
             var.setub(upper)
         if info["lower_constraint"] is not None:
@@ -1069,64 +1102,6 @@ def _set_feasibility_restoration_mode(model, active):
         _restore_feasibility_variable_bounds(model, elastic=False)
         model.slack_fix.set_value(model.slack_max == 0)
         model.slack_fix.activate()
-
-def _active_primal_violations(model):
-    """Return normalized violations in the model's current active rows/bounds."""
-    violations = []
-
-    for constraint in model.component_data_objects(
-        Constraint,
-        active=True,
-        descend_into=True,
-    ):
-        body = pyo.value(constraint.body, exception=False)
-        if body is None:
-            continue
-
-        lower = pyo.value(constraint.lower, exception=False)
-        upper = pyo.value(constraint.upper, exception=False)
-        violation = max(
-            0.0,
-            float(lower) - float(body) if lower is not None else 0.0,
-            float(body) - float(upper) if upper is not None else 0.0,
-        )
-        scale = max(
-            1.0,
-            abs(float(lower)) if lower is not None else 0.0,
-            abs(float(upper)) if upper is not None else 0.0,
-        )
-        if violation > 0.0:
-            violations.append(
-                (constraint.name, violation, violation / scale)
-            )
-
-    for var in model.component_data_objects(
-        pyo.Var,
-        active=True,
-        descend_into=True,
-    ):
-        if var.value is None:
-            continue
-
-        lower = pyo.value(var.lb, exception=False)
-        upper = pyo.value(var.ub, exception=False)
-        var_value = float(var.value)
-        violation = max(
-            0.0,
-            float(lower) - var_value if lower is not None else 0.0,
-            var_value - float(upper) if upper is not None else 0.0,
-        )
-        scale = max(
-            1.0,
-            abs(float(lower)) if lower is not None else 0.0,
-            abs(float(upper)) if upper is not None else 0.0,
-        )
-        if violation > 0.0:
-            violations.append(
-                (var.name, violation, violation / scale)
-            )
-
-    return sorted(violations, key=lambda item: item[2], reverse=True)
 
 def process_subproblem_solution(
     instance,
@@ -1171,6 +1146,20 @@ def process_subproblem_solution(
     mip_term = (
         mip_results.solver.termination_condition
     )
+    from gridpath.benders.restoration import primal_violations, solve_original
+
+    if mip_term == TerminationCondition.optimal:
+        violations = primal_violations(instance)
+        if violations:
+            logging.getLogger(__name__).warning(
+                "Operational solution failed original-model validation for %s: %s",
+                subproblem_key, violations[:5],
+            )
+            retry = solve_original(instance, optimiser)
+            if retry is None:
+                mip_term = TerminationCondition.infeasible
+            else:
+                mip_results, dual_scale = retry
 
     # =============================================================
     # Feasible / optimal operational problem
@@ -1294,531 +1283,20 @@ def process_subproblem_solution(
             f"{nonlinking_integer_vars[:20]}"
         )
 
-    if not hasattr(instance, "slack_max") or not hasattr(instance, "slack_fix"):
-        add_slacks_to_subproblem(instance)
+    from gridpath.benders.restoration import restore
 
-    _set_feasibility_restoration_mode(
-        instance,
-        active=True,
+    restoration_result = restore(
+        instance, optimiser, active_linking_vars, continuous_point, subproblem_key
     )
-
-    # -------------------------------------------------------------
-    # Feasibility restoration problem
-    # -------------------------------------------------------------
-
-    instance.slack_fix.deactivate()
-
-    original_objectives = list(
-        instance.component_data_objects(
-            Objective,
-            active=True,
-            descend_into=True,
+    if isinstance(restoration_result, tuple):
+        retry_results, retry_dual_scale = restoration_result
+        return process_subproblem_solution(
+            instance, retry_results, planning_sol, linking_vars_by_type, optimiser,
+            active_linking_vars=active_linking_vars,
+            present_linking_vars=present_linking_vars,
+            subproblem_key=subproblem_key, dual_scale=retry_dual_scale,
         )
-    )
-    for objective in original_objectives:
-        objective.deactivate()
-
-    if hasattr(instance, "feasibility_obj"):
-        instance.feasibility_obj.set_value(instance.slack_max)
-        instance.feasibility_obj.activate()
-    else:
-        instance.feasibility_obj = Objective(
-            expr=instance.slack_max,
-            sense=minimize,
-        )
-
-    feasibility_results = _solve_with_lp_optimizer(
-        instance,
-        optimiser,
-        "automatic",
-    )
-
-    feasibility_term = (
-        feasibility_results.solver.termination_condition
-    )
-
-    # Retry alternate algorithms if the restoration solve is non-optimal.
-    for retry_optimizer in (
-        "primal_simplex",
-        "interior_point",
-    ):
-        if feasibility_term == TerminationCondition.optimal:
-            break
-        logging.getLogger(__name__).warning(
-            "Restoration solve returned %s; retrying with %s",
-            feasibility_term,
-            retry_optimizer,
-        )
-        feasibility_results = _solve_with_lp_optimizer(
-            instance,
-            optimiser,
-            retry_optimizer,
-        )
-        feasibility_term = (
-            feasibility_results.solver.termination_condition
-        )
-
-    if feasibility_term != TerminationCondition.optimal:
-        restoration_dump_base = os.environ.get(
-            "GRIDPATH_BENDERS_RESTORATION_LP"
-        )
-        if restoration_dump_base:
-            subproblem_name = str(
-                getattr(subproblem_key, "subproblem", subproblem_key)
-            ).replace(os.sep, "_")
-            dump_root, dump_extension = os.path.splitext(
-                restoration_dump_base
-            )
-            restoration_dump_path = (
-                f"{dump_root}_{subproblem_name}"
-                f"{dump_extension or '.lp'}"
-            )
-            instance.write(
-                restoration_dump_path,
-                io_options={"symbolic_solver_labels": True},
-            )
-
-        instance.feasibility_obj.deactivate()
-        _set_feasibility_restoration_mode(
-            instance,
-            active=False,
-        )
-        for objective in original_objectives:
-            objective.activate()
-
-        raise RuntimeError(
-            "Feasibility problem did not solve to optimality. "
-            f"Termination condition: {feasibility_term}"
-        )
-
-    restoration_slack = pyo.value(instance.slack_max)
-    if restoration_slack <= FEASIBILITY_RELATIVE_TOLERANCE:
-        instance.feasibility_obj.deactivate()
-        for objective in original_objectives:
-            objective.activate()
-        restoration_values = [
-            (var, var.value)
-            for var in instance.component_data_objects(
-                pyo.Var,
-                active=True,
-                descend_into=True,
-            )
-        ]
-
-        for row_info in instance._feasibility_slack_row_info:
-            row_info["constraint"].set_value(
-                row_info["original_expression"]
-            )
-        _restore_feasibility_variable_bounds(instance, elastic=False)
-
-        residuals = []
-        for row_info in instance._feasibility_slack_row_info:
-            body_value = pyo.value(row_info["body"], exception=False)
-            if body_value is None:
-                continue
-            lower = row_info["lower"]
-            upper = row_info["upper"]
-            violation = max(
-                0.0,
-                lower - body_value if lower is not None else 0.0,
-                body_value - upper if upper is not None else 0.0,
-            )
-            normalized_violation = violation / row_info["scale"]
-            if normalized_violation > FEASIBILITY_RELATIVE_TOLERANCE:
-                for info in instance._feasibility_slack_row_info:
-                    info["constraint"].set_value(info["elastic_expression"])
-                _restore_feasibility_variable_bounds(instance, elastic=True)
-                instance.slack_fix.activate()
-                instance.slack_fix.set_value(instance.slack_max == 0)
-                raise RuntimeError(
-                    "Near-zero restoration produced a row above the "
-                    "normalized feasibility tolerance. "
-                    f"Subproblem: {subproblem_key}; "
-                    f"row: {row_info['constraint'].name}; "
-                    f"normalized violation: {normalized_violation:.12g}."
-                )
-            if violation > 0:
-                residuals.append((row_info, violation))
-
-        for row_info, violation in residuals:
-            constraint = row_info["constraint"]
-            body = row_info["body"]
-            lower = row_info["lower"]
-            upper = row_info["upper"]
-            allowance = max(
-                violation,
-                FEASIBILITY_RELATIVE_TOLERANCE * row_info["scale"],
-            )
-            if row_info["equality"] or (
-                lower is not None and upper is not None
-            ):
-                constraint.set_value(
-                    (lower - allowance, body, upper + allowance)
-                )
-            elif upper is not None:
-                constraint.set_value(body <= upper + allowance)
-            elif lower is not None:
-                constraint.set_value(body >= lower - allowance)
-
-        bound_residuals = []
-        restoration_value_by_id = {
-            id(var): var_value for var, var_value in restoration_values
-        }
-        for info in instance._feasibility_bound_info:
-            var = info["var"]
-            var_value = restoration_value_by_id.get(id(var))
-            if var_value is None:
-                continue
-            lower = info["lower"]
-            upper = info["upper"]
-            violation = max(
-                0.0,
-                lower - var_value if lower is not None else 0.0,
-                var_value - upper if upper is not None else 0.0,
-            )
-            if violation <= 0:
-                continue
-            scale = info["scale"]
-            normalized_violation = violation / scale
-            bound_residuals.append((var.name, violation, normalized_violation))
-            if normalized_violation > FEASIBILITY_RELATIVE_TOLERANCE:
-                for row_info in instance._feasibility_slack_row_info:
-                    row_info["constraint"].set_value(
-                        row_info["elastic_expression"]
-                    )
-                _restore_feasibility_variable_bounds(instance, elastic=True)
-                instance.slack_fix.activate()
-                instance.slack_fix.set_value(instance.slack_max == 0)
-                raise RuntimeError(
-                    "Near-zero restoration produced a variable-bound "
-                    "violation above the normalized feasibility tolerance. "
-                    f"Subproblem: {subproblem_key}; variable: {var.name}; "
-                    f"normalized violation: {normalized_violation:.12g}."
-                )
-
-            allowance = max(
-                violation,
-                FEASIBILITY_RELATIVE_TOLERANCE * scale,
-            )
-            if lower is not None and var_value < lower:
-                var.setlb(lower - allowance)
-            if upper is not None and var_value > upper:
-                var.setub(upper + allowance)
-
-        instance.slack_fix.activate()
-        instance.slack_fix.set_value(instance.slack_max == 0)
-        retry_model_violations = _active_primal_violations(instance)
-        retry_results = optimiser.solve(
-            instance,
-            tee=False,
-            symbolic_solver_labels=True,
-        )
-        first_retry_termination = (
-            retry_results.solver.termination_condition
-        )
-        if (
-            first_retry_termination != TerminationCondition.optimal
-            and str(getattr(optimiser, "name", "")).lower().startswith(
-                ("mosek", "gurobi")
-            )
-        ):
-            retry_results = _solve_with_lp_optimizer(
-                instance,
-                optimiser,
-                "automatic",
-            )
-
-        if retry_results.solver.termination_condition == TerminationCondition.optimal:
-            try:
-                return process_subproblem_solution(
-                    instance,
-                    retry_results,
-                    planning_sol,
-                    linking_vars_by_type,
-                    optimiser=optimiser,
-                    active_linking_vars=active_linking_vars,
-                    present_linking_vars=present_linking_vars,
-                    subproblem_key=subproblem_key,
-                )
-            finally:
-                _set_feasibility_restoration_mode(
-                    instance,
-                    active=False,
-                )
-        retry_termination = retry_results.solver.termination_condition
-        _set_feasibility_restoration_mode(
-            instance,
-            active=False,
-        )
-        for var, var_value in restoration_values:
-            var.set_value(var_value, skip_validation=True)
-        bound_violations = []
-        for info in instance._feasibility_bound_info:
-            var = info["var"]
-            var_value = restoration_value_by_id.get(id(var))
-            if var_value is None:
-                continue
-            lower = info["lower"]
-            upper = info["upper"]
-            violation = max(
-                0.0,
-                lower - var_value if lower is not None else 0.0,
-                var_value - upper if upper is not None else 0.0,
-            )
-            if violation > 1e-7:
-                bound_violations.append((var.name, violation))
-        raise RuntimeError(
-            "The restoration LP reported a near-zero violation, but the "
-            "original subproblem remained infeasible when retried. "
-            f"Subproblem: {subproblem_key}; "
-            f"restoration slack: {restoration_slack:.12g}; "
-            f"first retry termination: {first_retry_termination}; "
-            f"retry termination: {retry_termination}; "
-            f"assembled retry model violations: "
-            f"{retry_model_violations[:20]}; "
-            f"constraint residuals: {[ (info['constraint'].name, violation) for info, violation in residuals[:20] ]}; "
-            f"variable-bound residuals: {bound_violations[:20]}; "
-            f"restoration bound residuals: {bound_residuals[:20]}."
-        )
-
-    # -------------------------------------------------------------
-    # Fix operational integer variables before extracting duals.
-    # -------------------------------------------------------------
-
-    lp_changes = prepare_lp_for_duals(
-        instance,
-        present_linking_vars=present_linking_vars,
-    )
-
-    present_linking_var_set = set(present_linking_vars)
-
-    remaining_integer_vars = [
-        var.name
-        for var in instance.component_data_objects(
-            pyo.Var,
-            descend_into=True,
-        )
-        if (
-                (var.is_binary() or var.is_integer())
-                and not var.fixed
-                and var.name not in present_linking_var_set
-        )
-    ]
-
-    if remaining_integer_vars:
-
-        raise RuntimeError(
-            "Feasibility LP still contains unfixed integer "
-            f"variables: {remaining_integer_vars[:20]}"
-        )
-
-    # -------------------------------------------------------------
-    # Re-solve after fixing integers.
-    # -------------------------------------------------------------
-
-    lp_results = _solve_with_lp_optimizer(
-        instance,
-        optimiser,
-        "primal_simplex",
-    )
-
-    if (
-        lp_results.solver.termination_condition
-        != TerminationCondition.optimal
-    ):
-
-        raise RuntimeError(
-            "Feasibility LP did not solve to optimality after "
-            "fixing operational integer variables."
-        )
-
-    benders_lambda = {}
-
-    for name in active_linking_vars:
-
-        constraint = (
-            instance.BendersLinkingConstraintMap.get(name)
-        )
-
-        if constraint is None:
-
-            var = instance.find_component(name)
-
-            if var is None:
-                raise RuntimeError(
-                    "Active linking variable "
-                    f"'{name}' does not exist in the "
-                    "operational model."
-                )
-
-            raise RuntimeError(
-                "Linking variable "
-                f"'{name}' exists in the operational model "
-                "but has no Benders linking constraint."
-            )
-
-        dual = instance.dual.get(
-            constraint,
-            None,
-        )
-
-        if dual is None:
-
-            raise RuntimeError(
-                "No dual value was returned for feasibility "
-                f"linking constraint '{name}'."
-            )
-
-        benders_lambda[name] = float(dual)
-
-    continuous_lambda = {
-        name: benders_lambda[name]
-        for name in active_linking_vars
-        if name in benders_lambda
-    }
-
-    # Duals come from the LP relaxation, so the cut intercept must too.
-    op_cost = pyo.value(instance.slack_max)
-    restoration_slack = op_cost
-    if os.environ.get("GRIDPATH_BENDERS_INFEAS_DIAG"):
-        rows = []
-        for c in instance.component_data_objects(pyo.Constraint, active=True):
-            d = instance.dual.get(c, None)
-            if d is not None and abs(d) > 1e-14:
-                rows.append((c.name[:90], float(d)))
-        rows.sort(key=lambda r: -abs(r[1]))
-        gens = {
-            k: pyo.value(v)
-            for k, v in instance.Project_Carbon_Credits_Generated.items()
-        }
-        ems = {}
-        for (p_, t_), v in instance.Project_Carbon_Emissions.items():
-            val_ = pyo.value(v) * pyo.value(instance.hrs_in_tmp[t_]) * pyo.value(instance.tmp_weight[t_])
-            ems[p_] = ems.get(p_, 0.0) + val_
-        cexp = {}
-        for nm_c in ("Project_Carbon_Credits_Generated_Constraint", "Benders_Carbon_Credit_Generated_Total_Constraint"):
-            comp = instance.find_component(nm_c)
-            if comp is not None:
-                for k_c, c_c in comp.items():
-                    cexp[(nm_c[:12],) + (k_c if isinstance(k_c, tuple) else (k_c,))] = str(c_c.expr)[:400]
-        xbar = {
-            k: v for k, v in continuous_point.items() if "CARBON_CREDIT" in k
-        } if isinstance(continuous_point, dict) else str(continuous_point)[:300]
-        if os.environ.get("GRIDPATH_BENDERS_CUTLOG"):
-            import json
-            with open(os.environ["GRIDPATH_BENDERS_CUTLOG"], "a") as f_:
-                f_.write(json.dumps({
-                    "sub": str(getattr(subproblem_key, "subproblem", subproblem_key)),
-                    "t": restoration_slack,
-                    "lam": benders_lambda,
-                    "x": continuous_point,
-                }, default=float) + "\n")
-        if os.environ.get("GRIDPATH_BENDERS_INFEAS_EXPERIMENT"):
-            import re as _re
-            saved = {n: c.expr for n, c in instance.BendersLinkingConstraintMap.items()}
-            def _resolve(newvals, label):
-                for n, v in newvals.items():
-                    instance.BendersLinkingConstraintMap[n].set_value(instance.find_component(n) == v)
-                _solve_with_lp_optimizer(instance, optimiser, "automatic")
-                logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT %s t=%s", label, pyo.value(instance.slack_max))
-                _rows = sorted(((instance.dual.get(c, 0.0) or 0.0, c.name[:80]) for c in instance.component_data_objects(pyo.Constraint, active=True)), key=lambda r: -abs(r[0]))[:14]
-                logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT %s rows=%s gens=%s", label, _rows, {k: round(pyo.value(v)) for k, v in instance.Project_Carbon_Credits_Generated.items()})
-                for n, e in saved.items():
-                    instance.BendersLinkingConstraintMap[n].set_value(e)
-            base = dict(continuous_point)
-            ref = dict(base)
-            for n in base:
-                if "ABSOLUTE_THRESHOLD_ALLOCATION" in n:
-                    ref[n] = 2e6 / 3
-            zone_sum = {}
-            for n in base:
-                m_ = _re.match(r"BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION\[(.+?),2030", n)
-                if m_ and "2030" in n:
-                    zone_sum[m_.group(1)] = ref[n]
-            z1 = {"Coal", "Gas_CCGT_ret", "Gas_CT_ret", "Coal_ret"}
-            for n in base:
-                if n.startswith("BENDERS_CARBON_CREDIT_GENERATED_TOTAL[Carbon_Credits_Zone1") or n.startswith("BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[Carbon_Credits_Zone1"):
-                    ref[n] = sum(v for k, v in zone_sum.items() if k in z1)
-                elif n.startswith("BENDERS_CARBON_CREDIT_GENERATED_TOTAL[Carbon_Credits_Zone2") or n.startswith("BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[Carbon_Credits_Zone2"):
-                    ref[n] = sum(v for k, v in zone_sum.items() if k not in z1)
-            sel = {n: ref[n] for n in base if "CARBON_CREDIT" in n and n in instance.BendersLinkingConstraintMap}
-            _resolve(sel, "credit-ref-point")
-            import json as _json
-            _refrec = [_json.loads(z) for z in open(os.environ["GRIDPATH_BENDERS_INFEAS_EXPERIMENT"]) if '"ref": true' in z][-1]["x"]
-            _full = {n: _refrec[n] for n in base if n in _refrec and n in instance.BendersLinkingConstraintMap}
-            _resolve(_full, "FULL-ref-point")
-            for _alg in ("primal_simplex", "interior_point", "automatic"):
-                for n, v in _full.items():
-                    instance.BendersLinkingConstraintMap[n].set_value(instance.find_component(n) == v)
-                _rr = _solve_with_lp_optimizer(instance, optimiser, _alg)
-                logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT FULL alg=%s t=%s term=%s", _alg, pyo.value(instance.slack_max), _rr.solver.termination_condition)
-            for n, e in saved.items():
-                instance.BendersLinkingConstraintMap[n].set_value(e)
-            try:
-                instance.slack_fix.activate()
-                for n, v in _full.items():
-                    instance.BendersLinkingConstraintMap[n].set_value(instance.find_component(n) == v)
-                _rr = _solve_with_lp_optimizer(instance, optimiser, "automatic")
-                logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT FULL-ref-point slack_fix term=%s", _rr.solver.termination_condition)
-                instance.slack_fix.deactivate()
-                for n, e in saved.items():
-                    instance.BendersLinkingConstraintMap[n].set_value(e)
-            except Exception as _e:
-                logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT slack_fix error %s", _e)
-            _diffs = {n: (base[n], _refrec.get(n)) for n in base if n in _refrec and abs(base[n] - _refrec[n]) > 1e-9 and "CARBON_CREDIT" not in n}
-            logging.getLogger("infeas_diag").warning("INFEAS EXPERIMENT non-credit diffs=%s", _diffs)
-            _resolve({}, "same-x")
-
-        gv = {id(v): k for k, v in instance.Project_Carbon_Credits_Generated.items()}
-        for c_ in instance.component_data_objects(pyo.Constraint, active=True):
-            try:
-                hit = [gv[id(v)] for v in _idv(c_.body, include_fixed=False) if id(v) in gv]
-            except Exception:
-                continue
-            if hit:
-                r_ = generate_standard_repn(c_.body, compute_values=True)
-                logging.getLogger("infeas_diag").warning(
-                    "INFEAS GROW %s lo=%s up=%s vars=%s coefs=%s",
-                    c_.name, pyo.value(c_.lower) if c_.lower is not None else None,
-                    pyo.value(c_.upper) if c_.upper is not None else None,
-                    [(v.name, v.value) for v in r_.linear_vars][:12], list(r_.linear_coefs)[:12],
-                )
-        for k_, v_ in instance.Project_Carbon_Credits_Generated.items():
-            logging.getLogger("infeas_diag").warning("INFEAS GVAR %s lb=%s ub=%s val=%s", k_, v_.lb, v_.ub, v_.value)
-        logging.getLogger("infeas_diag").warning("INFEAS EXPR %s", cexp)
-        logging.getLogger("infeas_diag").warning(
-            "INFEAS DIAG t=%s lambda_nonzero=%s top_dual_rows=%s gens=%s ems=%s xbar=%s",
-            restoration_slack,
-            {k: v for k, v in benders_lambda.items() if abs(v) > 1e-14},
-            rows[:30],
-            gens,
-            ems,
-            xbar,
-        )
-    # -------------------------------------------------------------
-
-    restore_lp_after_duals(
-        instance,
-        lp_changes,
-    )
-
-    instance.feasibility_obj.deactivate()
-    _set_feasibility_restoration_mode(
-        instance,
-        active=False,
-    )
-    for objective in original_objectives:
-        objective.activate()
-
-    return {
-        "feasible": False,
-        "op_cost": float(op_cost),
-        "benders_lambda": benders_lambda,
-        "continuous_lambda": continuous_lambda,
-        "continuous_point": continuous_point,
-        "theta_coeff": 0.0,
-    }
-
+    return restoration_result
 def relax_operational_integrality(model):
     """
     Relax operational integer variables for LP-based recourse

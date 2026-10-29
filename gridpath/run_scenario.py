@@ -1361,6 +1361,7 @@ def run_optimization_for_subproblem(
     multi_stage,
     parsed_arguments,
     objective_values,
+    lic_queue_and_worker_timmer=None,
 ):
     """
     Check if there are stages in the subproblem; if not solve subproblem;

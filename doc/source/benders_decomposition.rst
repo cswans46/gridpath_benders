@@ -184,18 +184,13 @@ interfere with convergence.
 Benders Routine: LP restoration, Subproblem Execution, and Master Linkage
 =========================================================================
 
-Within each worker, the operational model is then iterated. 
-First, if the model's feasibility restoration machinery has been 
-added which indicates that the current operational model is non-optimal
-after having solved with the fixed linked master variables,
-slack variables are added to non-linking constraints and 
-continuous-variable bounds are relaxed to solve an LP restoration problem
-in which the maximum slack is minimised to find smallest normalised relaxation needed for the
-current master point. In the event that the minimum slack is above tolerance,
-the restoration solution satisfies the relaxed model, the code then solves the
-resulting LP with the primal simplex solver using its duals to 
-form a feasibility cut for the master problem (this occurs within `process_subproblem_solution`. The type of feasibility cut depends on
-the master discrete method chosen by the user and each are discussed in :ref:`extensions-section-ref`.
+Within each worker, the operational model is iterated with the current linked
+master variables. Non-optimal operational LPs enter a separate feasibility
+restoration problem. An optimal solver status is also checked against the
+original operational model before accepting an incumbent. Restoration and
+numerical recovery are described in :ref:`benders-restoration-section-ref`.
+The type of feasibility cut depends on the master discrete method; see
+:ref:`extensions-section-ref`.
 
 The algorithm then begins by dealing with master discrete linking variables
 according to the method chosen. In the `pj_relaxed` phase, all discrete linking
@@ -229,18 +224,15 @@ and `Method=0` (primal simplex).
 The solver option and scaled objective are restored after each solve, including
 when the solve raises an exception. This option controls the `pj_relax` solve;
 fixed-z and recourse-bound LPs retain an existing algorithm option, or use
-automatic selection if none is set. Feasibility restoration uses automatic selection initially, then retries with
-primal simplex and interior point if needed. The restoration LP used for
-feasibility-cut duals retains its explicit primal-simplex choice with either
-solver. A failed near-zero-slack recourse retry also tries automatic selection.
+automatic selection if none is set. Feasibility restoration and unchanged-model
+recovery use primal simplex first, followed by one interior-point attempt if
+numerical validation fails. Solver-specific tolerances are scoped to these solves.
 Dual simplex is not an explicit selection or retry option. Automatic selection
 does not prohibit the solver from internally choosing dual simplex; use an
 explicit `interior_point` or `primal_simplex` selection for the `pj_relax` solve
-when that distinction matters. The primal-simplex restoration re-solve was introduced
-after observing incorrect optimal results and duals from MOSEK dual simplex leading to invalid feasibility
-cuts when using the dual simplex. This can occur when the model is poorly scaled
-resulting in basis calculations that can generate inaccurate objective and dual values
-while passing the solver's optimality checks.
+when that distinction matters. Poor scaling can produce inaccurate objectives
+and duals despite an optimal solver status, so restoration additionally validates
+the numerical certificate rather than relying only on the selected algorithm.
 
 Finally, in the case of an operational LP, the LP is solved and duals are extracted conventionally.
 In the `fixed_z` case and if the MIP termination condition is optimal, binary and integer variables
@@ -250,15 +242,118 @@ described above in the case of an operational MIP. Otherwise, in the case of an 
 condition in the other `benders_operational_discrete_method` cases, the `lp_results=mip_results` at this
 point.
 
-!!!! CONTINUE AT PROCESS_SUBPROBLEM_SOLUTION !!!!!
+.. _benders-restoration-section-ref:
 
+Feasibility Restoration
+========================
 
+Purpose and original-model feasibility
+--------------------------------------
 
+An infeasible operational LP at a particular master trial point is expected
+during Benders decomposition. It does not establish that the complete scenario
+is infeasible. For example, adding a zero coal-burn limit or a finite gas-burn
+limit can make an existing investment/policy allocation infeasible; restoration
+must then guide the master toward a different allocation.
 
+``gridpath.benders.restoration`` constructs Phase I on a disposable clone of the
+operational LP. The persistent worker's physical constraints, bounds, domains,
+objective, and linking equalities are not relaxed in place. Finite non-linking
+rows and non-fixed continuous-variable bounds are made elastic, while linking
+equalities retain the trial point. Operational integer recourse must first be
+handled by the configured discrete method: LP-dual feasibility cuts are not
+valid for genuinely infeasible unfixed operational integer recourse.
 
+Phase I minimizes a nonnegative maximum normalized slack, :math:`t`. For row
+scale :math:`s_i`, an equality is represented by
+:math:`a_i y - s_i e_i = b_i` with :math:`-t \leq e_i \leq t`;
+finite inequality sides and continuous-variable bounds receive corresponding
+elastic terms. Sides with infinite bounds are omitted. In particular, a
+completely unconstrained row is not converted into an expression containing
+infinity plus a slack variable.
 
+Small Phase-I slack is **not** permission to widen the original constraints or
+variable bounds. If a reliable positive slack exceeds ``1e-9``, a feasibility
+cut is returned, even when the slack is below the former ``5e-5`` threshold.
+A slack at or below ``1e-9`` triggers a scaled retry of the unchanged operational
+LP. Only an optimal retry passing original-model checks can provide a feasible
+incumbent. If Phase I is near zero but the unchanged LP remains infeasible,
+the algorithm reports numerical ambiguity rather than manufacturing feasibility.
 
+Scaling and numerical certificates
+----------------------------------
 
+Elastic row scales normalize violations, but do not by themselves condition the
+solver matrix. Before solving the clone, each finite row is divided by the
+maximum of one and its largest absolute coefficient. Linking rows are included
+in this numerical scaling, but are never made elastic. Trial-point RHS magnitude
+is deliberately not used for the divisor: an extreme master allocation must not
+shrink an essential linking coefficient below the solver's numerical resolution.
+The Phase-I objective is multiplied by ``1e6`` to avoid very small objective
+coefficients and associated duals.
+
+Restoration tries primal simplex, then at most one interior-point solve.
+For MOSEK, these attempts use ``MSK_DPAR_BASIS_TOL_X=1e-9`` and
+``MSK_DPAR_INTPNT_TOL_PFEAS``, ``MSK_DPAR_INTPNT_TOL_DFEAS``, and
+``MSK_DPAR_INTPNT_TOL_REL_GAP`` set to ``1e-10``. Gurobi uses
+``FeasibilityTol=1e-9``, ``OptimalityTol=1e-9``, and ``BarConvTol=1e-10``.
+HiGHS uses primal and dual feasibility tolerances of ``1e-9``.
+Options are restored even if the solver raises an exception; no license path
+or machine-specific solver setting is stored in the model.
+If a solver interface raises an exception because a non-optimal result has no
+loadable incumbent, termination is explicitly classified with solution loading
+disabled. Such a result is never used as an operational solution or certificate.
+
+An optimal status alone is insufficient. Before accepting a Phase-I solve, the
+code checks finite values, primal feasibility, dual/reduced-cost signs,
+stationarity, complementarity, and the primal-dual objective gap. Certificate
+checks use ``1e-8`` scale-aware tolerances. Primal backward-error checks include
+the sum of absolute row activities to distinguish floating-point cancellation
+at extreme trial points from a meaningful infeasibility. This backward-error
+allowance is for the Phase-I certificate only; it does not widen the original
+operational model.
+
+Ordinary optimal operational solutions and unchanged-model retries are checked
+against original rows, bounds, linking equalities, and integrality, using a
+``1e-7`` residual tolerance normalized by row RHS/coefficient magnitudes or
+variable bounds. Missing or non-finite values are errors, not zero residuals.
+A nominally optimal solution failing these checks is retried on a scaled clone.
+
+Feasibility cuts and failure handling
+------------------------------------------------------------
+
+The cut intercept and linking duals come from the same validated Phase-I solve.
+For a numerical row divisor :math:`d_i` and objective multiplier :math:`C`,
+the original-unit dual is
+:math:`\lambda_i = \lambda_i^{solver}/(d_i C)`.
+The intercept is the smaller of the primal slack and the validated dual objective
+in original slack units. This avoids overstating the intercept by the
+primal-dual gap.
+
+The resulting feasibility inequality has the form
+
+.. math::
+
+   0 \geq \phi(\bar{x}) + \lambda^\mathsf{T}(x-\bar{x}).
+
+Its entire intercept and gradient are multiplied by
+:math:`\max(1,1/\phi(\bar{x}))`, keeping a meaningful small infeasibility visible
+to the master solver without changing the half-space. Restoration results retain
+the unscaled ``restoration_slack``, ``restoration_dual_gap``, and
+``restoration_cut_scale`` for diagnostics. These are not operating costs.
+
+Rejected certificates are logged with the subproblem and numerical reason.
+After the bounded attempts are exhausted, an explicit exception stops the run.
+``GRIDPATH_BENDERS_RESTORATION_LP`` optionally writes the final attempted
+restoration LP with a subproblem suffix and symbolic row names.
+``GRIDPATH_BENDERS_INFEAS_DIAG`` logs the slack, dual gap, and cut scale;
+``GRIDPATH_BENDERS_CUTLOG`` appends the master point and scaled cut coefficients
+in JSON-lines format. Diagnostic output does not re-solve or modify the model.
+
+Regression tests in ``tests/test_benders_restoration.py`` cover zero coal and
+finite gas limits, near-infeasible trial points, infinite rows, certificate
+rejection, dual scaling, cut support at perturbed/feasible points, original-model
+preservation, repeated restoration transitions, and solver-option cleanup.
 .. _file-map-section-ref:
 
 ***************

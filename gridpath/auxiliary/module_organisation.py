@@ -67,7 +67,7 @@ def define_benders_modules(modules_to_use):
         "system.load_balance.load_balance",
         "system.load_balance.consolidate_results",
         "project.policy.policy_contribution",
-        ".aggregate_transmission_target_contributions",
+        "system.policy.transmission_targets.aggregate_transmission_target_contributions",
         "objective.system.aggregate_load_balance_penalties",
         "objective.system.reserve_violation_penalties.lf_reserves_up",
         "objective.system.reserve_violation_penalties.lf_reserves_down",

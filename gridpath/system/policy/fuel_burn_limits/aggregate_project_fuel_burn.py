@@ -69,7 +69,11 @@ def add_model_components(
         m.FUEL_BURN_LIMIT_BAS,
         within=m.FUEL_PRJS,
         initialize=lambda mod, ba: [
-            prj for (prj, bln_a) in mod.PRJ_FUEL_BURN_LIMIT_BAS if ba == bln_a
+            prj 
+            for (prj, bln_a) in mod.PRJ_FUEL_BURN_LIMIT_BAS if ba == bln_a
+            # Add this such that projects for whom fuel burn limits apply are truncated to only those in the projects
+            # set (this should include all in the regular optimisation and a subset of total projects when using benders.)
+            if ba == bln_a and prj in mod.PROJECTS
         ],
     )
 
