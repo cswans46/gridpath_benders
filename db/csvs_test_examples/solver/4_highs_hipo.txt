@@ -1,1 +1,0 @@
-highs, HiPO parallel interior point with crossover (for large LPs)

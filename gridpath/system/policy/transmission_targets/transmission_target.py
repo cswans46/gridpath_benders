@@ -47,10 +47,13 @@ def add_model_components(
     :return:
     """
 
+    # Transmission target indices are independent of the operational
+    # balancing-horizon indices. In particular, annual targets must remain
+    # available in Benders subproblems even when their annual horizon is
+    # not included in BLN_TYPE_HRZS.
     m.TRANSMISSION_TARGET_ZONE_BLN_TYPE_HRZS_WITH_TRANSMISSION_TARGET = Set(
-        dimen=3, within=m.TRANSMISSION_TARGET_ZONES * m.BLN_TYPE_HRZS
+        dimen=3,
     )
-
     # Transmission targets specified in energy terms for the positive
     # direction of the tx line
     m.transmission_target_pos_dir_min_mwh = Param(

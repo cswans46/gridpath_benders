@@ -603,33 +603,68 @@ def get_inputs_from_database(
     :param conn: database connection
     :return:
     """
-    builtin_hrz_types_list = ", ".join(f"'{h}'" for h in BUILTIN_HORIZON_TYPES)
+    builtin_hrz_types_list = ", ".join(
+        f"'{h}'" for h in BUILTIN_HORIZON_TYPES
+    )
+
     c1 = conn.cursor()
-    horizons = c1.execute(f"""SELECT horizon, balancing_type_horizon, boundary
+
+    horizons = c1.execute(f"""
+        SELECT horizon, balancing_type_horizon, boundary
         FROM inputs_temporal_horizons
         WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
-        AND (balancing_type_horizon, horizon) in (
-            SELECT DISTINCT balancing_type_horizon, horizon
-            FROM inputs_temporal_horizon_timepoints
-            WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
-            AND subproblem_id = {subproblem}
-            AND stage_id = {stage}
-        )
-        -- Don't get the built-ins
         AND balancing_type_horizon NOT IN ({builtin_hrz_types_list})
+        AND (
+            balancing_type_horizon <> 'year'
+            OR horizon IN (
+                SELECT DISTINCT period
+                FROM inputs_temporal
+                WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
+                    AND subproblem_id = {subproblem}
+                    AND stage_id = {stage}
+            )
+        )
+        AND (
+            balancing_type_horizon = 'year'
+            OR (balancing_type_horizon, horizon) IN (
+                SELECT DISTINCT balancing_type_horizon, horizon
+                FROM inputs_temporal_horizon_timepoints
+                WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
+                    AND subproblem_id = {subproblem}
+                    AND stage_id = {stage}
+            )
+        )
         ORDER BY balancing_type_horizon, horizon;
-        """)
+    """)
 
     c2 = conn.cursor()
     horizon_timepoints = c2.execute(
-        f"""SELECT horizon, balancing_type_horizon, timepoint
+        f"""
+        SELECT
+            horizon,
+            balancing_type_horizon,
+            timepoint
         FROM inputs_temporal_horizon_timepoints
         WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
-       AND subproblem_id = {subproblem}
-       AND stage_id = {stage}
-       -- Don't get the built-ins
-       AND balancing_type_horizon NOT IN ({builtin_hrz_types_list})
-       ORDER BY balancing_type_horizon, timepoint;"""
+        AND subproblem_id = {subproblem}
+        AND stage_id = {stage}
+        AND balancing_type_horizon NOT IN ({builtin_hrz_types_list})
+        AND balancing_type_horizon <> 'year'
+
+        UNION
+
+        SELECT DISTINCT
+            period AS horizon,
+            'year' AS balancing_type_horizon,
+            timepoint
+        FROM inputs_temporal
+        WHERE temporal_scenario_id = {subscenarios.TEMPORAL_SCENARIO_ID}
+        AND subproblem_id = {subproblem}
+        AND stage_id = {stage}
+        AND spinup_or_lookahead = 0
+
+        ORDER BY balancing_type_horizon, timepoint;
+        """
     )
 
     return horizons, horizon_timepoints

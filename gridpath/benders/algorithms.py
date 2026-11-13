@@ -29,6 +29,7 @@ from gridpath.benders.gurobi_benders import (
 from gridpath.benders.mosek_benders import (
     create_mosek_benders_solver,
 )
+from gridpath.benders.gams_benders_solver import create_gams_solver
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,8 @@ def benders(
     linking_vars,
     setup,
     multi_stage,
-    parsed_arguments
+    parsed_arguments,
+    solver_options=None,
 ):
     """Run Benders decomposition over the planning master and recourse workers.
 
@@ -201,9 +203,14 @@ def benders(
     # cuts. djc is a separate routine: a pure MIP master with native MOSEK DJCs,
     # seeded with one cut in every binary state.
     requested_master_method = master_discrete_method
+    solver_interface_name = str(parsed_arguments.solver).lower()
+    gams_options = dict(solver_options or {})
+    gams_backend_name = str(gams_options.get("solver", "")).lower()
+    is_gams = solver_interface_name == "gams"
+    is_native_mosek = "mosek" in solver_interface_name and not is_gams
     use_native_djc = (
         requested_master_method != "linearized"
-        and "mosek" in parsed_arguments.solver.lower()
+        and is_native_mosek
     )
     if master_discrete_method == "linearized":
         master_discrete_method = "pj_relax"
@@ -261,7 +268,7 @@ def benders(
                 len(_discrete_linking),
             )
             master_discrete_method = "pj_relax"
-            use_native_djc = "mosek" in parsed_arguments.solver.lower()
+            use_native_djc = is_native_mosek
 
     # ---------------------------------------------------------
     # Apply P&J relaxation to the master
@@ -310,35 +317,28 @@ def benders(
     # The correct solver for the task (this depends on the stabilisation
     # and binary method requested).
 
-    if "mosek" in parsed_arguments.solver.lower():
-
+    if is_gams:
+        optimiser = create_gams_solver(
+            gams_options,
+            executable=parsed_arguments.solver_executable,
+        )
+    elif is_native_mosek:
         optimiser = create_mosek_benders_solver()
-
-    elif "gurobi" in parsed_arguments.solver.lower():
-
+    elif "gurobi" in solver_interface_name:
         optimiser = create_gurobi_benders_solver()
-
+    elif parsed_arguments.solver_executable is not None:
+        optimiser = SolverFactory(
+            parsed_arguments.solver,
+            executable=parsed_arguments.solver_executable,
+        )
     else:
+        optimiser = SolverFactory(parsed_arguments.solver)
 
-        if parsed_arguments.solver_executable is not None:
-
-            optimiser = SolverFactory(
-                parsed_arguments.solver,
-                executable=parsed_arguments.solver_executable,
-            )
-
-        else:
-
-            optimiser = SolverFactory(
-                parsed_arguments.solver
-            )
-
-    # Mute solver output for Benders subproblem iterations.
+    # Mute solver output during Benders iterations. For GAMS, options are
+    # written to the underlying optimizer's .opt file by GamsSolverAdapter.
     solver_name = parsed_arguments.solver.lower()
-
-    if "mosek" in solver_name:
+    if "mosek" in solver_name or (is_gams and gams_backend_name.startswith("mosek")):
         optimiser.options["MSK_IPAR_LOG"] = "0"
-
     elif "gurobi" in solver_name:
         optimiser.options["OutputFlag"] = 0
 
@@ -361,13 +361,11 @@ def benders(
     continuous_linking_variable_names = []
     seen_continuous = set()
 
-    if (
-        requested_master_method == "djc"
-        and "mosek" not in parsed_arguments.solver.lower()
-    ):
+    if requested_master_method == "djc" and not is_native_mosek:
         raise ValueError(
-            "BendersDiscreteMethod='djc' requires the MOSEK "
-            "Benders solver."
+            "BendersDiscreteMethod='djc' requires the direct native MOSEK "
+            "Benders solver. GAMS + MOSEK supports standard Benders cuts, "
+            "but does not expose the native MOSEK DJC interface."
         )
 
     try:
@@ -392,7 +390,8 @@ def benders(
                 output_queue,
                 scenario_directory,
                 multi_stage,
-                parsed_arguments
+                parsed_arguments,
+                gams_options if is_gams else None,
             ),
         )
 

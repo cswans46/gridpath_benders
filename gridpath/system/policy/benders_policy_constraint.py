@@ -19,6 +19,7 @@ from pyomo.environ import (
     Var,
     NonNegativeReals,
     Set,
+    Reals
 )
 
 Infinity = float("inf")
@@ -329,10 +330,243 @@ def add_model_components(
             if mod.benders_allow_carbon_credits_infinite_supply[zone, period]
             else (0, mod.benders_carbon_credits_supply_tco2[zone, period]),
         )
+        
+    CAP_FACTOR_ALLOCATION_DEFINITIONS = (
+        (
+            "MIN",
+            "CAP_FACTOR_MIN_ALLOCATION_TARGETS",
+            "min_cap_factor",
+        ),
+        (
+            "MAX",
+            "CAP_FACTOR_MAX_ALLOCATION_TARGETS",
+            "max_cap_factor",
+        ),
+    )
+    
+    # ============================================================
+    # Capacity-factor allocation variables (master only)
+    # ============================================================
+
+    if not getattr(m, "_is_benders_subproblem", False) and all(
+        hasattr(m, target_set_name)
+        for _, target_set_name, _ in CAP_FACTOR_ALLOCATION_DEFINITIONS
+    ):
+
+        for direction, target_set_name, _ in (
+            CAP_FACTOR_ALLOCATION_DEFINITIONS
+        ):
+            index_name = f"CAP_FACTOR_{direction}_ALLOCATION_INDEX"
+            variable_name = f"CAP_FACTOR_{direction}_ALLOCATION"
+
+            setattr(
+                m,
+                index_name,
+                Set(
+                    dimen=4,
+                    initialize=_make_period_allocation_index_rule(
+                        target_set_name
+                    ),
+                ),
+            )
+
+            setattr(
+                m,
+                variable_name,
+                Var(
+                    getattr(m, index_name),
+                    within=Reals,
+                ),
+            )
+        
+    # ============================================================
+    # Fuel-burn allocation variables (master only)
+    # ============================================================
+        
+    FUEL_BURN_ALLOCATION_DEFINITIONS = (
+        (
+            "MIN_ABS",
+            "FUEL_BURN_MIN_ABS_ALLOCATION_TARGETS",
+            "fuel_burn_min_unit",
+        ),
+        (
+            "MAX_ABS",
+            "FUEL_BURN_MAX_ABS_ALLOCATION_TARGETS",
+            "fuel_burn_max_unit",
+        ),
+    )
+
+    if not getattr(m, "_is_benders_subproblem", False) and all(
+        hasattr(m, target_set_name)
+        for _, target_set_name, _ in FUEL_BURN_ALLOCATION_DEFINITIONS
+    ):
+
+        for direction, target_set_name, _ in (
+            FUEL_BURN_ALLOCATION_DEFINITIONS
+        ):
+            target_set = getattr(m, target_set_name)
+
+            index_name = f"FUEL_BURN_{direction}_ALLOCATION_INDEX"
+            variable_name = f"FUEL_BURN_{direction}_ALLOCATION"
+
+            setattr(
+                m,
+                index_name,
+                Set(
+                    dimen=4,
+                    initialize=_make_period_allocation_index_rule(
+                        target_set_name
+                    ),
+                ),
+            )
+
+            setattr(
+                m,
+                variable_name,
+                Var(
+                    getattr(m, index_name),
+                    within=NonNegativeReals,
+                ),
+            )
+
+    # ============================================================
+    # Transmission target allocation variables (master only)
+    # ============================================================
+
+    if not getattr(m, "_is_benders_subproblem", False) and all(
+        hasattr(m, name)
+        for name in [
+            "TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION_TARGETS",
+            "TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION_TARGETS",
+            "TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION_TARGETS",
+            "TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION_TARGETS",
+        ]
+    ):
+
+        transmission_allocation_definitions = [
+            (
+                "POS_DIR_MIN",
+                "TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION_TARGETS",
+            ),
+            (
+                "POS_DIR_MAX",
+                "TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION_TARGETS",
+            ),
+            (
+                "NEG_DIR_MIN",
+                "TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION_TARGETS",
+            ),
+            (
+                "NEG_DIR_MAX",
+                "TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION_TARGETS",
+            ),
+        ]
+
+        for direction, target_set_name in transmission_allocation_definitions:
+
+            target_set = getattr(m, target_set_name)
+
+            index_name = (
+                f"TRANSMISSION_TARGET_{direction}_ALLOCATION_INDEX"
+            )
+
+            variable_name = (
+                f"TRANSMISSION_TARGET_{direction}_ALLOCATION"
+            )
+
+            setattr(
+                m,
+                index_name,
+                Set(
+                    dimen=4,
+                    initialize=lambda mod, target_set=target_set: [
+                        (z, bt, hz, str(sp))
+                        for z, bt, hz in target_set
+                        for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+                    ],
+                ),
+            )
+
+            setattr(
+                m,
+                variable_name,
+                Var(
+                    getattr(m, index_name),
+                    within=NonNegativeReals,
+                ),
+            )
 
     # ============================================================
     # Constraint rules
     # ============================================================
+    
+    def _make_period_allocation_index_rule(target_set_name):
+        def allocation_index_rule(mod):
+            return [
+                (ba, bt, hz, str(sp))
+                for ba, bt, hz in getattr(mod, target_set_name)
+                for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+            ]
+
+        return allocation_index_rule
+    
+    def cap_factor_min_allocation_rule(mod, prj, bt, h):
+        return sum(
+            mod.CAP_FACTOR_MIN_ALLOCATION[prj, bt, h, str(sp)]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[h]
+        ) == (
+            mod.min_cap_factor[prj, bt, h]
+            * mod.Possible_Power_Provision_in_Horizon_Expression[
+                prj, bt, h
+            ]
+        )
+
+    def cap_factor_max_allocation_rule(mod, prj, bt, h):
+        return sum(
+            mod.CAP_FACTOR_MAX_ALLOCATION[prj, bt, h, str(sp)]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[h]
+        ) == (
+            mod.max_cap_factor[prj, bt, h]
+            * mod.Possible_Power_Provision_in_Horizon_Expression[
+                prj, bt, h
+            ]
+        )
+    
+    def fuel_burn_min_abs_allocation_rule(mod, ba, bt, hz):
+        return sum(
+            mod.FUEL_BURN_MIN_ABS_ALLOCATION[ba, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.fuel_burn_min_unit[ba, bt, hz]
+
+    def fuel_burn_max_abs_allocation_rule(mod, ba, bt, hz):
+        return sum(
+            mod.FUEL_BURN_MAX_ABS_ALLOCATION[ba, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.fuel_burn_max_unit[ba, bt, hz]
+
+    def transmission_target_pos_dir_min_allocation_rule(mod, z, bt, hz):
+        return sum(
+            mod.TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION[z, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.transmission_target_pos_dir_min_mwh[z, bt, hz]
+
+    def transmission_target_pos_dir_max_allocation_rule(mod, z, bt, hz):
+        return sum(
+            mod.TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION[z, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.transmission_target_pos_dir_max_mwh[z, bt, hz]
+
+    def transmission_target_neg_dir_min_allocation_rule(mod, z, bt, hz):
+        return sum(
+            mod.TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION[z, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.transmission_target_neg_dir_min_mwh[z, bt, hz]
+
+    def transmission_target_neg_dir_max_allocation_rule(mod, z, bt, hz):
+        return sum(
+            mod.TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION[z, bt, hz, sp]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ) == mod.transmission_target_neg_dir_max_mwh[z, bt, hz]
 
     def carbon_cap_allocation_rule(mod, z, p):
         return (
@@ -411,6 +645,56 @@ def add_model_components(
     # ============================================================
     # Constraints
     # ============================================================
+
+    if not getattr(m, "_is_benders_subproblem", False):
+        
+        if hasattr(m, "CAP_FACTOR_MIN_ALLOCATION_TARGETS"):
+            m.Cap_Factor_Min_Allocation_Constraint = Constraint(
+                m.CAP_FACTOR_MIN_ALLOCATION_TARGETS,
+                rule=cap_factor_min_allocation_rule,
+            )
+
+        if hasattr(m, "CAP_FACTOR_MAX_ALLOCATION_TARGETS"):
+            m.Cap_Factor_Max_Allocation_Constraint = Constraint(
+                m.CAP_FACTOR_MAX_ALLOCATION_TARGETS,
+                rule=cap_factor_max_allocation_rule,
+            )
+        
+        if hasattr(m, "FUEL_BURN_MIN_ABS_ALLOCATION_TARGETS"):
+            m.Fuel_Burn_Min_Abs_Allocation_Constraint = Constraint(
+                m.FUEL_BURN_MIN_ABS_ALLOCATION_TARGETS,
+                rule=fuel_burn_min_abs_allocation_rule,
+            )
+
+        if hasattr(m, "FUEL_BURN_MAX_ABS_ALLOCATION_TARGETS"):
+            m.Fuel_Burn_Max_Abs_Allocation_Constraint = Constraint(
+                m.FUEL_BURN_MAX_ABS_ALLOCATION_TARGETS,
+                rule=fuel_burn_max_abs_allocation_rule,
+            )
+
+        if hasattr(m, "TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION_TARGETS"):
+            m.Transmission_Target_Pos_Dir_Min_Allocation_Constraint = Constraint(
+                m.TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION_TARGETS,
+                rule=transmission_target_pos_dir_min_allocation_rule,
+            )
+
+        if hasattr(m, "TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION_TARGETS"):
+            m.Transmission_Target_Pos_Dir_Max_Allocation_Constraint = Constraint(
+                m.TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION_TARGETS,
+                rule=transmission_target_pos_dir_max_allocation_rule,
+            )
+
+        if hasattr(m, "TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION_TARGETS"):
+            m.Transmission_Target_Neg_Dir_Min_Allocation_Constraint = Constraint(
+                m.TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION_TARGETS,
+                rule=transmission_target_neg_dir_min_allocation_rule,
+            )
+
+        if hasattr(m, "TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION_TARGETS"):
+            m.Transmission_Target_Neg_Dir_Max_Allocation_Constraint = Constraint(
+                m.TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION_TARGETS,
+                rule=transmission_target_neg_dir_max_allocation_rule,
+            )
 
     if hasattr(m, "CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP"):
         m.Carbon_Cap_Allocation_Constraint = Constraint(

@@ -17,7 +17,119 @@ Custom functions to be run after loading data from CSVs.
 """
 
 from db.common_functions import spin_on_database_lock
+import csv
+from pathlib import Path
 
+def export_annual_horizon_diagnostics(
+    conn,
+    subscenario_id,
+    output_dir,
+):
+    """
+    Export annual horizon boundary matching diagnostics.
+
+    For every annual horizon boundary, records whether its start and end
+    timepoints match the temporal records for each subproblem and stage.
+
+    Parameters
+    ----------
+    conn : sqlite3.Connection
+        Database connection.
+    subscenario_id : int
+        Temporal scenario ID.
+    output_dir : str or Path
+        Directory in which to save the diagnostic CSV.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sql = """
+        SELECT
+            h.temporal_scenario_id,
+            t.subproblem_id,
+            h.stage_id,
+            h.balancing_type_horizon,
+            h.horizon,
+            h.tmp_start,
+            h.tmp_start_spinup_or_lookahead,
+            h.tmp_end,
+            h.tmp_end_spinup_or_lookahead,
+
+            EXISTS (
+                SELECT 1
+                FROM inputs_temporal t_start
+                WHERE t_start.temporal_scenario_id =
+                      h.temporal_scenario_id
+                  AND t_start.subproblem_id = t.subproblem_id
+                  AND t_start.stage_id = h.stage_id
+                  AND t_start.timepoint = h.tmp_start
+                  AND t_start.spinup_or_lookahead =
+                      h.tmp_start_spinup_or_lookahead
+            ) AS start_matches,
+
+            EXISTS (
+                SELECT 1
+                FROM inputs_temporal t_end
+                WHERE t_end.temporal_scenario_id =
+                      h.temporal_scenario_id
+                  AND t_end.subproblem_id = t.subproblem_id
+                  AND t_end.stage_id = h.stage_id
+                  AND t_end.timepoint = h.tmp_end
+                  AND t_end.spinup_or_lookahead =
+                      h.tmp_end_spinup_or_lookahead
+            ) AS end_matches
+
+        FROM inputs_temporal_horizon_timepoints_start_end h
+
+        JOIN (
+            SELECT DISTINCT
+                temporal_scenario_id,
+                subproblem_id,
+                stage_id
+            FROM inputs_temporal
+            WHERE temporal_scenario_id = ?
+        ) t
+          ON t.temporal_scenario_id = h.temporal_scenario_id
+         AND t.stage_id = h.stage_id
+
+        WHERE h.temporal_scenario_id = ?
+          AND h.balancing_type_horizon = 'year'
+
+        ORDER BY
+            t.subproblem_id,
+            h.stage_id,
+            h.horizon;
+    """
+
+    rows = conn.execute(
+        sql,
+        (subscenario_id, subscenario_id),
+    ).fetchall()
+
+    output_file = (
+        output_dir / f"annual_horizon_diagnostics_{subscenario_id}.csv"
+    )
+
+    columns = [
+        "temporal_scenario_id",
+        "subproblem_id",
+        "stage_id",
+        "balancing_type_horizon",
+        "horizon",
+        "tmp_start",
+        "tmp_start_spinup_or_lookahead",
+        "tmp_end",
+        "tmp_end_spinup_or_lookahead",
+        "start_matches",
+        "end_matches",
+    ]
+
+    with output_file.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)
+        writer.writerows(rows)
+
+    print(f"Annual horizon diagnostics written to: {output_file}")
 
 def temporal(conn, subscenario_id):
     """
@@ -167,6 +279,12 @@ def temporal(conn, subscenario_id):
                 """
 
             c.execute(subproblem_period_tmp_start_end_sql, ())
+            
+    export_annual_horizon_diagnostics(
+        conn=conn,
+        subscenario_id=subscenario_id,
+        output_dir=r"C:\Users\SwansonC\ECD\Benders\gridpath",
+    )
 
     # TIMEPOINT HORIZONS
     subproblem_stages = c.execute(f"""

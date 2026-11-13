@@ -20,13 +20,157 @@ cap factor of a project over a horizon.
 
 import csv
 import os.path
-from pyomo.environ import Set, Param, Constraint, Expression, Reals, value
+from pyomo.environ import Set, Param, Constraint, Expression, Reals, value, Var
 
 from gridpath.auxiliary.db_interface import import_csv
 
 Infinity = float("inf")
 Negative_Infinity = float("-inf")
 
+_CAP_FACTOR_ALLOCATION_DEFINITIONS = (
+    (
+        "MIN",
+        "CAP_FACTOR_MIN_ALLOCATION_TARGETS",
+        "min_cap_factor",
+        "min",
+    ),
+    (
+        "MAX",
+        "CAP_FACTOR_MAX_ALLOCATION_TARGETS",
+        "max_cap_factor",
+        "max",
+    ),
+)
+
+
+def _make_cap_factor_allocation_target_set_rule(parameter_name, bound_type):
+    def allocation_target_set_rule(mod):
+        parameter = getattr(mod, parameter_name)
+        targets = []
+
+        for prj, bt, h in mod.CAP_FACTOR_LIMIT_PRJ_BT_HRZ:
+            if bt != "year" or h not in mod.PERIODS:
+                continue
+
+            target_value = value(parameter[prj, bt, h])
+
+            if bound_type == "min":
+                is_active = target_value != Negative_Infinity
+            else:
+                is_active = target_value != Infinity
+
+            if is_active:
+                targets.append((prj, bt, h))
+
+        return targets
+
+    return allocation_target_set_rule
+
+
+def _make_cap_factor_allocation_index_rule(target_set_name):
+    def allocation_index_rule(mod):
+        return [
+            (prj, bt, h, str(sp))
+            for prj, bt, h in getattr(mod, target_set_name)
+            for sp in mod.SUBPROBLEM
+        ]
+
+    return allocation_index_rule
+
+
+def _add_cap_factor_allocation_target_sets(m):
+    """Declare the active annual capacity-factor allocation targets."""
+    for _, target_set_name, parameter_name, bound_type in (
+        _CAP_FACTOR_ALLOCATION_DEFINITIONS
+    ):
+        if hasattr(m, target_set_name):
+            continue
+
+        setattr(
+            m,
+            target_set_name,
+            Set(
+                dimen=3,
+                initialize=_make_cap_factor_allocation_target_set_rule(
+                    parameter_name,
+                    bound_type,
+                ),
+            ),
+        )
+
+
+def _add_cap_factor_subproblem_allocation_variables(m, subproblem):
+    """Declare allocation variables for the worker's own subproblem."""
+    if not getattr(m, "_is_benders_subproblem", False):
+        return
+
+    if not hasattr(m, "SUBPROBLEM"):
+        m.SUBPROBLEM = Set(initialize=[str(subproblem)])
+
+    for direction, target_set_name, _, _ in (
+        _CAP_FACTOR_ALLOCATION_DEFINITIONS
+    ):
+        index_name = f"CAP_FACTOR_{direction}_ALLOCATION_INDEX"
+        variable_name = f"CAP_FACTOR_{direction}_ALLOCATION"
+
+        if not hasattr(m, index_name):
+            setattr(
+                m,
+                index_name,
+                Set(
+                    dimen=4,
+                    initialize=_make_cap_factor_allocation_index_rule(
+                        target_set_name
+                    ),
+                ),
+            )
+
+        if not hasattr(m, variable_name):
+            setattr(
+                m,
+                variable_name,
+                Var(
+                    getattr(m, index_name),
+                    within=Reals,
+                ),
+            )
+
+
+def _cap_factor_allocation_or_original(mod, prj, bt, h, direction):
+    """
+    Return the worker's allocated MWh limit for annual horizons;
+    otherwise return the original capacity-factor expression.
+    """
+    parameter_name = (
+        "min_cap_factor"
+        if direction == "MIN"
+        else "max_cap_factor"
+    )
+
+    target_set_name = f"CAP_FACTOR_{direction}_ALLOCATION_TARGETS"
+
+    original_expression = (
+        getattr(mod, parameter_name)[prj, bt, h]
+        * mod.Possible_Power_Provision_in_Horizon_Expression[prj, bt, h]
+    )
+
+    if (
+        not getattr(mod, "_is_benders_subproblem", False)
+        or bt != "year"
+        or h not in mod.PERIODS
+        or (prj, bt, h) not in getattr(mod, target_set_name)
+    ):
+        return original_expression
+
+    allocation_variable = getattr(
+        mod,
+        f"CAP_FACTOR_{direction}_ALLOCATION",
+    )
+
+    return sum(
+        allocation_variable[prj, bt, h, str(sp)]
+        for sp in mod.SUBPROBLEM
+    )
 
 def add_model_components(
     m,
@@ -133,12 +277,13 @@ def add_model_components(
     def min_cap_factor_constraint_rule(mod, prj, bt, h):
         if mod.min_cap_factor[prj, bt, h] == Negative_Infinity:
             return Constraint.Skip
-        else:
-            return (
-                mod.Actual_Power_Provision_in_Horizon_Expression[prj, bt, h]
-                >= mod.min_cap_factor[prj, bt, h]
-                * mod.Possible_Power_Provision_in_Horizon_Expression[prj, bt, h]
+
+        return (
+            mod.Actual_Power_Provision_in_Horizon_Expression[prj, bt, h]
+            >= _cap_factor_allocation_or_original(
+                mod, prj, bt, h, "MIN"
             )
+        )
 
     m.Min_Cap_Factor_Constraint = Constraint(
         m.CAP_FACTOR_LIMIT_PRJ_BT_HRZ,
@@ -148,17 +293,21 @@ def add_model_components(
     def max_cap_factor_constraint_rule(mod, prj, bt, h):
         if mod.max_cap_factor[prj, bt, h] == Infinity:
             return Constraint.Skip
-        else:
-            return (
-                mod.Actual_Power_Provision_in_Horizon_Expression[prj, bt, h]
-                <= mod.max_cap_factor[prj, bt, h]
-                * mod.Possible_Power_Provision_in_Horizon_Expression[prj, bt, h]
+
+        return (
+            mod.Actual_Power_Provision_in_Horizon_Expression[prj, bt, h]
+            <= _cap_factor_allocation_or_original(
+                mod, prj, bt, h, "MAX"
             )
+        )
 
     m.Max_Cap_Factor_Constraint = Constraint(
         m.CAP_FACTOR_LIMIT_PRJ_BT_HRZ,
         rule=max_cap_factor_constraint_rule,
     )
+    
+    _add_cap_factor_allocation_target_sets(m)
+    _add_cap_factor_subproblem_allocation_variables(m, subproblem)
 
 
 def load_model_data(

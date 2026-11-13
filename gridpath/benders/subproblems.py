@@ -16,7 +16,7 @@ from pyomo.environ import (
 )
 from pyomo.repn.standard_repn import generate_standard_repn
 from pyomo.contrib.solver.common.util import NoFeasibleSolutionError
-
+from gridpath.benders.gams_benders_solver import create_gams_solver
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import singledispatch
 from typing import Any, Dict, List, NamedTuple
@@ -455,7 +455,8 @@ def benders_subproblem_worker(
     output_queue,
     scenario_directory,
     multi_stage,
-    parsed_arguments
+    parsed_arguments,
+    solver_options=None,
 ):
     """Build and serve one persistent operational Benders subproblem.
 
@@ -495,7 +496,20 @@ def benders_subproblem_worker(
     # Solver
     # ================================================================
 
-    optimiser = SolverFactory(parsed_arguments.solver)
+    if str(parsed_arguments.solver).lower() == "gams":
+        optimiser = create_gams_solver(
+            solver_options,
+            executable=parsed_arguments.solver_executable,
+        )
+        if optimiser.backend_name.startswith("mosek"):
+            optimiser.options["MSK_IPAR_LOG"] = "0"
+    elif parsed_arguments.solver_executable is not None:
+        optimiser = SolverFactory(
+            parsed_arguments.solver,
+            executable=parsed_arguments.solver_executable,
+        )
+    else:
+        optimiser = SolverFactory(parsed_arguments.solver)
 
     # ================================================================
     # Classify linking variables.

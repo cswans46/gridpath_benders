@@ -20,7 +20,7 @@ burn in another fuel - BA.
 import csv
 import os.path
 
-from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value
+from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value, Set
 
 from db.common_functions import spin_on_database_lock
 from gridpath.auxiliary.dynamic_components import fuel_burn_balance_components
@@ -32,6 +32,144 @@ from gridpath.common_functions import (
 )
 from gridpath.system.policy.fuel_burn_limits import FUEL_BURN_LIMITS_DF
 
+
+_FUEL_BURN_ALLOCATION_DEFINITIONS = (
+    (
+        "MIN_ABS",
+        "FUEL_BURN_MIN_ABS_ALLOCATION_TARGETS",
+        "fuel_burn_min_unit",
+        "min",
+    ),
+    (
+        "MAX_ABS",
+        "FUEL_BURN_MAX_ABS_ALLOCATION_TARGETS",
+        "fuel_burn_max_unit",
+        "max",
+    ),
+)
+
+
+def _make_fuel_burn_allocation_target_set_rule(parameter_name, bound_type):
+    def allocation_target_set_rule(mod):
+        parameter = getattr(mod, parameter_name)
+        annual_targets = []
+
+        for ba, bt, hz in (
+            mod.FUEL_BA_BLN_TYPE_HRZS_WITH_FUEL_BURN_LIMIT
+        ):
+            if bt != "year" or hz not in mod.PERIODS:
+                continue
+
+            target_value = float(parameter[ba, bt, hz])
+
+            if bound_type == "min":
+                is_active = target_value > 0
+            else:
+                is_active = target_value < float("inf")
+
+            if is_active:
+                annual_targets.append((ba, bt, hz))
+
+        return annual_targets
+
+    return allocation_target_set_rule
+
+
+def _add_annual_fuel_burn_allocation_target_sets(m):
+    for _, target_set_name, parameter_name, bound_type in (
+        _FUEL_BURN_ALLOCATION_DEFINITIONS
+    ):
+        if hasattr(m, target_set_name):
+            continue
+
+        setattr(
+            m,
+            target_set_name,
+            Set(
+                dimen=3,
+                initialize=_make_fuel_burn_allocation_target_set_rule(
+                    parameter_name,
+                    bound_type,
+                ),
+            ),
+        )
+
+
+def _make_fuel_burn_allocation_index_rule(target_set_name):
+    def allocation_index_rule(mod):
+        return [
+            (ba, bt, hz, str(sp))
+            for ba, bt, hz in getattr(mod, target_set_name)
+            for sp in mod.SUBPROBLEM
+        ]
+
+    return allocation_index_rule
+
+
+def _add_subproblem_fuel_burn_allocation_variables(m, subproblem):
+    if not getattr(m, "_is_benders_subproblem", False):
+        return
+
+    if not hasattr(m, "SUBPROBLEM"):
+        m.SUBPROBLEM = Set(initialize=[str(subproblem)])
+
+    for direction, target_set_name, _, _ in (
+        _FUEL_BURN_ALLOCATION_DEFINITIONS
+    ):
+        index_name = f"FUEL_BURN_{direction}_ALLOCATION_INDEX"
+        variable_name = f"FUEL_BURN_{direction}_ALLOCATION"
+
+        if not hasattr(m, index_name):
+            setattr(
+                m,
+                index_name,
+                Set(
+                    dimen=4,
+                    initialize=_make_fuel_burn_allocation_index_rule(
+                        target_set_name
+                    ),
+                ),
+            )
+
+        if not hasattr(m, variable_name):
+            setattr(
+                m,
+                variable_name,
+                Var(
+                    getattr(m, index_name),
+                    within=NonNegativeReals,
+                ),
+            )
+
+
+def _fuel_burn_target_or_input(mod, ba, bt, hz, direction):
+    parameter_name = (
+        "fuel_burn_min_unit"
+        if direction == "MIN_ABS"
+        else "fuel_burn_max_unit"
+    )
+    input_parameter = getattr(mod, parameter_name)
+
+    if not getattr(mod, "_is_benders_subproblem", False):
+        return input_parameter[ba, bt, hz]
+
+    target_set_name = (
+        f"FUEL_BURN_{direction}_ALLOCATION_TARGETS"
+    )
+    target_set = getattr(mod, target_set_name)
+
+    if (ba, bt, hz) not in target_set:
+        return input_parameter[ba, bt, hz]
+
+    allocation_variable = getattr(
+        mod,
+        f"FUEL_BURN_{direction}_ALLOCATION",
+    )
+
+    return sum(
+        allocation_variable[ba, bt, hz, str(sp)]
+        for sp in mod.SUBPROBLEM
+    )
 
 def add_model_components(
     m,
@@ -49,6 +187,11 @@ def add_model_components(
     :param d:
     :return:
     """
+    # These sets must be declared before policy_constraint.py attempts to
+    # retrieve them to create the master allocation variables.
+    _add_annual_fuel_burn_allocation_target_sets(m)
+    _add_subproblem_fuel_burn_allocation_variables(m, subproblem)
+    
     m.Total_Horizon_Fuel_Burn_By_Fuel_BA_from_All_Sources_Expression = Expression(
         m.FUEL_BA_BLN_TYPE_HRZS_WITH_FUEL_BURN_LIMIT,
         rule=lambda mod, ba, bt, h: sum(
@@ -90,7 +233,9 @@ def add_model_components(
                 ba, bt, h
             ]
             + mod.Fuel_Burn_Min_Shortage_Abs_Unit_Expression[ba, bt, h]
-            >= mod.fuel_burn_min_unit[ba, bt, h]
+            >= _fuel_burn_target_or_input(
+                mod, ba, bt, h, "MIN_ABS"
+            )
         )
 
     m.Meet_Fuel_Burn_Min_Abs_Constraint = Constraint(
@@ -130,7 +275,9 @@ def add_model_components(
                 ba, bt, h
             ]
             - mod.Fuel_Burn_Max_Overage_Abs_Unit_Expression[ba, bt, h]
-            <= mod.fuel_burn_max_unit[ba, bt, h]
+            <= _fuel_burn_target_or_input(
+                mod, ba, bt, h, "MAX_ABS"
+            )
         )
 
     m.Meet_Fuel_Burn_Max_Abs_Constraint = Constraint(

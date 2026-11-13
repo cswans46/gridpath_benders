@@ -2651,11 +2651,53 @@ def solve(instance,
     # or a shell solver such as GAMS and AMPL
     # This is separate from a "solver" option, which is the solver to use if using a
     # shell solver such as GAMS
+    
+    
+    
     if os.path.exists(solver_options_file):
+
         with open(solver_options_file) as f:
+
             _reader = reader(f, delimiter=",")
-            for row in _reader:
+
+            first_row = next(_reader)
+
+            if "solver_option_name" in first_row:
+
+                # GAMS configuration: three-column format
+                solver_name = None
+
+                for row in _reader:
+
+                    row_solver_name = row[0].strip().lower()
+                    option_name = row[1].strip()
+                    option_value = row[2].strip()
+
+                    if solver_name is None:
+                        solver_name = row_solver_name
+
+                    elif solver_name != row_solver_name:
+                        raise ValueError(
+                            "Multiple solver names found in solver_options.csv."
+                        )
+
+                    solver_options[option_name] = option_value
+
+                if solver_name is None:
+                    raise ValueError(
+                        "No solver configuration found in solver_options.csv."
+                    )
+
+                solver_options["solver_name"] = solver_name
+
+            else:
+
+                # Existing two-column format
+                row = first_row
                 solver_options[row[0]] = row[1]
+
+                for row in _reader:
+                    solver_options[row[0]] = row[1]
 
         # Check the solver name specified is the same as that given from the
         # command line (if any)
@@ -2684,16 +2726,34 @@ def solve(instance,
     # (HiGHS would otherwise silently use its default algorithm)
     check_hipo_availability(solver_name=solver_name, solver_options=solver_options)
 
+    
     # Get solver
-    # If a solver executable is specified, pass it to Pyomo
-    if parsed_arguments.solver_executable is not None:
-        optimizer = SolverFactory(
-            solver_name, executable=parsed_arguments.solver_executable
-        )
-    # Otherwise, only pass the solver name; Pyomo will look for the
-    # executable in the PATH
+    if solver_name.lower() == "gams":
+
+        # Use GAMS shell interface
+        if parsed_arguments.solver_executable is not None:
+            optimizer = SolverFactory(
+                "gams",
+                solver_io="shell",
+                executable=parsed_arguments.solver_executable,
+            )
+        else:
+            optimizer = SolverFactory(
+                "gams",
+                solver_io="shell",
+            )
+
     else:
-        optimizer = SolverFactory(solver_name)
+
+        # Existing solver configuration
+        if parsed_arguments.solver_executable is not None:
+            optimizer = SolverFactory(
+                solver_name,
+                executable=parsed_arguments.solver_executable,
+            )
+        else:
+            optimizer = SolverFactory(solver_name)
+
 
     # Figure out which kind of interface the solver uses, as that determines
     # which of the solver-file arguments it can honor: the legacy interfaces
@@ -2721,40 +2781,53 @@ def solve(instance,
     # With "shell solvers" (e.g. GAMS, AMPL), we can specify which solver (e.g.
     # CPLEX, Gurobi) to use
     # No access to AMPL, so not supported at this pont
-    if solver_name == "gams":
-        # Specify which "solver" to use if using GAMS as a "shell solver" --
-        # e.g. we could be using CPLEX through GAMS
-        # The following way to pass options to the solver is GAMS-specific, may also
-        # work for AMPL but not supported at this point
-        # Based on: https://stackoverflow.com/questions/57965894/how-to-specify-gams-solver-specific-options-through-pyomo/64698920#64698920
-        if "solver" in solver_options.keys():
-            add_options = [
-                "GAMS_MODEL.optfile = 1;",
-                "$onecho > {solver}.opt".format(solver=solver_options["solver"]),
-            ]
-            for opt in solver_options.keys():
-                if not opt == "solver":
-                    opt_string = "{option} {value}".format(
-                        option=opt, value=solver_options[opt]
-                    )
-                    add_options.append(opt_string)
+   
+    if solver_name.lower() == "gams":
 
-            add_options.append("$offecho")
+        # Specify which solver to use through GAMS
+        if "solver" not in solver_options:
+            raise ValueError(
+                "A solver must be specified in solver_options.csv "
+                "when using GAMS as the Pyomo solver interface."
+            )
 
-            results = optimizer.solve(
-                instance,
-                solver=solver_options["solver"],
-                add_options=add_options,
-                tee=not parsed_arguments.mute_solver_output,
-                keepfiles=parsed_arguments.keepfiles,
-                symbolic_solver_labels=parsed_arguments.symbolic,
+        gams_solver = solver_options["solver"]
+
+        # Create GAMS solver options file
+        add_options = [
+            "GAMS_MODEL.optfile = 1;",
+            "$onecho > {}.opt".format(gams_solver),
+        ]
+
+        for opt, value in solver_options.items():
+
+            if opt != "solver":
+                add_options.append("{} {}".format(opt, value))
+
+        add_options.append("$offecho")
+
+        # Solve without immediately loading the solution
+        results = optimizer.solve(
+            instance,
+            solver=gams_solver,
+            add_options=add_options,
+            tee=not parsed_arguments.mute_solver_output,
+            keepfiles=parsed_arguments.keepfiles,
+            symbolic_solver_labels=parsed_arguments.symbolic,
+            load_solutions=False,
+        )
+
+        # Load the solution if one was found
+        if len(results.solution) > 0:
+            instance.solutions.load_from(
+                results,
+                default_variable_value=optimizer.default_variable_value(),
             )
-        else:
-            warnings.warn(
-                "A solver must be specified in the solver settings if you "
-                "want to pass settings through GAMS."
-            )
+
+
     else:
+
+        # Apply direct solver options
         for opt in solver_options.keys():
             optimizer.options[opt] = solver_options[opt]
             
@@ -2860,6 +2933,7 @@ def solve(instance,
             setup,
             multi_stage,
             parsed_arguments,
+             solver_options=solver_options,
         )
 
     # Can optionally log infeasibilities but this has resulted in false

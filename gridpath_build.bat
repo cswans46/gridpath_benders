@@ -5,7 +5,7 @@ set stem=C:\Users\SwansonC\ECD\Benders\gridpath\db
 set benders=1
 set database_it=2
 set n_parallel_get_inputs=1
-set solver=mosek
+set solver=gams
 cd %stem%
 cd ./..
 

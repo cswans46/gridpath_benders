@@ -1,0 +1,4 @@
+solver_name,gams
+MSK_IPAR_INFEAS_REPORT_AUTO,MSK_ON
+MSK_IPAR_NUM_THREADS,16.0
+solver,mosek
