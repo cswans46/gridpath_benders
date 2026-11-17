@@ -100,7 +100,40 @@ from gridpath.project.operations.operational_types.common_functions import (
     get_prj_temporal_index_opr_inputs_from_db,
 )
 from gridpath.common_functions import create_results_df
+from pyomo.environ import Set, Var, Constraint, NonNegativeReals
+from gridpath.benders.soc_allocation import (
+    STOR_SOC_ALLOCATION_UNIT_MWH,
+)
 
+def _add_stor_soc_allocation_components(m, subproblem):
+    m.STOR_START_SOC_ALLOCATION = Var(m.STOR_SOC_ALLOCATION_INDEX, within=NonNegativeReals)
+    m.STOR_END_SOC_ALLOCATION = Var(m.STOR_SOC_ALLOCATION_INDEX, within=NonNegativeReals)
+
+    def start_rule(mod, prj, bt, hz):
+        first = mod.first_hrz_tmp[bt, hz]
+        if (prj, first) not in mod.STOR_OPR_TMPS or (prj, first) in mod.STOR_EXOG_SOC_TMPS:
+            return Constraint.Skip
+        return mod.Stor_Starting_Energy_in_Storage_MWh[prj, first] == (
+            STOR_SOC_ALLOCATION_UNIT_MWH
+            * sum(mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, str(sp)] for sp in mod.SUBPROBLEM))
+
+    def end_rule(mod, prj, bt, hz):
+        last = mod.last_hrz_tmp[bt, hz]
+        if (prj, last) not in mod.STOR_OPR_TMPS:
+            return Constraint.Skip
+        return mod.Stor_Ending_Energy_in_Storage_MWh[prj, last] == (
+            STOR_SOC_ALLOCATION_UNIT_MWH
+            * sum(mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, str(sp)] for sp in mod.SUBPROBLEM))
+
+    m.Stor_SOC_Start_Allocation_Constraint = Constraint(m.STOR_SOC_ALLOCATION_TARGETS, rule=start_rule)
+    m.Stor_SOC_End_Allocation_Constraint = Constraint(m.STOR_SOC_ALLOCATION_TARGETS, rule=end_rule)
+
+def _is_soc_chained(mod, s, tmp):
+    """True in a Benders subproblem for storage whose SOC is chained across subproblems."""
+    if not getattr(mod, "_is_benders_subproblem", False):
+        return False
+    bt = mod.balancing_type_project[s]
+    return (s, bt, mod.horizon[tmp, bt]) in mod.STOR_SOC_ALLOCATION_TARGETS
 
 def add_model_components(
     m,
@@ -330,7 +363,7 @@ def add_model_components(
             mod=mod, superset="PRJ_OPR_TMPS", index=0, membership_set=mod.STOR
         ),
     )
-
+    
     m.STOR_LINKED_TMPS = Set(dimen=2)
 
     m.STOR_EXOG_SOC_TMPS = Set(within=m.STOR_OPR_TMPS)
@@ -540,11 +573,9 @@ def energy_tracking_rule(mod, s, tmp):
     else:
         bt = mod.balancing_type_project[s]
         is_first_tmp = check_if_first_timepoint(mod=mod, tmp=tmp, balancing_type=bt)
-        if is_first_tmp and check_boundary_type(
-            mod=mod,
-            tmp=tmp,
-            balancing_type=bt,
-            boundary_type="linear",
+        if is_first_tmp and (
+            check_boundary_type(mod=mod, tmp=tmp, balancing_type=bt, boundary_type="linear")
+            or _is_soc_chained(mod, s, tmp)
         ):
             return Constraint.Skip
         else:

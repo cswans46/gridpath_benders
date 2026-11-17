@@ -2893,6 +2893,8 @@ def solve(instance,
         )
 
         linking_vars = define_linking_vars(instance)
+        
+        assert any("STOR_START_SOC_ALLOCATION" in n for n in linking_vars), "SOC vars not linked"
 
         setup = {
             # Real: Set the maximum number of iterations

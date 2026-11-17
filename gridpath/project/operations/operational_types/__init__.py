@@ -61,9 +61,19 @@ def add_model_components(
         stage=stage,
         which_type="operational_type",
     )
+    
     imported_operational_modules = load_operational_type_modules(
         required_operational_modules
     )
+    
+    # Add generic Benders storage SOC allocation components.
+    # This must happen before storage-specific components are constructed.
+    if getattr(m, "_is_benders_subproblem", False):
+        from gridpath.benders.soc_allocation import (
+            add_stor_soc_allocation_components,
+        )
+
+        add_stor_soc_allocation_components(m, subproblem)
 
     # Add any components specific to the operational modules
     for op_m in required_operational_modules:

@@ -532,25 +532,60 @@ def write_units_csv(scenario_directory, conn):
 
 def write_solver_options(scenario_directory, solver_options):
     """
-    :param scenario_directory:
-    :param solver_options:
+    Write solver options to the scenario directory.
 
-    If a solver_options_id is specified, writer the solver options to the
-    scenario directory.
+    GAMS uses a three-column format:
+        solver_name, solver_option_name, solver_option_value
+
+    Other solver interfaces retain the legacy two-column format:
+        solver_name, solver_option
     """
-    if (
-        not solver_options.SOLVER_NAME is None
-        and not solver_options.SOLVER_OPTIONS is None
-    ):
-        with open(
-            os.path.join(scenario_directory, "solver_options.csv"),
-            "w",
-            newline="",
-        ) as solver_options_file:
-            writer = csv.writer(solver_options_file, delimiter=",", lineterminator="\n")
-            writer.writerow(["solver_name", solver_options.SOLVER_NAME])
-            for opt in solver_options.SOLVER_OPTIONS.keys():
-                writer.writerow([opt, solver_options.SOLVER_OPTIONS[opt]])
+    solver_name = solver_options.SOLVER_NAME
+    options = solver_options.SOLVER_OPTIONS
+
+    if solver_name is None or options is None:
+        return
+
+    solver_name = str(solver_name).strip()
+
+    if not solver_name:
+        raise ValueError("Solver name cannot be empty.")
+
+    output_file = os.path.join(
+        scenario_directory, "solver_options.csv"
+    )
+
+    with open(output_file, "w", newline="") as solver_options_file:
+        writer = csv.writer(
+            solver_options_file,
+            delimiter=",",
+            lineterminator="\n",
+        )
+
+        if solver_name.lower() == "gams":
+            # GAMS: three-column format
+            writer.writerow([
+                "solver_name",
+                "solver_option_name",
+                "solver_option_value",
+            ])
+
+            for option_name, option_value in options.items():
+                writer.writerow([
+                    solver_name,
+                    option_name,
+                    option_value,
+                ])
+
+        else:
+            # Other solvers: retain legacy two-column format
+            writer.writerow(["solver_name", solver_name])
+
+            for option_name, option_value in options.items():
+                writer.writerow([
+                    option_name,
+                    option_value,
+                ])
 
 
 def write_multi_stage_flag(scenario_directory, stage_flag):

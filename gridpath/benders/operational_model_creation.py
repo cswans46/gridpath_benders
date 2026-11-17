@@ -6,6 +6,9 @@ from pyomo.core.expr.visitor import identify_variables, identify_components
 import os
 from pyomo.common.collections import ComponentSet
 import csv
+from gridpath.benders.soc_allocation import (
+    stor_soc_allocation_targets,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,8 @@ def define_linking_vars(m):
         "FUEL_BURN_MAX_ABS_ALLOCATION",
         "CAP_FACTOR_MIN_ALLOCATION",
         "CAP_FACTOR_MAX_ALLOCATION",
+        "STOR_START_SOC_ALLOCATION",
+        "STOR_END_SOC_ALLOCATION",
     )
     
     investment_vars = [

@@ -6,7 +6,7 @@ from collections import Counter
 def define_benders_modules(modules_to_use):
 
     op_module = [
-        "objective.system.policy"
+        "objective.system.policy",
         "objective.system.policy.aggregate_period_energy_target_violation_penalties",
         "objective.system.policy.aggregate_transmission_target_violation_penalties",
         "objective.system.policy.aggregate_instantaneous_penetration_violation_penalties",
@@ -76,8 +76,8 @@ def define_benders_modules(modules_to_use):
         "objective.system.reserve_violation_penalties.frequency_response",
         "objective.system.reserve_violation_penalties.spinning_reserves",
         "objective.system.reserve_violation_penalties.inertia_reserves",
-        ".aggregate_horizon_energy_target_violation_penalties",
-        ".aggregate_local_capacity_violation_penalties",
+        "objective.system.aggregate_horizon_energy_target_violation_penalties",
+        "objective.system.aggregate_local_capacity_violation_penalties",
         "objective.system.aggregate_market_revenue_and_costs",
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",

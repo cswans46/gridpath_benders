@@ -20,5 +20,5 @@ Gas_CCGT_new	gen_new_lin	.	gen_commit_cap	day	0	0.0	Gas	Zone1	2.0	0.4	6.0	1.0	2.
 Gas_CT_new	gen_new_lin	.	gen_commit_cap	day	0	0.0	Gas	Zone1	2.0	0.4	6.0	0.0	1.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	Zone2	Carbon_Credits_Zone2
 Gas_CCGT_new_bin	gen_new_bin	.	gen_commit_cap	day	0	0.0	Gas	Zone2	2.0	0.4	6.0	1.0	2.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	Zone1	Carbon_Credits_Zone2
 Gas_CT_new_bin	gen_new_bin	.	gen_commit_cap	day	0	0.0	Gas	Zone2	2.0	0.4	6.0	0.0	1.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	Zone2	Carbon_Credits_Zone2
-Battery	stor_new_lin	.	stor	day	0	0.0	Storage	Zone1	0.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	0.8	0.8	.	.	1.0	99.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	Zone1	.	Zone1	.	Zone1	.	Zone1	.	.	.	.	.	RPSZone1	.	.
-Battery_bin	stor_new_bin	.	stor	day	0	0.0	Storage	Zone2	0.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	0.8	0.8	.	.	1.0	99.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.
+Battery	stor_new_lin	.	stor	year	0	0.0	Storage	Zone1	0.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	0.8	0.8	.	.	1.0	99.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	Zone1	.	Zone1	.	Zone1	.	Zone1	.	.	.	.	.	RPSZone1	.	.
+Battery_bin	stor_new_bin	.	stor	year	0	0.0	Storage	Zone2	0.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	0.8	0.8	.	.	1.0	99.0	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.	.

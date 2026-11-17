@@ -1255,6 +1255,9 @@ def process_subproblem_solution(
                 )
 
             benders_lambda[name] = -float(dual) * float(dual_scale)
+            
+        logging.info("SOC lambdas %s: %s", subproblem_key,
+             {k: v for k, v in benders_lambda.items() if "SOC_ALLOCATION" in k})
 
         continuous_lambda = {
             name: benders_lambda[name]

@@ -10,6 +10,9 @@ from db.common_functions import connect_to_database
 from gridpath.get_scenario_inputs import parse_arguments
 from gridpath.auxiliary.scenario_chars import SubScenarios
 from gridpath.auxiliary.db_interface import get_scenario_id_and_name
+from gridpath.benders.soc_allocation import (
+    stor_soc_allocation_targets, STOR_SOC_ALLOCATION_UNIT_MWH,
+)
 
 from pyomo.environ import (
     Any,
@@ -96,6 +99,27 @@ def add_model_components(
         m.PERIODS,
         initialize=lambda mod, period: subproblems_by_period.get(period, []),
     )
+
+    # ============================================================
+    # Allocation index helper functions
+    # ============================================================
+
+    def _stor_soc_index_rule(mod):
+        return [
+            (prj, bt, hz, str(sp))
+            for prj, bt, hz in mod.STOR_SOC_ALLOCATION_TARGETS
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+        ]
+
+    def _make_period_allocation_index_rule(target_set_name):
+        def allocation_index_rule(mod):
+            return [
+                (ba, bt, hz, str(sp))
+                for ba, bt, hz in getattr(mod, target_set_name)
+                for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+            ]
+
+        return allocation_index_rule
 
     # ============================================================
     # Variables and conditional sets
@@ -345,6 +369,31 @@ def add_model_components(
     )
     
     # ============================================================
+    # Storage SOC allocation variables (master only)
+    # ============================================================
+    
+    if not getattr(m, "_is_benders_subproblem", False):
+        m.STOR_SOC_ALLOCATION_TARGETS = Set(
+           dimen=3,
+           initialize=stor_soc_allocation_targets,
+        )
+        
+        m.STOR_SOC_ALLOCATION_INDEX = Set(
+            dimen=4,
+            initialize=_stor_soc_index_rule,
+        )
+
+        m.STOR_START_SOC_ALLOCATION = Var(
+            m.STOR_SOC_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+        )
+
+        m.STOR_END_SOC_ALLOCATION = Var(
+            m.STOR_SOC_ALLOCATION_INDEX,
+            within=NonNegativeReals,
+        )
+
+    # ============================================================
     # Capacity-factor allocation variables (master only)
     # ============================================================
 
@@ -499,16 +548,16 @@ def add_model_components(
     # ============================================================
     # Constraint rules
     # ============================================================
-    
-    def _make_period_allocation_index_rule(target_set_name):
-        def allocation_index_rule(mod):
-            return [
-                (ba, bt, hz, str(sp))
-                for ba, bt, hz in getattr(mod, target_set_name)
-                for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
-            ]
 
-        return allocation_index_rule
+    def _stor_soc_chain_rule(mod, prj, bt, hz, sp):
+        sps = sorted(mod.SUBPROBLEMS_BY_PERIOD[hz], key=int)
+        nxt = sps[(sps.index(sp) + 1) % len(sps)]       # last day wraps to the first
+        return (mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, sp]
+                == mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, nxt])
+
+    def _stor_soc_capacity_rule(mod, prj, bt, hz, sp):
+        return (STOR_SOC_ALLOCATION_UNIT_MWH * mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, sp]
+                <= mod.Energy_Storage_Capacity_MWh[prj, hz])
     
     def cap_factor_min_allocation_rule(mod, prj, bt, h):
         return sum(
@@ -647,6 +696,9 @@ def add_model_components(
     # ============================================================
 
     if not getattr(m, "_is_benders_subproblem", False):
+        
+        m.Stor_SOC_Chain_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_chain_rule)
+        m.Stor_SOC_Capacity_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_capacity_rule)
         
         if hasattr(m, "CAP_FACTOR_MIN_ALLOCATION_TARGETS"):
             m.Cap_Factor_Min_Allocation_Constraint = Constraint(
