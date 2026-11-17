@@ -659,6 +659,70 @@ def run_optimization_for_subproblem_stage(
                         f"{results.solver.termination_condition})!"
                     )
 
+def write_benders_convergence_files(scenario_directory, benders_result):
+    """
+    Write the Benders convergence history and a short final-solution summary
+    to the scenario's root results directory.
+
+    :param scenario_directory: the main scenario directory
+    :param benders_result: the BendersResult returned by benders()
+
+    Files written (in <scenario_directory>/results):
+    - benders_convergence.csv: one row per iteration (iteration 0 is the
+      initial master solve) with LB, UB, relative gap and elapsed time
+    - benders_summary.json: final bounds, gap, iterations, termination
+      status and the planning/recourse cost split of the incumbent
+    """
+    results_directory = os.path.join(scenario_directory, "results")
+    os.makedirs(results_directory, exist_ok=True)
+
+    with open(
+        os.path.join(results_directory, "benders_convergence.csv"), "w", newline=""
+    ) as f:
+        w = writer(f)
+        w.writerow(["iteration", "lower_bound", "upper_bound", "rel_gap", "elapsed_s"])
+        for i, row in enumerate(
+            zip(
+                benders_result.LB_hist,
+                benders_result.UB_hist,
+                benders_result.gap_hist,
+                benders_result.cpu_time,
+            )
+        ):
+            w.writerow([i, *row])
+
+    planning_problem = benders_result.planning_problem
+    summary = {
+        "termination_status": benders_result.termination_status,
+        "iterations": len(benders_result.LB_hist) - 1,
+        "final_lower_bound": benders_result.LB_hist[-1],
+        "final_upper_bound": benders_result.UB_hist[-1],
+        "final_rel_gap": benders_result.gap_hist[-1],
+        "elapsed_s": benders_result.cpu_time[-1],
+        "incumbent_objective": getattr(
+            planning_problem, "_benders_best_feasible_objective", None
+        ),
+        "incumbent_planning_cost": getattr(
+            planning_problem, "_benders_best_feasible_planning_cost", None
+        ),
+        "incumbent_recourse_cost": getattr(
+            planning_problem, "_benders_best_feasible_recourse_cost", None
+        ),
+        "subproblem_final_export": {
+            str(k): v
+            for k, v in (
+                getattr(benders_result, "final_export_status", None) or {}
+            ).items()
+        },
+    }
+    # json cannot serialise inf/nan as valid JSON; map them to None
+    for k, v in list(summary.items()):
+        if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+            summary[k] = None
+    with open(os.path.join(results_directory, "benders_summary.json"), "w") as f:
+        json.dump(summary, f, indent=2)
+
+
 def run_optimization_for_subproblem_stage_benders(
     scenario_directory,
     weather_iteration_directory,
@@ -671,179 +735,92 @@ def run_optimization_for_subproblem_stage_benders(
 ):
     """
     :param scenario_directory: the main scenario directory
-    :param subproblem_directory: if there are horizon subproblems, the horizon. If Benders, the list of horizons.
-    :param stage_directory: if there are stage subproblems, the stage
+    :param weather_iteration_directory: list of weather iteration directories
+    :param hydro_iteration_directory: list of hydro iteration directories
+    :param availability_iteration_directory: list of availability iteration
+        directories
+    :param subproblem_directory: list of horizon subproblem directories
+    :param stage_directory: the stage directory (a single string)
     :param parsed_arguments: the parsed script arguments
-    :return: return the objective function value (Total_Cost); only used in
-        testing. If Benders, the list of objective function values.
+    :return: the reported objective function value; only used in testing
 
-    Log each run in the (sub)problem directory if requested by the user.
+    The four iteration/subproblem arguments are parallel lists: entry i of
+    each describes the i-th Benders subproblem.
 
-    Create and solve the (sub)problem (See *create_problem* and
-    *solve_problem* methods respectively).
-
-    Save results. See *save_results()* method.
-
-    Return the objective function (Total_Cost) value; only used in testing mode
-
+    Create and solve the planning problem with Benders decomposition (the
+    operational subproblems live in persistent worker processes; see
+    *benders*). The planning-level results are saved at the scenario root;
+    the workers export their own final-solution results (see the
+    "EXPORT_FINAL" message in benders_subproblem_worker). A convergence
+    history and summary are written next to the root results.
     """
-
-    # Determine whether to skip this optimization before creating logger to
-    # avoid the logging overhead and opening too many files for large
-    # simulations
-
-    # TODO: Implement this loop somewhere. Not currently sure whether it should be in
-    # the create_problem function (because the subproblem, iteration, etc. needs to be
-    # indexed there (to generate a separate instance for each).
-    skip_solve = False
-    # We need to loop over all of these directories now as each are lists in the Benders case.
-    # Begin with the planning problem prob_sol_files_directory
     prob_sol_files_directory = os.path.join(
-        scenario_directory,
-        stage_directory,
-        "prob_sol_files",
+        scenario_directory, stage_directory, "prob_sol_files"
     )
 
-    # if parsed_arguments.incomplete_only:
-    #     for weather in weather_iteration_directory:
-    #         for hydro in hydro_iteration_directory:
-    #             for availability in availability_iteration_directory:
-    #                 for subproblem in subproblem_directory:
-    #
-    #                         termination_condition_file = os.path.join(
-    #                             scenario_directory,
-    #                             weather,
-    #                             hydro,
-    #                             availability,
-    #                             subproblem,
-    #                             stage_directory,
-    #                             "results",
-    #                             "termination_condition.txt",
-    #                         )
-    #
-    #                         if os.path.isfile(termination_condition_file):
-    #                             with open(termination_condition_file, "r") as f:
-    #                                 termination_condition = f.read()
-    #                             if not parsed_arguments.quiet:
-    #                                 print(
-    #                                     f"Subproblem stage {subproblem} "
-    #                                     f"{stage_directory} "
-    #                                     f"previously solved with termination condition "
-    #                                     f"**{termination_condition}**. Skipping solve."
-    #                                 )
-    #                             skip_solve = True
-    #                             if not parsed_arguments.quiet:
-    #                                 print(
-    #                                     f"Skipping {weather}/{hydro}/"
-    #                                     f"{availability}/{subproblem}/{stage} "
-    #                                     f"(already solved)"
-    #                                 )
-    #                             # Force garbage collection to release file descriptor immediately
-    #                             gc.collect()
-    #                             return None  # Exit early without creating logger
-    #
-    #                         # If directed to do so, log optimization run (only if actually solving)
-    #                         if parsed_arguments.log:
-    #                             logs_directory = create_logs_directory_if_not_exists(
-    #                                 scenario_directory,
-    #                                 weather,
-    #                                 hydro,
-    #                                 availability,
-    #                                 subproblem,
-    #                                 stage_directory,
-    #                             )
-    #
-    #                             # Save sys.stdout, so we can return to it later
-    #                             stdout_original = sys.stdout
-    #                             stderr_original = sys.stderr
-    #
-    #                             # The print statement will call the write() method of any object
-    #                             # you assign to sys.stdout (in this case the Logging object). The
-    #                             # write method of Logging writes both to sys.stdout and a log file
-    #                             # (see auxiliary/auxiliary.py)
-    #                             logger = Logging(
-    #                                 logs_dir=logs_directory,
-    #                                 start_time=datetime.datetime.now(),
-    #                                 e2e=False,
-    #                                 process_id=None,
-    #                             )
-    #                             sys.stdout = logger
-    #                             sys.stderr = logger
+    # Skip if the planning-level results were completely written
+    if parsed_arguments.incomplete_only and results_export_complete(
+        scenario_directory=scenario_directory,
+        weather_iteration="",
+        hydro_iteration="",
+        availability_iteration="",
+        subproblem="",
+        stage="",
+    ):
+        termination_condition_file = os.path.join(
+            scenario_directory, "results", "termination_condition.txt"
+        )
+        if not parsed_arguments.quiet and os.path.isfile(termination_condition_file):
+            with open(termination_condition_file, "r") as f:
+                print(
+                    f"Benders problem previously solved with termination "
+                    f"condition **{f.read()}**. Skipping solve."
+                )
+        gc.collect()
+        return None
 
-    if not skip_solve:
-        # for weather in weather_iteration_directory:
-        #     for hydro in hydro_iteration_directory:
-        #         for availability in availability_iteration_directory:
-        #             for subproblem in subproblem_directory:
-        #                 # If directed, set temporary file directory to be the logs directory
-        #                 # In conjunction with --keepfiles, this will write the solver solution
-        #                 # files into the log directory (rather than a hidden temp folder).
-        #                 # Use the --symbolic argument as well for best debugging results
-        #                 if parsed_arguments.write_solver_files_to_logs_dir:
-        #                     logs_directory = create_logs_directory_if_not_exists(
-        #                         scenario_directory,
-        #                         weather,
-        #                         hydro,
-        #                         availability,
-        #                         subproblem,
-        #                         stage_directory,
-        #                     )
-        #                     TempfileManager.tempdir = logs_directory
-        #
-        #                 # TODO: Bring this back and reimplement after Benders is dealt with.
-        #                 # if not parsed_arguments.quiet:
-        #                     # print(
-        #                     #     "\nRunning optimization for scenario {}".format(
-        #                     #         scenario_directory.split("/")[-1]
-        #                     #     )
-        #                     # )
-        #                     # current_suproblem = os.path.join(
-        #                     #     weather_iteration_directory,
-        #                     #     hydro_iteration_directory,
-        #                     #     availability_iteration_directory,
-        #                     #     subproblem_directory,
-        #                     #     stage_directory,
-        #                     # )
-        #                     # if current_suproblem.endswith("/"):
-        #                     #     current_suproblem = current_suproblem[:-1]
-        #                     #
-        #                     # # print(f"--- subproblem: {current_suproblem}")
-        #
-        #                 # We're expecting subproblem and stage to be strings downstream from here
-        #                 subproblem = str(subproblem)
-        #                 stage_directory = str(stage_directory)
-        #
-        #                 # print("PROB_SOL_DIRECTORY IN ITERATION",subproblem_directory)
-        #
-        #                 prob_sol_files_directory = os.path.join(
-        #                     scenario_directory,
-        #                     subproblem,
-        #                     stage_directory,
-        #                     "prob_sol_files"
-        #                 )
-        #
-        #
-        #                 # Create problem instance and either save the problem file or solve the instance
-        #                 # TODO: incompatible options
-        #                 # If we are loading a solution, skip the compilation step; we'll use the saved
-        #                 # instance and dynamic components
-        #                 if parsed_arguments.load_solution:
-        #                     solved_instance, results, dynamic_components = load_json_solution(
-        #                         prob_sol_files_directory=prob_sol_files_directory,
-        #                         solution_filename="solution.json",
-        #                     )
-                        # elif parsed_arguments.load_gurobi_solution:
-                        #     solved_instance, results, dynamic_components = load_gurobi_json_solution(
-                        #         prob_sol_files_directory=prob_sol_files_directory,
-                        #         solution_filename="gurobi_solution.json",
-                        #     )
-                        # if parsed_arguments.load_highs_solution:
-                        #     solved_instance, results, dynamic_components = load_highs_xml_solution(
-                        #         prob_sol_files_directory=prob_sol_files_directory,
-                        #         solution_filename="highs_solution.sol",
-                        #     )
-        # Create the planning problem instance here. These arguments are empty because we would
-        # like to take inputs from the tab files created at the uppermost level.
+    # Logging: one log (and timing summary) at the scenario root for the
+    # planning problem and the Benders loop
+    logger = None
+    stdout_original = sys.stdout
+    stderr_original = sys.stderr
+    timing_summary_file_path = None
+    logs_directory = None
+    if parsed_arguments.log:
+        logs_directory = create_logs_directory_if_not_exists(
+            scenario_directory, "", "", "", "", ""
+        )
+        log_start_time = datetime.datetime.now()
+        logger = Logging(
+            logs_dir=logs_directory,
+            start_time=log_start_time,
+            e2e=False,
+            process_id=None,
+        )
+        sys.stdout = logger
+        sys.stderr = logger
+        timing_summary_file_path = os.path.join(
+            logs_directory,
+            "opt_timing_summary_{}.txt".format(string_from_time(log_start_time)),
+        )
+        append_to_timing_summary_file(
+            timing_summary_file_path, "Optimization step timing summary:"
+        )
+
+    try:
+        if parsed_arguments.write_solver_files_to_logs_dir and logs_directory:
+            TempfileManager.tempdir = logs_directory
+
+        if not parsed_arguments.quiet:
+            print(
+                "\nRunning Benders optimization for scenario {}".format(
+                    os.path.basename(os.path.normpath(scenario_directory))
+                )
+            )
+
+        # Create the planning problem instance here. The directory arguments
+        # are empty because we take the inputs from the tab files created at
+        # the uppermost level.
         dynamic_components, instance = create_problem(
             scenario_directory=scenario_directory,
             weather_iteration="",
@@ -853,99 +830,99 @@ def run_optimization_for_subproblem_stage_benders(
             stage="",
             multi_stage=multi_stage,
             parsed_arguments=parsed_arguments,
-            temporal_subproblems=subproblem_directory
+            timing_summary_file_path=timing_summary_file_path,
+            temporal_subproblems=subproblem_directory,
         )
 
-        # Check to see if there exists already an .lp file and .pickle file for the model instance.
+        solved_instance = None
+        results = None
+
         if parsed_arguments.quick_write_and_solve:
-            from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
-            saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
-            # If this is the case, then easily solve from the saved instance and .lp file.
-
-            if parsed_arguments.load_instance:
-                solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
-                                                        pickle_file=saved_instance,
-                                                        parsed_arguments=parsed_arguments)
-
-        else:
-            if parsed_arguments.create_lp_problem_file or parsed_arguments.create_lp_problem_file_only:
-                if not os.path.exists(prob_sol_files_directory):
-                    os.makedirs(prob_sol_files_directory)
-                if parsed_arguments.benders:
-                    with open(
-                        os.path.join(prob_sol_files_directory, "instance_investment.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(instance,   f_out)
-                else:
-                    with open(
-                        os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(instance, f_out)
-                with open(
-                    os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
-                    "wb",
-                ) as f_out:
-                    dill.dump(dynamic_components, f_out)
-
-                smap_id = write_problem_file(
-                    instance=instance, prob_sol_files_directory=prob_sol_files_directory
+            if not parsed_arguments.load_instance:
+                raise ValueError(
+                    "--quick_write_and_solve requires --load_instance in "
+                    "Benders runs."
                 )
+            from gridpath.auxiliary.plugins.gurobi_solve import (
+                main as quick_write_and_solve,
+            )
 
-                symbol_map = instance.solutions.symbol_map[smap_id]
+            solved_instance, results = quick_write_and_solve(
+                prob_sol_files_directory,
+                pickle_file=os.path.join(prob_sol_files_directory, "instance.pickle"),
+                parsed_arguments=parsed_arguments,
+            )
 
-                symbol_cuid_pairs = tuple(
-                    (symbol, ComponentUID(var_weakref, cuid_buffer={}))
-                    for symbol, var_weakref in symbol_map.bySymbol.items()
+        elif (
+            parsed_arguments.create_lp_problem_file
+            or parsed_arguments.create_lp_problem_file_only
+        ):
+            os.makedirs(prob_sol_files_directory, exist_ok=True)
+            with open(
+                os.path.join(prob_sol_files_directory, "instance_investment.pickle"),
+                "wb",
+            ) as f_out:
+                dill.dump(instance, f_out)
+            with open(
+                os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
+                "wb",
+            ) as f_out:
+                dill.dump(dynamic_components, f_out)
+
+            smap_id = write_problem_file(
+                instance=instance, prob_sol_files_directory=prob_sol_files_directory
+            )
+            symbol_map = instance.solutions.symbol_map[smap_id]
+            symbol_cuid_pairs = tuple(
+                (symbol, ComponentUID(var_weakref, cuid_buffer={}))
+                for symbol, var_weakref in symbol_map.bySymbol.items()
+            )
+            with open(
+                os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
+            ) as f_out:
+                dill.dump(symbol_cuid_pairs, f_out)
+            print("Problem file written to {}".format(prob_sol_files_directory))
+
+            if parsed_arguments.create_lp_problem_file_only:
+                sys.exit()
+
+        if solved_instance is None:
+            # One ScenarioKey per Benders subproblem. The four lists are
+            # PARALLEL (built from the scenario's key tuples), so we zip
+            # them; a product() over them would create N**4 combinations
+            # (and keys that don't exist) for N subproblems.
+            benders_subproblems = {}
+            for weather, hydro, availability, subproblem in zip(
+                weather_iteration_directory,
+                hydro_iteration_directory,
+                availability_iteration_directory,
+                subproblem_directory,
+            ):
+                key = ScenarioKey(
+                    weather=weather,
+                    hydro=hydro,
+                    availability=availability,
+                    subproblem=subproblem,
+                    stage=stage_directory,
                 )
+                benders_subproblems[key] = key
 
-                with open(
-                    os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
-                ) as f_out:
-                    dill.dump(symbol_cuid_pairs, f_out)
+            solved_instance, results = solve_problem(
+                parsed_arguments=parsed_arguments,
+                instance=instance,
+                timing_summary_file_path=timing_summary_file_path,
+                benders_subproblems=benders_subproblems,
+                dynamic_components=dynamic_components,
+                multi_stage=multi_stage,
+                prob_sol_files_directory=prob_sol_files_directory,
+            )
 
-                print("Problem file written to {}".format(prob_sol_files_directory))
+        # Convergence history and summary first, so that the export-complete
+        # marker (written last by save_results) really is the last file
+        if hasattr(results, "LB_hist"):
+            write_benders_convergence_files(scenario_directory, results)
 
-                if parsed_arguments.create_lp_problem_file_only:
-                    sys.exit()
-
-            else:
-                benders_subproblems = {}
-                if parsed_arguments.benders:
-
-                    stage_directory = [stage_directory]
-
-                    from itertools import product
-                    from dataclasses import dataclass
-
-                    for weather, hydro, availability, subproblem, stage in product(
-                            weather_iteration_directory,
-                            hydro_iteration_directory,
-                            availability_iteration_directory,
-                            subproblem_directory,
-                            stage_directory,
-                    ):
-                        key = ScenarioKey(
-                            weather=weather,
-                            hydro=hydro,
-                            availability=availability,
-                            subproblem=subproblem,
-                            stage=stage,
-                        )
-
-                        benders_subproblems[key] = key
-
-                    # for key in benders_subproblems:
-                    #     print(key)
-
-                solved_instance, results = solve_problem(
-                    parsed_arguments=parsed_arguments,
-                    instance=instance,
-                    benders_subproblems=benders_subproblems,
-                    dynamic_components=dynamic_components,
-                    multi_stage=multi_stage,
-                    prob_sol_files_directory=prob_sol_files_directory,
-                )
-
+        # Planning-level results at the scenario root
         save_results(
             scenario_directory,
             "",
@@ -958,359 +935,33 @@ def run_optimization_for_subproblem_stage_benders(
             results.planning_results,
             dynamic_components,
             parsed_arguments,
+            timing_summary_file_path=timing_summary_file_path,
         )
 
-        # # Summarize results
-        # summarize_results(
-        #     scenario_directory,
-        #     weather_iteration_directory,
-        #     hydro_iteration_directory,
-        #     availability_iteration_directory,
-        #     subproblem_directory,
-        #     stage_directory,
-        #     multi_stage,
-        #     parsed_arguments,
-        # )
-
-        # If logging, we need to return sys.stdout to original (i.e. stop writing
-        # to log file)
-        if parsed_arguments.log:
-            sys.stdout = stdout_original
-            sys.stderr = stderr_original
-
-        # Return the objective function value (in the testing suite, the value
-        # gets checked against the expected value, but this is the only place
-        # this is actually used)
-        if results.solver.termination_condition != "infeasible":
-            if parsed_arguments.testing:
-                return get_reported_objective_value(solved_instance)
-        else:
+        planning_results = results.planning_results
+        if planning_results.solver.termination_condition == "infeasible":
             warnings.warn("WARNING: the problem was infeasible!")
+            return None
+        if parsed_arguments.testing:
+            if len(planning_results.solution) > 0:
+                # Realized (incumbent) Benders objective, not the master
+                # problem's planning-only NPV
+                return get_reported_objective_value(solved_instance)
+            warnings.warn(
+                f"WARNING: no solution was found (solver termination "
+                f"condition: {planning_results.solver.termination_condition})!"
+            )
+        return None
 
-def run_optimization_for_subproblem_stage_benders(
-    scenario_directory,
-    weather_iteration_directory,
-    hydro_iteration_directory,
-    availability_iteration_directory,
-    subproblem_directory,
-    stage_directory,
-    multi_stage,
-    parsed_arguments,
-):
-    """
-    :param scenario_directory: the main scenario directory
-    :param subproblem_directory: if there are horizon subproblems, the horizon. If Benders, the list of horizons.
-    :param stage_directory: if there are stage subproblems, the stage
-    :param parsed_arguments: the parsed script arguments
-    :return: return the objective function value (Total_Cost); only used in
-        testing. If Benders, the list of objective function values.
-
-    Log each run in the (sub)problem directory if requested by the user.
-
-    Create and solve the (sub)problem (See *create_problem* and
-    *solve_problem* methods respectively).
-
-    Save results. See *save_results()* method.
-
-    Return the objective function (Total_Cost) value; only used in testing mode
-
-    """
-
-    # Determine whether to skip this optimization before creating logger to
-    # avoid the logging overhead and opening too many files for large
-    # simulations
-
-    # TODO: Implement this loop somewhere. Not currently sure whether it should be in
-    # the create_problem function (because the subproblem, iteration, etc. needs to be
-    # indexed there (to generate a separate instance for each).
-    skip_solve = False
-    # We need to loop over all of these directories now as each are lists in the Benders case.
-    # Begin with the planning problem prob_sol_files_directory
-    prob_sol_files_directory = os.path.join(
-        scenario_directory,
-        stage_directory,
-        "prob_sol_files",
-    )
-
-    # if parsed_arguments.incomplete_only:
-    #     for weather in weather_iteration_directory:
-    #         for hydro in hydro_iteration_directory:
-    #             for availability in availability_iteration_directory:
-    #                 for subproblem in subproblem_directory:
-    #
-    #                         termination_condition_file = os.path.join(
-    #                             scenario_directory,
-    #                             weather,
-    #                             hydro,
-    #                             availability,
-    #                             subproblem,
-    #                             stage_directory,
-    #                             "results",
-    #                             "termination_condition.txt",
-    #                         )
-    #
-    #                         if os.path.isfile(termination_condition_file):
-    #                             with open(termination_condition_file, "r") as f:
-    #                                 termination_condition = f.read()
-    #                             if not parsed_arguments.quiet:
-    #                                 print(
-    #                                     f"Subproblem stage {subproblem} "
-    #                                     f"{stage_directory} "
-    #                                     f"previously solved with termination condition "
-    #                                     f"**{termination_condition}**. Skipping solve."
-    #                                 )
-    #                             skip_solve = True
-    #                             if not parsed_arguments.quiet:
-    #                                 print(
-    #                                     f"Skipping {weather}/{hydro}/"
-    #                                     f"{availability}/{subproblem}/{stage} "
-    #                                     f"(already solved)"
-    #                                 )
-    #                             # Force garbage collection to release file descriptor immediately
-    #                             gc.collect()
-    #                             return None  # Exit early without creating logger
-    #
-    #                         # If directed to do so, log optimization run (only if actually solving)
-    #                         if parsed_arguments.log:
-    #                             logs_directory = create_logs_directory_if_not_exists(
-    #                                 scenario_directory,
-    #                                 weather,
-    #                                 hydro,
-    #                                 availability,
-    #                                 subproblem,
-    #                                 stage_directory,
-    #                             )
-    #
-    #                             # Save sys.stdout, so we can return to it later
-    #                             stdout_original = sys.stdout
-    #                             stderr_original = sys.stderr
-    #
-    #                             # The print statement will call the write() method of any object
-    #                             # you assign to sys.stdout (in this case the Logging object). The
-    #                             # write method of Logging writes both to sys.stdout and a log file
-    #                             # (see auxiliary/auxiliary.py)
-    #                             logger = Logging(
-    #                                 logs_dir=logs_directory,
-    #                                 start_time=datetime.datetime.now(),
-    #                                 e2e=False,
-    #                                 process_id=None,
-    #                             )
-    #                             sys.stdout = logger
-    #                             sys.stderr = logger
-
-    if not skip_solve:
-        # for weather in weather_iteration_directory:
-        #     for hydro in hydro_iteration_directory:
-        #         for availability in availability_iteration_directory:
-        #             for subproblem in subproblem_directory:
-        #                 # If directed, set temporary file directory to be the logs directory
-        #                 # In conjunction with --keepfiles, this will write the solver solution
-        #                 # files into the log directory (rather than a hidden temp folder).
-        #                 # Use the --symbolic argument as well for best debugging results
-        #                 if parsed_arguments.write_solver_files_to_logs_dir:
-        #                     logs_directory = create_logs_directory_if_not_exists(
-        #                         scenario_directory,
-        #                         weather,
-        #                         hydro,
-        #                         availability,
-        #                         subproblem,
-        #                         stage_directory,
-        #                     )
-        #                     TempfileManager.tempdir = logs_directory
-        #
-        #                 # TODO: Bring this back and reimplement after Benders is dealt with.
-        #                 # if not parsed_arguments.quiet:
-        #                     # print(
-        #                     #     "\nRunning optimization for scenario {}".format(
-        #                     #         scenario_directory.split("/")[-1]
-        #                     #     )
-        #                     # )
-        #                     # current_suproblem = os.path.join(
-        #                     #     weather_iteration_directory,
-        #                     #     hydro_iteration_directory,
-        #                     #     availability_iteration_directory,
-        #                     #     subproblem_directory,
-        #                     #     stage_directory,
-        #                     # )
-        #                     # if current_suproblem.endswith("/"):
-        #                     #     current_suproblem = current_suproblem[:-1]
-        #                     #
-        #                     # # print(f"--- subproblem: {current_suproblem}")
-        #
-        #                 # We're expecting subproblem and stage to be strings downstream from here
-        #                 subproblem = str(subproblem)
-        #                 stage_directory = str(stage_directory)
-        #
-        #                 # print("PROB_SOL_DIRECTORY IN ITERATION",subproblem_directory)
-        #
-        #                 prob_sol_files_directory = os.path.join(
-        #                     scenario_directory,
-        #                     subproblem,
-        #                     stage_directory,
-        #                     "prob_sol_files"
-        #                 )
-        #
-        #
-        #                 # Create problem instance and either save the problem file or solve the instance
-        #                 # TODO: incompatible options
-        #                 # If we are loading a solution, skip the compilation step; we'll use the saved
-        #                 # instance and dynamic components
-        #                 if parsed_arguments.load_solution:
-        #                     solved_instance, results, dynamic_components = load_json_solution(
-        #                         prob_sol_files_directory=prob_sol_files_directory,
-        #                         solution_filename="solution.json",
-        #                     )
-                        # elif parsed_arguments.load_gurobi_solution:
-                        #     solved_instance, results, dynamic_components = load_gurobi_json_solution(
-                        #         prob_sol_files_directory=prob_sol_files_directory,
-                        #         solution_filename="gurobi_solution.json",
-                        #     )
-                        # if parsed_arguments.load_highs_solution:
-                        #     solved_instance, results, dynamic_components = load_highs_xml_solution(
-                        #         prob_sol_files_directory=prob_sol_files_directory,
-                        #         solution_filename="highs_solution.sol",
-                        #     )
-        # Create the planning problem instance here. These arguments are empty because we would
-        # like to take inputs from the tab files created at the uppermost level.
-        dynamic_components, instance = create_problem(
-            scenario_directory=scenario_directory,
-            weather_iteration="",
-            hydro_iteration="",
-            availability_iteration="",
-            subproblem="",
-            stage="",
-            multi_stage=multi_stage,
-            parsed_arguments=parsed_arguments,
-            temporal_subproblems=subproblem_directory
-        )
-
-        # Check to see if there exists already an .lp file and .pickle file for the model instance.
-        if parsed_arguments.quick_write_and_solve:
-            from gridpath.auxiliary.plugins.gurobi_solve import main as quick_write_and_solve
-            saved_instance = os.path.join(prob_sol_files_directory, "instance.pickle")
-            # If this is the case, then easily solve from the saved instance and .lp file.
-
-            if parsed_arguments.load_instance:
-                solved_instance, results = quick_write_and_solve(prob_sol_files_directory,
-                                                        pickle_file=saved_instance,
-                                                        parsed_arguments=parsed_arguments)
-
-        else:
-            if parsed_arguments.create_lp_problem_file or parsed_arguments.create_lp_problem_file_only:
-                if not os.path.exists(prob_sol_files_directory):
-                    os.makedirs(prob_sol_files_directory)
-                if parsed_arguments.benders:
-                    with open(
-                        os.path.join(prob_sol_files_directory, "instance_investment.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(instance,   f_out)
-                else:
-                    with open(
-                        os.path.join(prob_sol_files_directory, "instance.pickle"), "wb"
-                    ) as f_out:
-                        dill.dump(instance, f_out)
-                with open(
-                    os.path.join(prob_sol_files_directory, "dynamic_components.pickle"),
-                    "wb",
-                ) as f_out:
-                    dill.dump(dynamic_components, f_out)
-
-                smap_id = write_problem_file(
-                    instance=instance, prob_sol_files_directory=prob_sol_files_directory
-                )
-
-                symbol_map = instance.solutions.symbol_map[smap_id]
-
-                symbol_cuid_pairs = tuple(
-                    (symbol, ComponentUID(var_weakref, cuid_buffer={}))
-                    for symbol, var_weakref in symbol_map.bySymbol.items()
-                )
-
-                with open(
-                    os.path.join(prob_sol_files_directory, "symbol_map.pickle"), "wb"
-                ) as f_out:
-                    dill.dump(symbol_cuid_pairs, f_out)
-
-                print("Problem file written to {}".format(prob_sol_files_directory))
-
-                if parsed_arguments.create_lp_problem_file_only:
-                    sys.exit()
-
-            else:
-                benders_subproblems = {}
-                if parsed_arguments.benders:
-
-                    stage_directory = [stage_directory]
-
-                    from itertools import product
-                    from dataclasses import dataclass
-
-                    for weather, hydro, availability, subproblem, stage in product(
-                            weather_iteration_directory,
-                            hydro_iteration_directory,
-                            availability_iteration_directory,
-                            subproblem_directory,
-                            stage_directory,
-                    ):
-                        key = ScenarioKey(
-                            weather=weather,
-                            hydro=hydro,
-                            availability=availability,
-                            subproblem=subproblem,
-                            stage=stage,
-                        )
-
-                        benders_subproblems[key] = key
-
-                    # for key in benders_subproblems:
-                    #     print(key)
-
-                solved_instance, results = solve_problem(
-                    parsed_arguments=parsed_arguments,
-                    instance=instance,
-                    benders_subproblems=benders_subproblems,
-                    dynamic_components=dynamic_components,
-                    multi_stage=multi_stage,
-                    prob_sol_files_directory=prob_sol_files_directory,
-                )
-
-        save_results(
-            scenario_directory,
-            "",
-            "",
-            "",
-            "",
-            "",
-            multi_stage,
-            solved_instance,
-            results.planning_results,
-            dynamic_components,
-            parsed_arguments,
-        )
-
-        # If logging, we need to return sys.stdout to original (i.e. stop writing
-        # to log file) and close the log file to release file descriptor
-        if parsed_arguments.log:
+    finally:
+        # Always restore stdout/stderr and close the log file, even on an
+        # exception or sys.exit()
+        if logger is not None:
             logger.close()
             sys.stdout = stdout_original
             sys.stderr = stderr_original
-            # Explicitly delete logger reference and force garbage collection
             del logger
-            gc.collect()
-
-        # Return the objective function value (in the testing suite, the value
-        # gets checked against the expected value, but this is the only place
-        # this is actually used)
-        if results.planning_results.solver.termination_condition != "infeasible":
-            if parsed_arguments.testing:
-                if len(results.planning_results.solution) > 0:
-                    return solved_instance.NPV()
-                else:
-                    warnings.warn(
-                        f"WARNING: no solution was found (solver "
-                        f"termination condition: "
-                        f"{results.planning_results.solver.termination_condition})!"
-                    )
+        gc.collect()
 
 
 def run_optimization_for_subproblem_benders(

@@ -45,6 +45,8 @@ class BendersResult:
     cpu_time: list
     planning_sol_hist: list
     planning_results: object
+    # {ScenarioKey: status dict} from the final-solution export, if run
+    final_export_status: dict = None
 
 # ---------------------------------------------------------------------------
 # GridPath constraints that can provide implied upper bounds for
@@ -1099,6 +1101,36 @@ def benders(
             ]
         )
 
+    # ---------------------------------------------------------------------
+    # Final-solution export: each worker solves its subproblem at the
+    # incumbent investment decisions and writes its own results. This is done
+    # in the workers because they hold the (large) operational instances.
+    # ---------------------------------------------------------------------
+    final_export_status = {}
+    if getattr(parsed_arguments, "benders_skip_final_export", False):
+        pass
+    elif planning_sol_best is None:
+        logger.warning(
+            "No fully feasible incumbent; skipping final subproblem export."
+        )
+    else:
+        print("Exporting final subproblem results...")
+        for batch_start in range(0, len(worker_keys), worker_batch_size):
+            worker_batch = worker_keys[batch_start:batch_start + worker_batch_size]
+            for key in worker_batch:
+                input_queues[key].put(
+                    {"command": "EXPORT_FINAL", "planning_sol": planning_sol_best}
+                )
+            for key in worker_batch:
+                result_key, status = _get_from_worker(
+                    output_queues[key], workers[key], key
+                )
+                final_export_status[result_key] = status
+                if status.get("status") == "ERROR":
+                    logger.error(
+                        "Final export failed for %s: %s", result_key, status["error"]
+                    )
+
     # Stop all workers
     for key in workers:
         input_queues[key].put("STOP")
@@ -1148,6 +1180,7 @@ def benders(
         cpu_time=cpu_time,
         planning_sol_hist=planning_sol_hist,
         planning_results=planning_results,
+        final_export_status=final_export_status,
     )
 
 def add_benders_feasibility_cut(

@@ -176,6 +176,14 @@ def get_benders_flag_parser():
         help="The maximum CPU time for each Benders subproblem. Defaults to 3600 seconds.",
     )
     parser.add_argument(
+        "--benders_skip_final_export",
+        default=False,
+        action="store_true",
+        help="Skip the final per-subproblem results export after Benders "
+        "converges (only the planning-level results and the convergence "
+        "files are written).",
+    )
+    parser.add_argument(
         "--benders_stab_dynamic",
         default=True,
         type=bool,

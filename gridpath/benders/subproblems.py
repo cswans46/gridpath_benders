@@ -447,6 +447,123 @@ def set_linking_variable_domains(
     return original_domains
 
 import multiprocessing as mp
+def _export_final_subproblem(
+    instance,
+    dynamic_components,
+    optimiser,
+    key,
+    planning_sol,
+    present_linking_vars,
+    scenario_directory,
+    multi_stage,
+    parsed_arguments,
+):
+    """
+    Solve one operational subproblem at the incumbent investment decisions
+    and export its results like a regular (non-Benders) GridPath subproblem.
+
+    Runs inside the persistent worker, which already holds the instance and
+    its DynamicComponents. Output goes to
+    <scenario>/<weather>/<hydro>/<availability>/<subproblem>/<stage>/results.
+
+    Unlike the trial-point solves, operational integrality is NOT relaxed
+    here, so the exported dispatch/commitment is a true (MIP) solution.
+    Duals are only exported when the subproblem is a pure LP.
+
+    Returns a small status dict (never raises, so the master cannot hang
+    waiting for this worker).
+    """
+    import copy
+    import datetime
+    import sys
+    import traceback
+
+    # Imported here to avoid a circular import (run_scenario imports benders)
+    from gridpath.common_functions import (
+        Logging,
+        create_logs_directory_if_not_exists,
+    )
+    from gridpath.run_scenario import save_results
+
+    stdout_original = sys.stdout
+    stderr_original = sys.stderr
+    logger = None
+    try:
+        if parsed_arguments.log:
+            logs_directory = create_logs_directory_if_not_exists(
+                scenario_directory,
+                key.weather,
+                key.hydro,
+                key.availability,
+                key.subproblem,
+                key.stage,
+            )
+            logger = Logging(
+                logs_dir=logs_directory,
+                start_time=datetime.datetime.now(),
+                e2e=False,
+                process_id=None,
+            )
+            sys.stdout = logger
+            sys.stderr = logger
+
+        if hasattr(instance, "slack_max"):
+            _set_feasibility_restoration_mode(instance, active=False)
+
+        # x = x* through the same equality rows used for the trial points
+        fix_linking_variables(instance, planning_sol, present_linking_vars)
+
+        is_mip = bool(
+            detect_active_mip_variables(instance, linking_vars=present_linking_vars)
+        )
+
+        results = optimiser.solve(
+            instance,
+            tee=False,
+            symbolic_solver_labels=True,
+        )
+
+        export_args = parsed_arguments
+        if is_mip and not parsed_arguments.skip_duals:
+            # No meaningful duals from a MIP solve
+            export_args = copy.copy(parsed_arguments)
+            export_args.skip_duals = True
+
+        save_results(
+            scenario_directory,
+            key.weather,
+            key.hydro,
+            key.availability,
+            str(key.subproblem),
+            key.stage,
+            multi_stage,
+            instance,
+            results,
+            dynamic_components,
+            export_args,
+        )
+
+        return {
+            "status": str(results.solver.status),
+            "termination_condition": str(results.solver.termination_condition),
+            "is_mip": is_mip,
+            "op_npv": (
+                float(pyo.value(instance.OP_NPV))
+                if results.solver.termination_condition
+                == TerminationCondition.optimal
+                else None
+            ),
+        }
+    except Exception as e:  # noqa: BLE001 - report, don't kill the worker
+        traceback.print_exc()
+        return {"status": "ERROR", "error": repr(e)}
+    finally:
+        if logger is not None:
+            logger.close()
+            sys.stdout = stdout_original
+            sys.stderr = stderr_original
+
+
 def benders_subproblem_worker(
     key,
     planning_constraint_names,
@@ -577,6 +694,29 @@ def benders_subproblem_worker(
 
         if message == "STOP":
             break
+
+        # Final-solution export: solve this subproblem once at the incumbent
+        # investment decisions (operational integrality intact) and write its
+        # results in the standard GridPath directory layout. The master sends
+        # this once, after convergence, instead of a trial point.
+        if isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
+            output_queue.put(
+                (
+                    key,
+                    _export_final_subproblem(
+                        instance=instance,
+                        dynamic_components=dynamic_components,
+                        optimiser=optimiser,
+                        key=key,
+                        planning_sol=message["planning_sol"],
+                        present_linking_vars=present_linking_vars,
+                        scenario_directory=scenario_directory,
+                        multi_stage=multi_stage,
+                        parsed_arguments=parsed_arguments,
+                    ),
+                )
+            )
+            continue
 
         if hasattr(instance, "slack_max"):
             _set_feasibility_restoration_mode(
