@@ -97,6 +97,69 @@ def _get_from_worker(queue, process, key):
                         f"(exit code {process.exitcode}); see its traceback above."
                     )
 
+def _light_planning_sol(planning_sol, names):
+    """
+    Return a PlanningSolution restricted to the variables a worker uses.
+
+    A worker only reads the master values of its own linking variables, so
+    sending the full planning solution to every worker every iteration just
+    adds pickling time and queue traffic. Names missing from planning_sol are
+    left out on purpose: the worker raises its own, more descriptive KeyError.
+    """
+    return PlanningSolution(
+        planning_cost=planning_sol.planning_cost,
+        values={n: planning_sol.values[n] for n in names if n in planning_sol.values},
+    )
+
+
+def _dispatch_window(keys, make_message, window, input_queues, output_queues, workers):
+    """
+    Send one message to each worker in `keys`, keeping at most `window`
+    requests in flight, and return {key: result} in the order of `keys`.
+
+    As soon as any worker answers, the next pending key is sent, so one slow
+    subproblem no longer holds back the rest of its batch.
+    """
+    import queue as queue_module
+    from collections import deque
+
+    pending = deque(keys)
+    in_flight = []
+    results = {}
+
+    while pending or in_flight:
+        while pending and len(in_flight) < window:
+            key = pending.popleft()
+            input_queues[key].put(make_message(key))
+            in_flight.append(key)
+
+        progressed = False
+        for key in list(in_flight):
+            try:
+                result_key, result = output_queues[key].get_nowait()
+            except queue_module.Empty:
+                if workers[key].is_alive():
+                    continue
+                # Worker exited: drain anything it managed to send first
+                try:
+                    result_key, result = output_queues[key].get(timeout=1.0)
+                except queue_module.Empty:
+                    raise RuntimeError(
+                        f"Benders worker {key} died "
+                        f"(exit code {workers[key].exitcode}); "
+                        f"see its traceback above."
+                    )
+            results[result_key] = result
+            in_flight.remove(key)
+            progressed = True
+
+        if not progressed:
+            time.sleep(0.005)
+
+    # Deterministic order (sums over subproblems then don't depend on timing)
+    return {key: results[key] for key in keys}
+
+
 def benders(
     planning_problem,
     dynamic_components,
@@ -378,6 +441,8 @@ def benders(
     except (AttributeError, TypeError, ValueError):
         worker_batch_size = 1
 
+    startup_semaphore = ctx.Semaphore(worker_batch_size)
+
     for key in worker_keys:
         input_queue = ctx.Queue()
         output_queue = ctx.Queue()
@@ -394,6 +459,7 @@ def benders(
                 multi_stage,
                 parsed_arguments,
                 gams_options if is_gams else None,
+                startup_semaphore,
             ),
         )
 
@@ -404,9 +470,11 @@ def benders(
         input_queues[key] = input_queue
         output_queues[key] = output_queue
 
-        # Each worker solves an LP upper bound for operational NPV before READY.
-        # Wait here so startup cannot consume one solver license per
-        # subproblem simultaneously.
+    # All workers are started before any is waited on, so the Pyomo model
+    # builds run in parallel. Each worker holds `startup_semaphore` while it
+    # builds its model and solves its LP upper bound (the only license use
+    # before READY), so at most `worker_batch_size` do this at once.
+    for key in worker_keys:
         result = _get_from_worker(output_queues[key], workers[key], key)
 
         if result["status"] != "READY":
@@ -529,34 +597,22 @@ def benders(
         # Send current planning solution to every operational worker
         # ---------------------------------------------------------
 
-        subop_sol = {}
-
-        for batch_start in range(
-            0,
-            len(worker_keys),
+        _iteration_planning_sol = planning_sol
+        subop_sol = _dispatch_window(
+            worker_keys,
+            lambda key: {
+                "planning_sol": _light_planning_sol(
+                    _iteration_planning_sol, linking_variables_sub[key]
+                ),
+                "master_discrete_method": master_discrete_method,
+                "operational_discrete_method": operational_discrete_method,
+                "master_integrality_restored": master_integrality_restored,
+            },
             worker_batch_size,
-        ):
-            worker_batch = worker_keys[
-                batch_start:batch_start + worker_batch_size
-            ]
-
-            for key in worker_batch:
-                input_queues[key].put(
-                    {
-                        "planning_sol": planning_sol,
-                        "master_discrete_method": master_discrete_method,
-                        "operational_discrete_method": (
-                            operational_discrete_method
-                        ),
-                        "master_integrality_restored": (
-                            master_integrality_restored
-                        ),
-                    }
-                )
-
-            for key in worker_batch:
-                result_key, result = _get_from_worker(output_queues[key], workers[key], key)
-                subop_sol[result_key] = result
+            input_queues,
+            output_queues,
+            workers,
+        )
 
         # ---------------------------------------------------------
         # Determine Benders phases (from setup dictionary)
@@ -878,7 +934,10 @@ def benders(
             if LB_new > LB:
                 LB = LB_new
                 planning_sol_best = deepcopy(planning_sol)
-                subop_sol_best = deepcopy(subop_sol)
+                # Shallow copy is enough: every iteration builds a fresh subop_sol
+                # from newly unpickled worker results, which are not mutated
+                # after the incumbent check
+                subop_sol_best = dict(subop_sol)
 
 
         # ---------------------------------------------------------
@@ -1115,21 +1174,24 @@ def benders(
         )
     else:
         print("Exporting final subproblem results...")
-        for batch_start in range(0, len(worker_keys), worker_batch_size):
-            worker_batch = worker_keys[batch_start:batch_start + worker_batch_size]
-            for key in worker_batch:
-                input_queues[key].put(
-                    {"command": "EXPORT_FINAL", "planning_sol": planning_sol_best}
+        final_export_status = _dispatch_window(
+            worker_keys,
+            lambda key: {
+                "command": "EXPORT_FINAL",
+                "planning_sol": _light_planning_sol(
+                    planning_sol_best, linking_variables_sub[key]
+                ),
+            },
+            worker_batch_size,
+            input_queues,
+            output_queues,
+            workers,
+        )
+        for result_key, status in final_export_status.items():
+            if status.get("status") == "ERROR":
+                logger.error(
+                    "Final export failed for %s: %s", result_key, status["error"]
                 )
-            for key in worker_batch:
-                result_key, status = _get_from_worker(
-                    output_queues[key], workers[key], key
-                )
-                final_export_status[result_key] = status
-                if status.get("status") == "ERROR":
-                    logger.error(
-                        "Final export failed for %s: %s", result_key, status["error"]
-                    )
 
     # Stop all workers
     for key in workers:

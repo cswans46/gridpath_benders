@@ -564,6 +564,24 @@ def _export_final_subproblem(
             sys.stderr = stderr_original
 
 
+class _StartupGuard:
+    """Idempotent holder for the startup semaphore permit."""
+
+    def __init__(self, semaphore):
+        self.semaphore = semaphore
+        self.held = False
+
+    def acquire(self):
+        if self.semaphore is not None:
+            self.semaphore.acquire()
+            self.held = True
+
+    def release(self):
+        if self.held:
+            self.semaphore.release()
+            self.held = False
+
+
 def benders_subproblem_worker(
     key,
     planning_constraint_names,
@@ -574,6 +592,46 @@ def benders_subproblem_worker(
     multi_stage,
     parsed_arguments,
     solver_options=None,
+    startup_semaphore=None,
+):
+    """
+    Entry point of a persistent Benders worker process.
+
+    Holds `startup_semaphore` (if given) while the model is built and the LP
+    upper bound is solved, and releases it before reporting READY, even if
+    startup fails. That lets the parent start all workers at once while
+    bounding how many build/solve at the same time.
+    """
+    guard = _StartupGuard(startup_semaphore)
+    guard.acquire()
+    try:
+        _benders_subproblem_worker_impl(
+            key,
+            planning_constraint_names,
+            linking_vars,
+            input_queue,
+            output_queue,
+            scenario_directory,
+            multi_stage,
+            parsed_arguments,
+            solver_options=solver_options,
+            startup_guard=guard,
+        )
+    finally:
+        guard.release()
+
+
+def _benders_subproblem_worker_impl(
+    key,
+    planning_constraint_names,
+    linking_vars,
+    input_queue,
+    output_queue,
+    scenario_directory,
+    multi_stage,
+    parsed_arguments,
+    solver_options=None,
+    startup_guard=None,
 ):
     """Build and serve one persistent operational Benders subproblem.
 
@@ -673,6 +731,9 @@ def benders_subproblem_worker(
     # ================================================================
     # Tell the parent process that this worker is ready.
     # ================================================================
+
+    if startup_guard is not None:
+        startup_guard.release()
 
     output_queue.put(
         {

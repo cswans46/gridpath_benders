@@ -17,7 +17,7 @@ import os.path
 import sys
 import warnings
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentTypeError
 
 import pandas as pd
 
@@ -130,6 +130,21 @@ def get_scenario_name_parser():
 
     return parser
 
+def str2bool(value):
+    """
+    argparse type for boolean flags. (type=bool treats any non-empty string,
+    including "False", as True.)
+    """
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("true", "t", "yes", "y", "1"):
+        return True
+    if v in ("false", "f", "no", "n", "0"):
+        return False
+    raise ArgumentTypeError(f"Boolean value expected, got {value!r}.")
+
+
 def get_benders_flag_parser():
     """
     Create ArgumentParser object which has the common set of arguments for
@@ -186,7 +201,7 @@ def get_benders_flag_parser():
     parser.add_argument(
         "--benders_stab_dynamic",
         default=True,
-        type=bool,
+        type=str2bool,
         help="Flag to enable dynamic stabilization in Benders decomposition (this must be true if stab_param is defined). Defaults to True.",
     )
     parser.add_argument(
