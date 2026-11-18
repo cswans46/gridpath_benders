@@ -440,7 +440,7 @@ def write_model_inputs(
                     {subscenarios.TRANSMISSION_SPECIFIED_CAPACITY_SCENARIO_ID}
                 """
             ).fetchall()
-            if int(period) == 0 or int(period) in periods
+            if int(period) in periods
         }
 
         # Identify transmission whose vintage is not operational in this subproblem

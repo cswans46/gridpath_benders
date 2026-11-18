@@ -552,7 +552,7 @@ def write_model_inputs(
                     {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
                 """
             ).fetchall()
-            if int(period) == 0 or int(period) in periods
+            if int(period) in periods
         }
 
         # Identify project/vintage combinations that should be included
