@@ -208,7 +208,6 @@ def define_benders_modules(modules_to_use):
         "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
-        "project.capacity.relative_capacity",
         "project.capacity.costs",
         "transmission.capacity",
         "transmission.capacity.capacity_types",

@@ -608,13 +608,6 @@ def write_model_inputs(
             if row[0] not in excluded_projects
         ]
 
-        print(
-            f"Subproblem {subproblem}: "
-            f"{len(excluded_new_build_projects)} excluded by new-build vintages; "
-            f"{len(excluded_specified_capacity_projects)} excluded by specified capacity; "
-            f"{len(excluded_projects)} unique projects excluded."
-        )
-
         # Preserve the original projects component for subsequent writing.
         class FilteredProjects:
             def __init__(self, rows):

@@ -358,7 +358,8 @@ def load_model_data(
     subproblem,
     stage,
 ):
-    """ """
+    """Load period and timepoint-period mapping inputs."""
+
     # Load period inputs. The master has the full investment horizon and
     # requires prev_period to construct period trajectories. Operational
     # subproblems have a single period, so prev_period has no valid indices.
@@ -395,6 +396,7 @@ def load_model_data(
             m.period_end_year,
         )
 
+    # Load period data.
     data_portal.load(
         filename=os.path.join(
             scenario_directory,
@@ -410,6 +412,25 @@ def load_model_data(
         index=m.PERIODS,
         param=params,
     )
+
+    # Load the period associated with each timepoint.
+    # This is required to initialize TMPS_IN_PRD.
+    data_portal.load(
+        filename=os.path.join(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+            "inputs",
+            "timepoints.tab",
+        ),
+        select=("timepoint", "period"),
+        index=m.TMPS,
+        param=m.period,
+    )
+
 
 
 # Database

@@ -1396,6 +1396,20 @@ def add_benders_feasibility_cut(
 
         return True
 
+    else:
+        if result["feasible"]:
+            add_relaxed_benders_cut(
+                planning_problem=planning_problem,
+                subproblem_key=result_key,
+                linking_vars=result["continuous_lambda"].keys(),
+                benders_lambda=result["continuous_lambda"],
+                benders_point=result["continuous_point"],
+                op_cost=result["op_cost"],
+                theta_coeff=result.get("theta_coeff", 1.0),
+            )
+
+        # Infeasible subproblems with discrete linking variables
+        # are handled by add_benders_feasibility_cut() above.
     # ---------------------------------------------------------
     # Native MOSEK DJC restrictions
     # ---------------------------------------------------------
