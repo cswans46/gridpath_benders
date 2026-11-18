@@ -224,7 +224,40 @@ def spec_get_inputs_from_database(conn, subscenarios, subproblem, capacity_type)
                )
         ;""")
 
-    return spec_project_params
+    import csv
+    from pathlib import Path
+
+    # Materialize query results
+    spec_project_params = list(spec_project_params)
+
+    # Write diagnostic results
+    diagnostic_file = Path("spec_capacity_diagnostic.csv")
+    file_exists = diagnostic_file.exists()
+
+    with open(diagnostic_file, "a", newline="") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow([
+                "subproblem",
+                "capacity_type",
+                "project",
+                "period",
+                "specified_capacity_mw",
+                "specified_energy_mwh",
+            ])
+
+        for row in spec_project_params:
+            writer.writerow([
+                db_subproblem,
+                capacity_type,
+                row[0],  # project
+                row[1],  # period
+                row[2],  # specified_capacity_mw
+                row[3],  # specified_energy_mwh
+            ])
+
+    return iter(spec_project_params)
 
 
 def spec_write_tab_file(
@@ -452,6 +485,31 @@ def spec_determine_inputs(
     # Quick check that all relevant projects from projects.tab have capacity
     # params specified
     projects_w_params = [gp[0] for gp in project_period_list]
+    import csv
+    from pathlib import Path
+
+    projects_w_params = [gp[0] for gp in project_period_list]
+    diff = list(set(project_list) - set(projects_w_params))
+
+    diagnostic_file = Path(
+        r"C:\Users\SwansonC\ECD\Benders\gridpath\spec_capacity_diagnostic.csv"
+    )
+    
+    file_exists = diagnostic_file.exists()
+
+    with open(diagnostic_file, "a", newline="") as f:
+        writer = csv.writer(f)
+
+        if not file_exists:
+            writer.writerow(["subproblem", "project", "missing"])
+
+        for project in project_list:
+            writer.writerow([
+                subproblem,
+                project,
+                project in diff,
+            ])
+            
     diff = list(set(project_list) - set(projects_w_params))
 
     if diff:

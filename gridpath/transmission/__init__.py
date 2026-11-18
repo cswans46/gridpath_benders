@@ -427,6 +427,21 @@ def write_model_inputs(
         ).fetchall()
         # In case there are several periods (this should never happen)
         periods = {int(row[0]) for row in periods_for_filtering}
+        
+        # Identify transmission lines with specified capacity in the
+        # periods relevant to this subproblem.
+        specified_capacity_transmission = {
+            transmission
+            for transmission, period in c.execute(
+                f"""
+                SELECT DISTINCT transmission, period
+                FROM inputs_transmission_specified_capacity
+                WHERE transmission_specified_capacity_scenario_id =
+                    {subscenarios.TRANSMISSION_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+            if int(period) in periods
+        }
 
         # Identify transmission whose vintage is not operational in this subproblem
         excluded_transmissions = {
@@ -447,7 +462,10 @@ def write_model_inputs(
         transmission_rows = [
             row
             for row in transmission_lines.fetchall()
-            if row[0] not in excluded_transmissions
+            if (
+                row[0] not in excluded_transmissions
+                or row[0] in specified_capacity_transmission
+            )
         ]
         # Create a separate filtered projects class to avoid consuming the projects component before later
         # project.tab is actually written.

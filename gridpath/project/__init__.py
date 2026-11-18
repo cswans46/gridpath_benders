@@ -539,6 +539,21 @@ def write_model_inputs(
         ).fetchall()
         # In case there are several periods (this should never happen)
         periods = {int(row[0]) for row in periods_for_filtering}
+        
+        # Get projects with specified capacity in the periods relevant
+        # to this subproblem.
+        specified_capacity_projects = {
+            project
+            for project, period in c.execute(
+                f"""
+                SELECT DISTINCT project, period
+                FROM inputs_project_specified_capacity
+                WHERE project_specified_capacity_scenario_id =
+                    {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
+                """
+            ).fetchall()
+            if int(period) in periods
+        }
 
         # Identify project/vintage combinations that should be included
         excluded_projects = {
@@ -555,12 +570,25 @@ def write_model_inputs(
             )
         }
 
-        # Filter projects.tab
+        # Filter projects.tab.
+        # Retain projects that are either:
+        # 1. Operational in at least one period of this subproblem,
+        #    according to their new-build vintage and lifetime; or
+        # 2. Have specified capacity in at least one period of this subproblem.
         project_rows = [
             row
             for row in projects.fetchall()
-            if row[0] not in excluded_projects
+            if (
+                row[0] not in excluded_projects
+                or row[0] in specified_capacity_projects
+            )
         ]
+        
+        print(
+            f"Subproblem {subproblem}: "
+            f"{len(specified_capacity_projects)} projects with specified capacity; "
+            f"{len(excluded_projects)} excluded by new-build vintage filtering."
+        )
         # Create a separate filtered projects class to avoid consuming the projects component before later
         # project.tab is actually written.
         class FilteredProjects:

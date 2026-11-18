@@ -856,7 +856,13 @@ def write_model_inputs(
         ).fetchall()
         # In case there are several periods (this should never happen)
         periods = {int(row[0]) for row in periods_for_filtering}
-        current_period = max(periods)
+        
+        if not periods:
+            raise ValueError(
+                f"No temporal periods found for subproblem {subproblem}, "
+                f"stage {stage_for_periods}."
+            )
+        
         # Identify transmission whose vintage is not operational in this subproblem
 
         transmission_rows = tx_cost.fetchall()
@@ -864,7 +870,11 @@ def write_model_inputs(
         transmission_rows = [
             row
             for row in transmission_rows
-            if int(str(row[1])[:4]) <= current_period < int(str(row[1])[:4]) + row[2]
+            if any(
+                int(str(row[1])[:4]) <= period
+                < int(str(row[1])[:4]) + row[2]
+                for period in periods
+            )
         ]
 
         class FilteredTxCosts:
