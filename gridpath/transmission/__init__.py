@@ -431,16 +431,16 @@ def write_model_inputs(
         # Identify transmission lines with specified capacity in the
         # periods relevant to this subproblem.
         specified_capacity_transmission = {
-            transmission
-            for transmission, period in c.execute(
+            transmission_line
+            for transmission_line, period in c.execute(
                 f"""
-                SELECT DISTINCT transmission, period
+                SELECT DISTINCT transmission_line, period
                 FROM inputs_transmission_specified_capacity
                 WHERE transmission_specified_capacity_scenario_id =
                     {subscenarios.TRANSMISSION_SPECIFIED_CAPACITY_SCENARIO_ID}
                 """
             ).fetchall()
-            if int(period) in periods
+            if int(period) == 0 or int(period) in periods
         }
 
         # Identify transmission whose vintage is not operational in this subproblem
