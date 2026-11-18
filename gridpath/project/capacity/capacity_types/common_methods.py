@@ -223,6 +223,8 @@ def spec_get_inputs_from_database(conn, subscenarios, subproblem, capacity_type)
                   AND subproblem_id = {db_subproblem}
                )
         ;""")
+    
+    return spec_project_params
 
 
 def spec_write_tab_file(
