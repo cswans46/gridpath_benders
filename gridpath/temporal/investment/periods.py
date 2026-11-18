@@ -359,6 +359,42 @@ def load_model_data(
     stage,
 ):
     """ """
+    # Load period inputs. The master has the full investment horizon and
+    # requires prev_period to construct period trajectories. Operational
+    # subproblems have a single period, so prev_period has no valid indices.
+    if subproblem == "":
+        select = (
+            "period",
+            "discount_factor",
+            "hours_in_period_timepoints",
+            "period_start_year",
+            "period_end_year",
+            "prev_period",
+        )
+
+        params = (
+            m.discount_factor,
+            m.hours_in_period_timepoints,
+            m.period_start_year,
+            m.period_end_year,
+            m.prev_period,
+        )
+    else:
+        select = (
+            "period",
+            "discount_factor",
+            "hours_in_period_timepoints",
+            "period_start_year",
+            "period_end_year",
+        )
+
+        params = (
+            m.discount_factor,
+            m.hours_in_period_timepoints,
+            m.period_start_year,
+            m.period_end_year,
+        )
+
     data_portal.load(
         filename=os.path.join(
             scenario_directory,
@@ -370,38 +406,9 @@ def load_model_data(
             "inputs",
             "periods.tab",
         ),
-        select=(
-            "period",
-            "discount_factor",
-            "hours_in_period_timepoints",
-            "period_start_year",
-            "period_end_year",
-            "prev_period",
-        ),
+        select=select,
         index=m.PERIODS,
-        param=(
-            m.discount_factor,
-            m.hours_in_period_timepoints,
-            m.period_start_year,
-            m.period_end_year,
-            m.prev_period,
-        ),
-    )
-
-    data_portal.load(
-        filename=os.path.join(
-            scenario_directory,
-            weather_iteration,
-            hydro_iteration,
-            availability_iteration,
-            subproblem,
-            stage,
-            "inputs",
-            "timepoints.tab",
-        ),
-        select=("timepoint", "period"),
-        index=m.TMPS,
-        param=m.period,
+        param=params,
     )
 
 

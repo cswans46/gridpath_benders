@@ -180,7 +180,6 @@ def define_benders_modules(modules_to_use):
         "temporal.operations.timepoints",
         "temporal.investment.periods",
         "temporal.operations.horizons",
-        "temporal.investment.superperiods",
         "temporal.finalize",
         "geography.load_zones",
         "geography.load_following_up_balancing_areas",
@@ -209,7 +208,6 @@ def define_benders_modules(modules_to_use):
         "project.capacity.capacity_sets",
         "project.capacity.capacity",
         "project.capacity.potential",
-        "project.capacity.capacity_groups",
         "project.capacity.relative_capacity",
         "project.capacity.costs",
         "transmission.capacity",
@@ -217,7 +215,6 @@ def define_benders_modules(modules_to_use):
         "transmission.capacity.capacity",
         "transmission.capacity.costs",
         "transmission.capacity.consolidate_results",
-        "transmission.capacity.capacity_groups",
         "system.policy.carbon_cap",
         "system.policy.carbon_cap.carbon_cap",
         "system.policy.energy_targets",
@@ -228,6 +225,8 @@ def define_benders_modules(modules_to_use):
     ]
 
     inv_module = [
+# Only define superperiods in the planning problem (only used in the subsidies module which is only in the planning problem)
+        "temporal.investment.superperiods",
         "system.policy.subsidies",
         "system.policy.benders_policy_constraint",
         "transmission",

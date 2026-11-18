@@ -817,25 +817,29 @@ def benders(
                     linking_variables_sub_by_type[result_key]["binary"]
                     + linking_variables_sub_by_type[result_key]["integer"]
                 )
+
                 if discrete_linking_vars:
-                    register_benders_state(
-                        benders_states=benders_states,
-                        subproblem_key=result_key,
-                        result=result,
-                    )
-                elif result["feasible"]:
+
+                    if result["feasible"]:
+                        register_benders_state(
+                            benders_states=benders_states,
+                            subproblem_key=result_key,
+                            result=result,
+                        )
+
+                    # Infeasible discrete subproblems are handled by
+                    # add_benders_feasibility_cut() above.
+
+                else:
+
+                    # Continuous-only subproblems always use ordinary
+                    # continuous Benders cuts, including feasibility cuts.
                     add_relaxed_benders_cut(
                         planning_problem=planning_problem,
                         subproblem_key=result_key,
-                        linking_vars=(
-                            result["continuous_lambda"].keys()
-                        ),
-                        benders_lambda=(
-                            result["continuous_lambda"]
-                        ),
-                        benders_point=(
-                            result["continuous_point"]
-                        ),
+                        linking_vars=result["continuous_lambda"].keys(),
+                        benders_lambda=result["continuous_lambda"],
+                        benders_point=result["continuous_point"],
                         op_cost=result["op_cost"],
                         theta_coeff=result.get("theta_coeff", 1.0),
                     )
@@ -1245,6 +1249,7 @@ def benders(
         final_export_status=final_export_status,
     )
 
+
 def add_benders_feasibility_cut(
     planning_problem,
     result_key,
@@ -1258,51 +1263,29 @@ def add_benders_feasibility_cut(
     native_state_cuts=False,
 ):
     """
-    Add a Benders feasibility cut when appropriate.
+    Register or add a Benders feasibility cut for an infeasible
+    operational subproblem.
 
     P&J relaxed phase:
-        No discrete combinatorial feasibility cut is generated,
-        because the master discrete variables are temporarily
-        continuous.
+        Leave feasibility-cut generation to the ordinary relaxed
+        Benders cut logic in the main iteration loop.
 
-    Linearized:
-        Add an explicit combinatorial feasibility cut.
+    Continuous-only subproblem:
+        Add an ordinary continuous Benders feasibility cut.
 
-    DJC:
-        Register a restoration-dual feasibility cut conditioned on the
-        current binary state. This is not a global no-good cut because a
-        different continuous-linking allocation may make the same binary
-        state feasible.
+    Discrete subproblem:
+        Register a state-conditioned feasibility cut. This preserves
+        dependence on continuous linking variables and avoids excluding
+        a discrete assignment based on infeasibility at only one
+        continuous allocation.
 
-    Parameters
-    ----------
-    planning_problem : Pyomo model
-        Investment/master problem.
-
-    result_key : hashable
-        Subproblem identifier.
-
-    result : dict
-        Subproblem result.
-
-    linking_variables_sub_by_type : dict
-        Linking-variable metadata by subproblem.
-
-    planning_sol : PlanningSolution
-        Current master solution.
-
-    master_discrete_method : str
-        "pj_relax", "linearized", or "djc".
-
-    master_integrality_restored : bool
-        True during the P&J relaxed phase.
-
-    cut_id : hashable
-        Unique identifier for the feasibility cut.
+    Native MOSEK DJC:
+        Register feasibility-state data for the native disjunction
+        builder. Only binary discrete linking variables are supported.
     """
 
     # ---------------------------------------------------------
-    # Only act on infeasible subproblems.
+    # Only act on infeasible subproblems
     # ---------------------------------------------------------
 
     if result["feasible"]:
@@ -1311,104 +1294,183 @@ def add_benders_feasibility_cut(
     # ---------------------------------------------------------
     # P&J relaxed phase
     # ---------------------------------------------------------
-    #
-    # The current master point may contain fractional binary
-    # or integer variables. Therefore we cannot interpret the
-    # point as a discrete state and exclude that state.
-    #
+
     if (
         master_discrete_method == "pj_relax"
         and not master_integrality_restored
     ):
+        # The main loop adds the ordinary relaxed feasibility cut.
         return False
 
     # ---------------------------------------------------------
-    # Discrete phase
+    # Identify linking-variable types
     # ---------------------------------------------------------
 
-    binary_vars = (
-        linking_variables_sub_by_type[result_key]["binary"]
+    if result_key not in linking_variables_sub_by_type:
+        raise KeyError(
+            f"No linking-variable metadata found for subproblem "
+            f"'{result_key}'."
+        )
+
+    variable_types = (
+        linking_variables_sub_by_type[result_key]
     )
 
-    integer_vars = (
-        linking_variables_sub_by_type[result_key]["integer"]
-    )
+    binary_vars = variable_types["binary"]
+    integer_vars = variable_types["integer"]
+    continuous_vars = variable_types["continuous"]
 
-    if (
-        master_discrete_method == "pj_relax"
-        and master_integrality_restored
-        and native_state_cuts
-        and (binary_vars or integer_vars)
-    ):
-        if integer_vars:
-            raise NotImplementedError(
-                "The MOSEK P&J state-cut path supports binary discrete "
-                "linking variables only. Integer variables found for "
-                f"'{result_key}': {integer_vars}"
-            )
-        if benders_feasibility_states is None:
-            raise RuntimeError(
-                "P&J feasibility-state storage was not initialized."
-            )
-        if result.get("master_discrete_state") is None:
-            raise ValueError(
-                f"Infeasible P&J subproblem '{result_key}' returned no "
-                "master discrete state."
-            )
-        benders_feasibility_states.setdefault(result_key, []).append(
-            {
-                "master_discrete_state": result["master_discrete_state"],
-                "continuous_lambda": result["continuous_lambda"],
-                "continuous_point": result["continuous_point"],
-                "op_cost": float(result["op_cost"]),
-                "theta_coeff": 0.0,
-            }
+    # ---------------------------------------------------------
+    # Validate restoration information
+    # ---------------------------------------------------------
+
+    if result.get("op_cost") is None:
+        raise ValueError(
+            f"Infeasible subproblem '{result_key}' returned no "
+            "restoration objective value."
         )
-        return True
 
-    if master_discrete_method == "djc":
-        if integer_vars:
-            raise NotImplementedError(
-                "Native MOSEK Benders feasibility DJCs currently "
-                "support binary linking variables only. Integer "
-                f"linking variables were found for '{result_key}': "
-                f"{integer_vars}"
-            )
-        if benders_feasibility_states is None:
-            raise RuntimeError(
-                "DJC feasibility-state storage was not initialized."
-            )
-        if result.get("master_discrete_state") is None:
-            raise ValueError(
-                f"Infeasible DJC subproblem '{result_key}' returned "
-                "no master discrete state."
-            )
-        benders_feasibility_states.setdefault(result_key, []).append(
-            {
-                "master_discrete_state": result["master_discrete_state"],
-                "continuous_lambda": result["continuous_lambda"],
-                "continuous_point": result["continuous_point"],
-                "op_cost": float(result["op_cost"]),
-                "theta_coeff": 0.0,
-            }
+    op_cost = float(result["op_cost"])
+
+    if not math.isfinite(op_cost):
+        raise ValueError(
+            f"Infeasible subproblem '{result_key}' returned a "
+            f"non-finite restoration objective: {op_cost}."
         )
-        return True
 
-    # If there are no discrete linking variables, a
-    # combinatorial feasibility cut is not appropriate.
+    continuous_lambda = result.get("continuous_lambda")
+    continuous_point = result.get("continuous_point")
+
+    if continuous_lambda is None:
+        raise ValueError(
+            f"Infeasible subproblem '{result_key}' returned no "
+            "continuous linking-variable duals."
+        )
+
+    if continuous_point is None:
+        raise ValueError(
+            f"Infeasible subproblem '{result_key}' returned no "
+            "continuous linking-variable incumbent point."
+        )
+
+    # Ensure every continuous linking variable has a corresponding
+    # dual and incumbent value.
+    for name in continuous_vars:
+
+        if name not in continuous_lambda:
+            raise KeyError(
+                f"Infeasible subproblem '{result_key}' has no "
+                f"feasibility dual for continuous linking variable "
+                f"'{name}'."
+            )
+
+        if name not in continuous_point:
+            raise KeyError(
+                f"Infeasible subproblem '{result_key}' has no "
+                f"incumbent value for continuous linking variable "
+                f"'{name}'."
+            )
+
+    # ---------------------------------------------------------
+    # Continuous-only subproblem
+    # ---------------------------------------------------------
     #
-    # In that case the infeasibility mechanism should instead
-    # be handled by the existing continuous/feasibility-cut
-    # machinery.
-    if not binary_vars and not integer_vars:
-        return False
+    # There is no discrete state to condition on. Add an ordinary
+    # continuous feasibility cut instead of a combinatorial cut.
+    #
+    # This also handles a continuous-only subproblem when another
+    # subproblem in the overall model has discrete linking variables.
+    # ---------------------------------------------------------
 
-    add_combinatorial_feasibility_cut(
-        planning_problem=planning_problem,
-        binary_linking_vars=binary_vars,
-        integer_linking_vars=integer_vars,
-        planning_sol=planning_sol,
-        cut_id=f"{result_key}_{cut_id}",
+    if not binary_vars and not integer_vars:
+
+        add_relaxed_benders_cut(
+            planning_problem=planning_problem,
+            subproblem_key=result_key,
+            linking_vars=continuous_vars,
+            benders_lambda=continuous_lambda,
+            benders_point=continuous_point,
+            op_cost=op_cost,
+            theta_coeff=0.0,
+        )
+
+        return True
+
+    # ---------------------------------------------------------
+    # Native MOSEK DJC restrictions
+    # ---------------------------------------------------------
+
+    use_native_state_cuts = (
+        master_discrete_method == "djc"
+        or (
+            master_discrete_method == "pj_relax"
+            and master_integrality_restored
+            and native_state_cuts
+        )
+    )
+
+    if use_native_state_cuts and integer_vars:
+        raise NotImplementedError(
+            "Native MOSEK Benders feasibility DJCs currently "
+            "support binary linking variables only. Integer "
+            f"linking variables were found for '{result_key}': "
+            f"{integer_vars}"
+        )
+
+    # ---------------------------------------------------------
+    # Obtain the discrete state
+    # ---------------------------------------------------------
+
+    discrete_state = result.get(
+        "master_discrete_state"
+    )
+
+    if discrete_state is None:
+        raise ValueError(
+            f"Infeasible subproblem '{result_key}' returned no "
+            "master_discrete_state. A state-conditioned feasibility "
+            "cut cannot be constructed."
+        )
+
+    # Validate that the state contains the expected variable types.
+    if "binary" not in discrete_state:
+        raise KeyError(
+            f"Discrete state for '{result_key}' has no 'binary' entry."
+        )
+
+    if "integer" not in discrete_state:
+        raise KeyError(
+            f"Discrete state for '{result_key}' has no 'integer' entry."
+        )
+
+    # ---------------------------------------------------------
+    # Register the feasibility state
+    # ---------------------------------------------------------
+    #
+    # The actual cut is added later by
+    # update_planning_problem_multi_cuts().
+    #
+    # theta_coeff=0 makes this a feasibility cut rather than an
+    # optimality cut.
+    # ---------------------------------------------------------
+
+    if benders_feasibility_states is None:
+        raise RuntimeError(
+            "Feasibility-state storage was not initialized for "
+            f"subproblem '{result_key}'."
+        )
+
+    benders_feasibility_states.setdefault(
+        result_key,
+        [],
+    ).append(
+        {
+            "master_discrete_state": discrete_state,
+            "continuous_lambda": dict(continuous_lambda),
+            "continuous_point": dict(continuous_point),
+            "op_cost": op_cost,
+            "theta_coeff": 0.0,
+        }
     )
 
     return True
@@ -1859,6 +1921,7 @@ def add_relaxed_benders_cut(
         cut_expression >= 0
     )
 
+
 def update_planning_problem_multi_cuts(
     planning_problem,
     benders_states,
@@ -1870,30 +1933,63 @@ def update_planning_problem_multi_cuts(
     optimiser,
     native_djc=True,
 ):
-    """Dispatch accumulated discrete-state cuts by master method.
-
-    P&J adds relaxed affine cuts directly in its first phase and
-    state-conditioned cuts after integrality is restored. The linearized
-    method builds linear activation formulations; DJC passes state data to
-    the native MOSEK disjunction builder. ``none`` adds no discrete-state
-    cuts and is valid only when linking variables are continuous.
     """
+    Install newly generated discrete-state Benders optimality and
+    feasibility cuts.
+
+    P&J:
+        Relaxed-phase cuts are added directly by the main iteration loop.
+        After integrality is restored, add state-conditioned cuts.
+
+    Linearized:
+        Add state-conditioned cuts using explicit binary activation
+        variables and valid Big-M values.
+
+    DJC:
+        Pass accumulated state data to the native MOSEK disjunction
+        builder.
+
+    Historical states are retained, but non-native cuts are installed
+    only once. Cut counters are maintained on the planning model.
+    """
+
+    # ---------------------------------------------------------
+    # Persistent cut bookkeeping
+    # ---------------------------------------------------------
+
+    if not hasattr(
+        planning_problem,
+        "_benders_state_cut_cursor",
+    ):
+        planning_problem._benders_state_cut_cursor = {}
+
+    if not hasattr(
+        planning_problem,
+        "_benders_feasibility_cut_cursor",
+    ):
+        planning_problem._benders_feasibility_cut_cursor = {}
+
+    # ---------------------------------------------------------
+    # P&J
+    # ---------------------------------------------------------
 
     if master_discrete_method == "pj_relax":
 
-        # ---------------------------------------------------------
-        # P&J relaxed phase
-        #
-        # Relaxed cuts are added directly from subop_sol, so there
-        # is nothing to do here.
-        # ---------------------------------------------------------
-
+        # Relaxed-phase cuts are added directly in the main loop.
         if not master_integrality_restored:
             return
 
-        if native_djc and str(getattr(optimiser, "name", "")).lower().startswith(
-            "mosek"
+        # -----------------------------------------------------
+        # Native MOSEK DJC implementation
+        # -----------------------------------------------------
+
+        if (
+            native_djc
+            and str(
+                getattr(optimiser, "name", "")
+            ).lower().startswith("mosek")
         ):
+
             for subproblem_key, variable_types in (
                 linking_variables_sub_by_type.items()
             ):
@@ -1911,6 +2007,7 @@ def update_planning_problem_multi_cuts(
                 in linking_variables_sub_by_type.items()
                 if variable_types["binary"]
             }
+
             planning_problem._benders_native_djc_data = {
                 "benders_states": {
                     key: states
@@ -1919,74 +2016,24 @@ def update_planning_problem_multi_cuts(
                 },
                 "benders_feasibility_states": {
                     key: states
-                    for key, states in benders_feasibility_states.items()
+                    for key, states in (
+                        benders_feasibility_states.items()
+                    )
                     if key in native_subproblems
                 },
                 "linking_variables_sub_by_type": (
                     linking_variables_sub_by_type
                 ),
             }
+
             return
 
-        # ---------------------------------------------------------
-        # Integer phase
-        # ---------------------------------------------------------
-
-        for subproblem_key, states in benders_states.items():
-
-            continuous_vars = (
-                linking_variables_sub_by_type[
-                    subproblem_key
-                ]["continuous"]
-            )
-
-            for state in states:
-
-                add_state_recourse_cut(
-                    planning_problem=planning_problem,
-                    subproblem_key=subproblem_key,
-                    discrete_state=state["master_discrete_state"],
-                    continuous_vars=continuous_vars,
-                    continuous_lambda=state["continuous_lambda"],
-                    continuous_point=state["continuous_point"],
-                    op_cost=state["op_cost"],
-                    theta_coeff=state["theta_coeff"],
-                    recourse_lower_bound=(
-                        state.get("recourse_lower_bound")
-                        if state.get("recourse_lower_bound") is not None
-                        else recourse_lower_bounds[subproblem_key]
-                    ),
-                    optimiser=optimiser,
-                )
+        # -----------------------------------------------------
+        # Non-native P&J integer phase
+        # -----------------------------------------------------
 
     elif master_discrete_method == "linearized":
-
-        for subproblem_key, states in benders_states.items():
-
-            continuous_vars = (
-                linking_variables_sub_by_type[
-                    subproblem_key
-                ]["continuous"]
-            )
-
-            for state in states:
-
-                add_state_recourse_cut(
-                    planning_problem=planning_problem,
-                    subproblem_key=subproblem_key,
-                    discrete_state=state["master_discrete_state"],
-                    continuous_vars=continuous_vars,
-                    continuous_lambda=state["continuous_lambda"],
-                    continuous_point=state["continuous_point"],
-                    op_cost=state["op_cost"],
-                    theta_coeff=state["theta_coeff"],
-                    recourse_lower_bound=(
-                        state.get("recourse_lower_bound")
-                        if state.get("recourse_lower_bound") is not None
-                        else recourse_lower_bounds[subproblem_key]
-                    ),
-                    optimiser=optimiser,
-                )
+        pass
 
     elif master_discrete_method == "djc":
 
@@ -2000,19 +2047,127 @@ def update_planning_problem_multi_cuts(
             ),
         }
 
+        return
+
     elif master_discrete_method == "none":
-        # No master discrete-state cuts should be generated.
-        #
-        # If this method is selected, the caller should already have
-        # verified that there are no discrete linking variables.
         return
 
     else:
-
         raise ValueError(
             f"Unknown BendersDiscreteMethod: "
             f"{master_discrete_method}"
         )
+
+    # ---------------------------------------------------------
+    # Non-native P&J / linearized state-conditioned cuts
+    # ---------------------------------------------------------
+
+    for subproblem_key, variable_types in (
+        linking_variables_sub_by_type.items()
+    ):
+
+        continuous_vars = variable_types["continuous"]
+
+        # =====================================================
+        # 1. Optimality cuts
+        # =====================================================
+
+        states = benders_states.get(
+            subproblem_key,
+            [],
+        )
+
+        start = planning_problem._benders_state_cut_cursor.get(
+            subproblem_key,
+            0,
+        )
+
+        if start > len(states):
+            raise RuntimeError(
+                f"Optimality-cut cursor for '{subproblem_key}' "
+                f"({start}) exceeds the number of registered states "
+                f"({len(states)})."
+            )
+
+        for state in states[start:]:
+
+            recourse_lower_bound = state.get(
+                "recourse_lower_bound"
+            )
+
+            if recourse_lower_bound is None:
+                recourse_lower_bound = (
+                    recourse_lower_bounds[subproblem_key]
+                )
+
+            add_state_recourse_cut(
+                planning_problem=planning_problem,
+                subproblem_key=subproblem_key,
+                discrete_state=state["master_discrete_state"],
+                continuous_vars=continuous_vars,
+                continuous_lambda=state["continuous_lambda"],
+                continuous_point=state["continuous_point"],
+                op_cost=state["op_cost"],
+                theta_coeff=state["theta_coeff"],
+                recourse_lower_bound=recourse_lower_bound,
+                optimiser=optimiser,
+            )
+
+        # Advance only after all new cuts have been installed.
+        planning_problem._benders_state_cut_cursor[
+            subproblem_key
+        ] = len(states)
+
+        # =====================================================
+        # 2. Feasibility cuts
+        # =====================================================
+
+        feasibility_states = benders_feasibility_states.get(
+            subproblem_key,
+            [],
+        )
+
+        feasibility_start = (
+            planning_problem
+            ._benders_feasibility_cut_cursor
+            .get(subproblem_key, 0)
+        )
+
+        if feasibility_start > len(feasibility_states):
+            raise RuntimeError(
+                f"Feasibility-cut cursor for '{subproblem_key}' "
+                f"({feasibility_start}) exceeds the number of "
+                f"registered feasibility states "
+                f"({len(feasibility_states)})."
+            )
+
+        for state in feasibility_states[feasibility_start:]:
+
+            if state.get("master_discrete_state") is None:
+                raise ValueError(
+                    f"Feasibility state for '{subproblem_key}' "
+                    "has no master_discrete_state."
+                )
+
+            add_state_recourse_cut(
+                planning_problem=planning_problem,
+                subproblem_key=subproblem_key,
+                discrete_state=state["master_discrete_state"],
+                continuous_vars=continuous_vars,
+                continuous_lambda=state["continuous_lambda"],
+                continuous_point=state["continuous_point"],
+                op_cost=state["op_cost"],
+                theta_coeff=0.0,
+                # The theta term is absent from a feasibility cut.
+                # A zero value is therefore sufficient here.
+                recourse_lower_bound=0.0,
+                optimiser=optimiser,
+            )
+
+        planning_problem._benders_feasibility_cut_cursor[
+            subproblem_key
+        ] = len(feasibility_states)
+
 
 def add_state_recourse_cut(
     planning_problem,
@@ -2027,46 +2182,63 @@ def add_state_recourse_cut(
     optimiser,
 ):
     """
-    Add a discrete-state-conditioned Benders optimality cut.
+    Add a discrete-state-conditioned Benders optimality or
+    feasibility cut.
 
-    The cut is active when the master discrete variables exactly match
-    the incumbent discrete state.
-
-    For the matching discrete state:
+    For an optimality cut (theta_coeff != 0):
 
         theta_coeff * theta >=
-            op_cost
-            + lambda^T (x - xbar)
+            op_cost + lambda' * (x - xbar)
 
-    The cut is relaxed when the discrete state differs from the incumbent
-    by means of an activation variable z.
+    For a feasibility cut (theta_coeff == 0):
 
-    The resulting constraint is:
+            0 >= op_cost + lambda' * (x - xbar)
 
-        cut_expression + M * z >= 0
+    The cut is active only when the master discrete variables match
+    the discrete state at which the subproblem was solved.
 
-    where z = 0 iff the incumbent discrete pattern is reproduced.
+    A Big-M activation variable relaxes the cut when the discrete
+    state differs.
     """
 
-    theta = planning_problem.vTHETA[subproblem_key]
+    theta_coeff = float(theta_coeff)
+    op_cost = float(op_cost)
 
-    # ------------------------------------------------------------------
-    # Create a block for this cut.
-    # ------------------------------------------------------------------
+    if not math.isfinite(op_cost):
+        raise ValueError(
+            f"Non-finite cut value for subproblem "
+            f"'{subproblem_key}': {op_cost}"
+        )
 
-    cut_id = len(planning_problem.component_map().get(
-        "BendersDiscretePattern",
-        []
-    )) if hasattr(
+    if not math.isfinite(theta_coeff):
+        raise ValueError(
+            f"Non-finite theta coefficient for subproblem "
+            f"'{subproblem_key}'."
+        )
+
+    # ---------------------------------------------------------
+    # Persistent unique cut IDs
+    # ---------------------------------------------------------
+
+    if not hasattr(
         planning_problem,
-        "BendersDiscretePattern"
-    ) else 0
+        "_benders_state_cut_counter",
+    ):
+        planning_problem._benders_state_cut_counter = {}
 
-    block_name = f"BendersDiscretePattern_{subproblem_key}_{cut_id}"
+    cut_id = planning_problem._benders_state_cut_counter.get(
+        subproblem_key,
+        0,
+    )
 
-    # Avoid relying on the component count above if the name already
-    # exists. Your existing implementation can retain its own cut-ID
-    # mechanism if you already have one.
+    planning_problem._benders_state_cut_counter[
+        subproblem_key
+    ] = cut_id + 1
+
+    block_name = (
+        f"BendersDiscretePattern_{subproblem_key}_{cut_id}"
+    )
+
     if hasattr(planning_problem, block_name):
         raise RuntimeError(
             f"Benders cut block '{block_name}' already exists."
@@ -2079,57 +2251,58 @@ def add_state_recourse_cut(
         block,
     )
 
-    # ------------------------------------------------------------------
-    # Create mismatch indicators.
-    #
-    # z = 0 iff every discrete variable matches the incumbent.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # Create discrete-state mismatch indicators
+    # ---------------------------------------------------------
 
     mismatch_vars = []
 
-    # ==============================================================
-    # Binary variables
-    # ==============================================================
+    # =========================================================
+    # Binary linking variables
+    # =========================================================
 
-    for name, target in discrete_state.get("binary", {}).items():
+    for i, (name, target) in enumerate(
+        discrete_state.get("binary", {}).items()
+    ):
 
         var = planning_problem.find_component(name)
 
         if var is None:
             raise KeyError(
                 f"Binary linking variable '{name}' was not found "
-                f"in the planning problem."
+                "in the planning problem."
             )
 
-        target = int(round(float(target)))
+        target_float = float(target)
+        target_int = int(round(target_float))
+
+        if (
+            target_int not in (0, 1)
+            or abs(target_float - target_int) > 1e-8
+        ):
+            raise ValueError(
+                f"Invalid binary target for '{name}': {target}."
+            )
 
         mismatch = pyo.Var(
             domain=pyo.Binary
         )
 
         block.add_component(
-            f"Mismatch_{name}",
+            f"BinaryMismatch_{i}",
             mismatch,
         )
 
-        # If target = 1:
-        #
-        #     mismatch = 1 - var
-        #
-        # If target = 0:
-        #
-        #     mismatch = var
-        #
-        if target == 1:
+        if target_int == 1:
             block.add_component(
-                f"MismatchConstraint_{name}",
+                f"BinaryMismatchConstraint_{i}",
                 pyo.Constraint(
                     expr=mismatch == 1 - var
                 ),
             )
         else:
             block.add_component(
-                f"MismatchConstraint_{name}",
+                f"BinaryMismatchConstraint_{i}",
                 pyo.Constraint(
                     expr=mismatch == var
                 ),
@@ -2137,135 +2310,181 @@ def add_state_recourse_cut(
 
         mismatch_vars.append(mismatch)
 
-    # ==============================================================
-    # Integer variables
-    # ==============================================================
+    # =========================================================
+    # General integer linking variables
+    # =========================================================
 
-    for name, target in discrete_state.get("integer", {}).items():
+    for i, (name, target) in enumerate(
+        discrete_state.get("integer", {}).items()
+    ):
 
         var = planning_problem.find_component(name)
 
         if var is None:
             raise KeyError(
                 f"Integer linking variable '{name}' was not found "
-                f"in the planning problem."
+                "in the planning problem."
             )
 
-        target = int(round(float(target)))
+        target_float = float(target)
+        target_int = int(round(target_float))
 
+        if abs(target_float - target_int) > 1e-8:
+            raise ValueError(
+                f"Integer state value for '{name}' is not integral: "
+                f"{target}."
+            )
+
+        # IMPORTANT:
+        # get_continuous_variable_bounds expects the Pyomo variable
+        # object, not its string name.
         lb, ub = get_continuous_variable_bounds(
             planning_problem,
-            name,
+            var,
             optimiser,
         )
 
         if lb is None or ub is None:
             raise ValueError(
-                f"Could not obtain finite bounds for integer linking "
+                f"Finite bounds are required for integer linking "
                 f"variable '{name}'."
             )
 
-        lb = int(math.floor(float(lb)))
-        ub = int(math.ceil(float(ub)))
-
-        if target < lb or target > ub:
+        if (
+            not math.isfinite(float(lb))
+            or not math.isfinite(float(ub))
+        ):
             raise ValueError(
-                f"Incumbent integer value {target} for '{name}' is "
-                f"outside bounds [{lb}, {ub}]."
+                f"Non-finite bounds for integer linking variable "
+                f"'{name}': [{lb}, {ub}]."
             )
 
-        # ----------------------------------------------------------
-        # below = 1 if var <= target - 1
-        # ----------------------------------------------------------
+        lb_float = float(lb)
+        ub_float = float(ub)
+
+        lb_int = int(round(lb_float))
+        ub_int = int(round(ub_float))
+
+        if (
+            abs(lb_float - lb_int) > 1e-8
+            or abs(ub_float - ub_int) > 1e-8
+        ):
+            raise ValueError(
+                f"Integer linking variable '{name}' has non-integral "
+                f"bounds [{lb}, {ub}]."
+            )
+
+        if target_int < lb_int or target_int > ub_int:
+            raise ValueError(
+                f"Incumbent integer value {target_int} for '{name}' "
+                f"is outside bounds [{lb_int}, {ub_int}]."
+            )
+
+        # -----------------------------------------------------
+        # below = 1 iff var <= target - 1
+        # below = 0 iff var >= target
+        # -----------------------------------------------------
 
         below = pyo.Var(
             domain=pyo.Binary
         )
 
-        # above = 1 if var >= target + 1
-        # ----------------------------------------------------------
+        block.add_component(
+            f"IntegerBelow_{i}",
+            below,
+        )
+
+        M_below = target_int - lb_int
+        M_not_below = ub_int - target_int + 1
+
+        block.add_component(
+            f"IntegerBelowLower_{i}",
+            pyo.Constraint(
+                expr=(
+                    var
+                    >= target_int - M_below * below
+                )
+            ),
+        )
+
+        block.add_component(
+            f"IntegerBelowUpper_{i}",
+            pyo.Constraint(
+                expr=(
+                    var
+                    <= target_int - 1
+                    + M_not_below * (1 - below)
+                )
+            ),
+        )
+
+        # -----------------------------------------------------
+        # above = 1 iff var >= target + 1
+        # above = 0 iff var <= target
+        # -----------------------------------------------------
 
         above = pyo.Var(
             domain=pyo.Binary
         )
 
         block.add_component(
-            f"Below_{name}",
-            below,
-        )
-
-        block.add_component(
-            f"Above_{name}",
+            f"IntegerAbove_{i}",
             above,
         )
 
-        # Below:
-        #
-        # var <= target - 1 + M_below * (1 - below)
-        #
-        # When below = 1:
-        #
-        # var <= target - 1
-        #
-        below_M = max(
-            0,
-            ub - (target - 1)
-        )
+        M_above = ub_int - target_int
+        M_not_above = target_int - lb_int + 1
 
         block.add_component(
-            f"BelowConstraint_{name}",
+            f"IntegerAboveUpper_{i}",
             pyo.Constraint(
-                expr=var <= target - 1 + below_M * (1 - below)
+                expr=(
+                    var
+                    <= target_int + M_above * above
+                )
             ),
         )
 
-        # Above:
-        #
-        # var >= target + 1 - M_above * (1 - above)
-        #
-        # When above = 1:
-        #
-        # var >= target + 1
-        #
-        above_M = max(
-            0,
-            (target + 1) - lb
-        )
-
         block.add_component(
-            f"AboveConstraint_{name}",
+            f"IntegerAboveLower_{i}",
             pyo.Constraint(
-                expr=var >= target + 1 - above_M * (1 - above)
+                expr=(
+                    var
+                    >= target_int + 1
+                    - M_not_above * (1 - above)
+                )
             ),
         )
 
-        # We need a mismatch indicator that is 1 whenever the integer
-        # variable differs from the target.
+        # -----------------------------------------------------
+        # Exact integer mismatch indicator
+        # -----------------------------------------------------
+
         integer_mismatch = pyo.Var(
             domain=pyo.Binary
         )
 
         block.add_component(
-            f"IntegerMismatch_{name}",
+            f"IntegerMismatch_{i}",
             integer_mismatch,
         )
 
         block.add_component(
-            f"IntegerMismatchLower_{name}",
+            f"IntegerMismatchBelow_{i}",
             pyo.Constraint(
                 expr=integer_mismatch >= below
             ),
         )
 
         block.add_component(
-            f"IntegerMismatchUpper_{name}",
+            f"IntegerMismatchAbove_{i}",
             pyo.Constraint(
                 expr=integer_mismatch >= above
             ),
         )
 
         block.add_component(
-            f"IntegerMismatchSum_{name}",
+            f"IntegerMismatchUpper_{i}",
             pyo.Constraint(
                 expr=integer_mismatch <= below + above
             ),
@@ -2273,99 +2492,91 @@ def add_state_recourse_cut(
 
         mismatch_vars.append(integer_mismatch)
 
-    # ------------------------------------------------------------------
-    # Global activation variable z.
+    # ---------------------------------------------------------
+    # Global activation variable
     #
-    # z = 0 when all discrete variables match.
-    # z = 1 when any discrete variable differs.
-    # ------------------------------------------------------------------
+    # delta = 0 iff all discrete variables match.
+    # delta = 1 iff at least one discrete variable differs.
+    # ---------------------------------------------------------
 
-    z = pyo.Var(
+    delta = pyo.Var(
         domain=pyo.Binary
     )
 
-    block.delta = z
+    block.delta = delta
 
     for i, mismatch in enumerate(mismatch_vars):
-
         block.add_component(
             f"DeltaLower_{i}",
             pyo.Constraint(
-                expr=z >= mismatch
+                expr=delta >= mismatch
             ),
         )
 
     if mismatch_vars:
-        block.add_component(
-            "DeltaUpper",
-            pyo.Constraint(
-                expr=z <= sum(mismatch_vars)
-            ),
+        block.DeltaUpper = pyo.Constraint(
+            expr=delta <= sum(mismatch_vars)
         )
     else:
-        # There are no discrete variables. The state cut should simply
-        # reduce to an ordinary continuous Benders cut.
-        block.add_component(
-            "DeltaZero",
-            pyo.Constraint(
-                expr=z == 0
-            ),
+        block.DeltaZero = pyo.Constraint(
+            expr=delta == 0
         )
 
-    # ------------------------------------------------------------------
-    # Construct the Benders cut.
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------
+    # Construct the conditional Benders cut
+    # ---------------------------------------------------------
+
+    theta = planning_problem.vTHETA[subproblem_key]
 
     cut_scale = (
         BENDERS_THETA_SCALE
-        if abs(float(theta_coeff)) > 1e-12
+        if abs(theta_coeff) > 1e-12
         else 1.0
     )
+
     cut_expression = (
-        float(theta_coeff) * theta
-        - float(op_cost) / cut_scale
+        theta_coeff * theta
+        - op_cost / cut_scale
     )
 
     for name in continuous_vars:
 
         if name not in continuous_lambda:
             raise KeyError(
-                f"Missing continuous lambda coefficient for '{name}'."
+                f"Missing continuous lambda coefficient for "
+                f"'{name}' in subproblem '{subproblem_key}'."
             )
 
         if name not in continuous_point:
             raise KeyError(
-                f"Missing continuous incumbent point for '{name}'."
+                f"Missing continuous incumbent point for "
+                f"'{name}' in subproblem '{subproblem_key}'."
             )
 
         var = planning_problem.find_component(name)
 
         if var is None:
             raise KeyError(
-                f"Continuous linking variable '{name}' was not found "
-                f"in the planning problem."
+                f"Continuous linking variable '{name}' was not "
+                "found in the planning problem."
             )
 
         lam = float(continuous_lambda[name])
         xbar = float(continuous_point[name])
 
-        cut_expression -= (lam / cut_scale) * (var - xbar)
+        if not math.isfinite(lam) or not math.isfinite(xbar):
+            raise ValueError(
+                f"Non-finite dual or incumbent value for "
+                f"'{name}' in subproblem '{subproblem_key}'."
+            )
 
-    # ------------------------------------------------------------------
-    # Calculate a valid Big-M.
-    #
-    # We need:
-    #
-    #     cut_expression + M*z >= 0
-    #
-    # to be automatically satisfied when z = 1.
-    #
-    # Therefore:
-    #
-    # M >= op_cost
-    #      + max lambda'(x-xbar)
-    #      - theta_coeff * theta_lb
-    # ------------------------------------------------------------------
+        cut_expression -= (
+            lam / cut_scale
+        ) * (var - xbar)
+
+    # ---------------------------------------------------------
+    # Calculate the Big-M needed to deactivate the cut
+    # ---------------------------------------------------------
 
     if recourse_lower_bound is None:
         raise ValueError(
@@ -2378,7 +2589,7 @@ def add_state_recourse_cut(
     if not math.isfinite(recourse_lower_bound):
         raise ValueError(
             f"Non-finite recourse lower bound for subproblem "
-            f"'{subproblem_key}': {recourse_lower_bound}"
+            f"'{subproblem_key}': {recourse_lower_bound}."
         )
 
     M = calculate_benders_big_m(
@@ -2386,11 +2597,21 @@ def add_state_recourse_cut(
         continuous_linking_vars=continuous_vars,
         continuous_lambda=continuous_lambda,
         continuous_point=continuous_point,
-        op_cost=float(op_cost),
-        recourse_lower_bound=float(recourse_lower_bound),
+        op_cost=op_cost,
+        recourse_lower_bound=recourse_lower_bound,
         optimiser=optimiser,
+        theta_coeff=theta_coeff,
     )
+
     M /= cut_scale
+
+    if not math.isfinite(M) or M < -1e-8:
+        raise ValueError(
+            f"Invalid Big-M value for subproblem '{subproblem_key}': "
+            f"{M}."
+        )
+
+    M = max(0.0, M)
 
     block.BigM = pyo.Param(
         initialize=M,
@@ -2398,7 +2619,7 @@ def add_state_recourse_cut(
     )
 
     block.ConditionalBendersCut = pyo.Constraint(
-        expr=cut_expression + M * z >= 0
+        expr=cut_expression + M * delta >= 0
     )
 
     return M
@@ -2574,15 +2795,29 @@ def get_continuous_variable_bounds(
     )
 
     if ub is None:
-        # No finite bound is derivable; use the same cap as the master.
-        from gridpath.benders.planning import BENDERS_MASTER_VARIABLE_CAP
 
-        logging.getLogger(__name__).warning(
-            "No finite upper bound for linking variable %s; using %g.",
-            var.name,
+        from gridpath.benders.planning import (
             BENDERS_MASTER_VARIABLE_CAP,
         )
+
+        logger.warning(
+            "Using assumed Benders upper bound %g for %s. "
+            "This bound has not been independently verified.",
+            BENDERS_MASTER_VARIABLE_CAP,
+            var.name,
+        )
+
         ub = BENDERS_MASTER_VARIABLE_CAP
+
+        if not hasattr(
+            planning_problem,
+            "_benders_assumed_bounds",
+        ):
+            planning_problem._benders_assumed_bounds = set()
+
+        planning_problem._benders_assumed_bounds.add(
+            var.name
+        )
 
     if lb is None:
         if var.is_nonnegative():

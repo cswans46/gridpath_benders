@@ -461,7 +461,6 @@ def get_inputs_from_database(
 
     return projects
 
-
 def write_model_inputs(
     scenario_directory,
     scenario_id,
@@ -474,14 +473,17 @@ def write_model_inputs(
     conn,
 ):
     """
-    Get inputs from database and write out the model input
-    projects.tab file.
+    Get inputs from the database and write the model input projects.tab file.
+
     :param scenario_directory: string, the scenario directory
+    :param scenario_id: scenario ID
     :param subscenarios: SubScenarios object with all subscenario info
+    :param weather_iteration:
+    :param hydro_iteration:
+    :param availability_iteration:
     :param subproblem:
     :param stage:
     :param conn: database connection
-    :return:
     """
 
     (
@@ -491,7 +493,11 @@ def write_model_inputs(
         db_subproblem,
         db_stage,
     ) = directories_to_db_values(
-        weather_iteration, hydro_iteration, availability_iteration, subproblem, stage
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        subproblem,
+        stage,
     )
 
     projects = get_inputs_from_database(
@@ -505,28 +511,29 @@ def write_model_inputs(
         conn,
     )
 
-    # Filter new-build costs to only include vintages
-    # that exist in this subproblem.
-    # TODO: Need to add an if parsed_arguments.benders: here.
+    # Filter projects to retain only those operational in the current
+    # subproblem, either through new-build vintages or specified capacity.
     if subproblem != "":
-        # Get project-vintage-lifetime combinations from database
         c = conn.cursor()
-        # Gather vintage, project, lifetime map for filtering
+
+        # Get project-vintage-lifetime combinations for new-build projects.
         vintage_project_lifetimes = [
             (int(str(vintage)[:4]), project, lifetime)
             for vintage, project, lifetime in c.execute(
-                f"""
+                """
                 SELECT vintage, project, operational_lifetime_yrs
                 FROM inputs_project_new_cost
-                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
-                """
+                WHERE project_new_cost_scenario_id = ?
+                """,
+                (subscenarios.PROJECT_NEW_COST_SCENARIO_ID,),
             ).fetchall()
         ]
-        # Call in locally the sql query for periods.tab for this subproblem
+
+        # Get the period associated with this subproblem.
         from gridpath.temporal.investment.periods import (
-            get_inputs_from_database as get_periods_from_database
+            get_inputs_from_database as get_periods_from_database,
         )
-        # Fetch this subproblem's associated period.
+
         periods_for_filtering = get_periods_from_database(
             scenario_id,
             subscenarios,
@@ -537,58 +544,31 @@ def write_model_inputs(
             db_stage,
             conn,
         ).fetchall()
-        # In case there are several periods (this should never happen)
+
         periods = {int(row[0]) for row in periods_for_filtering}
-        
+
         if len(periods) != 1:
             raise ValueError(
                 f"Expected exactly one period for subproblem {subproblem}, "
                 f"but found {sorted(periods)}."
             )
 
-        current_period = next(iter(periods))
-        
-        # Get projects with specified capacity in the periods relevant
-        # to this subproblem.
-        specified_capacity_projects = {
-            project
+        # Get all project-period combinations with specified capacity.
+        specified_capacity_project_periods = [
+            (project, int(period))
             for project, period in c.execute(
-                f"""
+                """
                 SELECT DISTINCT project, period
                 FROM inputs_project_specified_capacity
-                WHERE project_specified_capacity_scenario_id =
-                    {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
-                """
+                WHERE project_specified_capacity_scenario_id = ?
+                """,
+                (subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID,),
             ).fetchall()
-            if int(period) == current_period
-        }
-        
-        print(f"\nSubproblem: {subproblem}")
-        print("Temporal periods:")
-        for row in periods_for_filtering:
-            print(row)
-            
-        problem_projects = {
-            "AB202c4e746f03526552afca25b9cc36cc",
-            "AB2f672109dcb75b70fcb7dcb534255091",
-            "NB137a58bc599308e699314afe16fb1c88",
-            "NB6676548c78bc8ad3bb434c2e0be253ce",
-            "NS650cd0332327cc46082ab125c514db75",
-            "NS731c9aa591beedd121a9371202b34067",
-            "NSe7179f6498074fc30958a33ffe5b5c0f",
-            "ON219293b5bce2f4be362e5aa9c4d83348",
-            "ON_Biomass_indus_cogen_Bi_grouped_small_2",
-            "ONe16a526ff8091f5ca6b98018471d2337",
-            "ONf89cc54da5a17cb38726f1798b7ae290",
-        }
+        ]
 
-        print("Vintage and lifetime records:")
-        for vintage, project, lifetime in vintage_project_lifetimes:
-            if project in problem_projects:
-                print(project, vintage, lifetime)
-
-        # Identify project/vintage combinations that should be included
-        excluded_projects = {
+        # Exclude new-build projects that have no operational vintage
+        # in any period of this subproblem.
+        excluded_new_build_projects = {
             project
             for project in {
                 project
@@ -602,27 +582,40 @@ def write_model_inputs(
             )
         }
 
-        # Filter projects.tab.
-        # Retain projects that are either:
-        # 1. Operational in at least one period of this subproblem,
-        #    according to their new-build vintage and lifetime; or
-        # 2. Have specified capacity in at least one period of this subproblem.
-        project_rows = [
-            row
-            for row in projects.fetchall()
-            if (
-                row[0] not in excluded_projects
-                or row[0] in specified_capacity_projects
+        # Exclude specified-capacity projects that have no specified
+        # capacity in any period of this subproblem.
+        excluded_specified_capacity_projects = {
+            project
+            for project in {
+                project
+                for project, period in specified_capacity_project_periods
+            }
+            if all(
+                period != specified_period
+                for proj, specified_period in specified_capacity_project_periods
+                if proj == project
+                for period in periods
             )
+        }
+
+        # Combine exclusions and filter projects.tab.
+        excluded_projects = (
+            excluded_new_build_projects | excluded_specified_capacity_projects
+        )
+
+        project_rows = [
+            row for row in projects.fetchall()
+            if row[0] not in excluded_projects
         ]
-        
+
         print(
             f"Subproblem {subproblem}: "
-            f"{len(specified_capacity_projects)} projects with specified capacity; "
-            f"{len(excluded_projects)} excluded by new-build vintage filtering."
+            f"{len(excluded_new_build_projects)} excluded by new-build vintages; "
+            f"{len(excluded_specified_capacity_projects)} excluded by specified capacity; "
+            f"{len(excluded_projects)} unique projects excluded."
         )
-        # Create a separate filtered projects class to avoid consuming the projects component before later
-        # project.tab is actually written.
+
+        # Preserve the original projects component for subsequent writing.
         class FilteredProjects:
             def __init__(self, rows):
                 self.description = projects.description

@@ -396,25 +396,30 @@ def write_model_inputs(
     )
 
     # TODO: Need to add an if parsed_arguments.benders: here.
+    
+    # Filter transmission lines to retain only those operational in the
+    # current subproblem, either through new-build vintages or specified capacity.
     if subproblem != "":
-        # Get transmission-vintage-lifetime combinations from database
         c = conn.cursor()
-        # Gather vintage, transmission, lifetime map for filtering
+
+        # Get transmission-vintage-lifetime combinations for new-build lines.
         vintage_transmission_lifetimes = [
             (int(str(vintage)[:4]), transmission, lifetime)
             for vintage, transmission, lifetime in c.execute(
-                f"""
+                """
                 SELECT vintage, transmission_line, tx_operational_lifetime_yrs
                 FROM inputs_transmission_new_cost
-                WHERE transmission_new_cost_scenario_id = {subscenarios.TRANSMISSION_NEW_COST_SCENARIO_ID}
-                """
+                WHERE transmission_new_cost_scenario_id = ?
+                """,
+                (subscenarios.TRANSMISSION_NEW_COST_SCENARIO_ID,),
             ).fetchall()
         ]
-        # Call in locally the sql query for periods.tab for this subproblem
+
+        # Get the period associated with this subproblem.
         from gridpath.temporal.investment.periods import (
-            get_inputs_from_database as get_periods_from_database
+            get_inputs_from_database as get_periods_from_database,
         )
-        # Fetch this subproblem's associated period.
+
         periods_for_filtering = get_periods_from_database(
             scenario_id,
             subscenarios,
@@ -425,26 +430,31 @@ def write_model_inputs(
             db_stage,
             conn,
         ).fetchall()
-        # In case there are several periods (this should never happen)
+
         periods = {int(row[0]) for row in periods_for_filtering}
-        
-        # Identify transmission lines with specified capacity in the
-        # periods relevant to this subproblem.
-        specified_capacity_transmission = {
-            transmission_line
+
+        if len(periods) != 1:
+            raise ValueError(
+                f"Expected exactly one period for subproblem {subproblem}, "
+                f"but found {sorted(periods)}."
+            )
+
+        # Get all transmission-line-period combinations with specified capacity.
+        specified_capacity_transmission_periods = [
+            (transmission_line, int(period))
             for transmission_line, period in c.execute(
-                f"""
+                """
                 SELECT DISTINCT transmission_line, period
                 FROM inputs_transmission_specified_capacity
-                WHERE transmission_specified_capacity_scenario_id =
-                    {subscenarios.TRANSMISSION_SPECIFIED_CAPACITY_SCENARIO_ID}
-                """
+                WHERE transmission_specified_capacity_scenario_id = ?
+                """,
+                (subscenarios.TRANSMISSION_SPECIFIED_CAPACITY_SCENARIO_ID,),
             ).fetchall()
-            if int(period) in periods
-        }
+        ]
 
-        # Identify transmission whose vintage is not operational in this subproblem
-        excluded_transmissions = {
+        # Exclude new-build lines that have no operational vintage
+        # in any period of this subproblem.
+        excluded_new_build_transmissions = {
             transmission
             for transmission in {
                 transmission
@@ -458,17 +468,42 @@ def write_model_inputs(
             )
         }
 
-        # Filter transmissions.tab
+        # Exclude specified-capacity lines that have no specified capacity
+        # in any period of this subproblem.
+        excluded_specified_capacity_transmissions = {
+            transmission
+            for transmission in {
+                transmission
+                for transmission, period in specified_capacity_transmission_periods
+            }
+            if all(
+                period != specified_period
+                for tx, specified_period in specified_capacity_transmission_periods
+                if tx == transmission
+                for period in periods
+            )
+        }
+
+        # Combine exclusions and filter transmission_lines.tab.
+        excluded_transmissions = (
+            excluded_new_build_transmissions
+            | excluded_specified_capacity_transmissions
+        )
+
         transmission_rows = [
             row
             for row in transmission_lines.fetchall()
-            if (
-                row[0] not in excluded_transmissions
-                or row[0] in specified_capacity_transmission
-            )
+            if row[0] not in excluded_transmissions
         ]
-        # Create a separate filtered projects class to avoid consuming the projects component before later
-        # project.tab is actually written.
+
+        print(
+            f"Subproblem {subproblem}: "
+            f"{len(excluded_new_build_transmissions)} excluded by new-build vintages; "
+            f"{len(excluded_specified_capacity_transmissions)} excluded by specified capacity; "
+            f"{len(excluded_transmissions)} unique transmission lines excluded."
+        )
+
+        # Preserve the original transmission-lines component for subsequent writing.
         class FilteredTransmissionlines:
             def __init__(self, rows):
                 self.description = transmission_lines.description
