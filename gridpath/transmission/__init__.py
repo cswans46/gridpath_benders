@@ -496,13 +496,6 @@ def write_model_inputs(
             if row[0] not in excluded_transmissions
         ]
 
-        print(
-            f"Subproblem {subproblem}: "
-            f"{len(excluded_new_build_transmissions)} excluded by new-build vintages; "
-            f"{len(excluded_specified_capacity_transmissions)} excluded by specified capacity; "
-            f"{len(excluded_transmissions)} unique transmission lines excluded."
-        )
-
         # Preserve the original transmission-lines component for subsequent writing.
         class FilteredTransmissionlines:
             def __init__(self, rows):

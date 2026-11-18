@@ -273,6 +273,9 @@ def add_model_components(
     m.Possible_Power_Provision_in_Horizon_Expression = Expression(
         m.CAP_FACTOR_LIMIT_PRJ_BT_HRZ, rule=possible_power_provision_in_horizon_rule
     )
+    
+    _add_cap_factor_allocation_target_sets(m)
+    _add_cap_factor_subproblem_allocation_variables(m, subproblem)
 
     def min_cap_factor_constraint_rule(mod, prj, bt, h):
         if mod.min_cap_factor[prj, bt, h] == Negative_Infinity:
@@ -305,9 +308,6 @@ def add_model_components(
         m.CAP_FACTOR_LIMIT_PRJ_BT_HRZ,
         rule=max_cap_factor_constraint_rule,
     )
-    
-    _add_cap_factor_allocation_target_sets(m)
-    _add_cap_factor_subproblem_allocation_variables(m, subproblem)
 
 
 def load_model_data(

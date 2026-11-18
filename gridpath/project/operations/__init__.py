@@ -1220,9 +1220,33 @@ def get_inputs_from_database(
         inputs_project_cap_factor_limits
         USING(project, cap_factor_limits_scenario_id)
         JOIN
-        (SELECT balancing_type_horizon, horizon
-        FROM inputs_temporal_horizons
-        WHERE temporal_scenario_id = {temporal_scenario_id}) as relevant_horizons
+        (
+            SELECT balancing_type_horizon, horizon
+            FROM inputs_temporal_horizons
+            WHERE temporal_scenario_id = {temporal_scenario_id}
+            AND (
+                (
+                    balancing_type_horizon = 'year'
+                    AND horizon IN (
+                        SELECT DISTINCT period
+                        FROM inputs_temporal
+                        WHERE temporal_scenario_id = {temporal_scenario_id}
+                        AND subproblem_id = {subproblem}
+                        AND stage_id = {stage}
+                    )
+                )
+                OR (
+                    balancing_type_horizon <> 'year'
+                    AND (balancing_type_horizon, horizon) IN (
+                        SELECT DISTINCT balancing_type_horizon, horizon
+                        FROM inputs_temporal_horizon_timepoints
+                        WHERE temporal_scenario_id = {temporal_scenario_id}
+                        AND subproblem_id = {subproblem}
+                        AND stage_id = {stage}
+                    )
+                )
+            )
+        ) AS relevant_horizons
         USING (balancing_type_horizon, horizon)
         WHERE project_portfolio_scenario_id = {project_portfolio_scenario_id}
         AND cap_factor_limits_scenario_id IS NOT NULL
@@ -1230,6 +1254,8 @@ def get_inputs_from_database(
             temporal_scenario_id=subscenarios.TEMPORAL_SCENARIO_ID,
             project_opchar_scenario_id=subscenarios.PROJECT_OPERATIONAL_CHARS_SCENARIO_ID,
             project_portfolio_scenario_id=subscenarios.PROJECT_PORTFOLIO_SCENARIO_ID,
+            subproblem=subproblem,
+            stage=stage,
         )
     )
 
