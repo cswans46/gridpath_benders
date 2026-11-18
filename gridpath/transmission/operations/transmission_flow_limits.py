@@ -321,19 +321,27 @@ def get_model_inputs_from_database(
         """SELECT transmission_line, timepoint, min_flow_mw, max_flow_mw
         FROM inputs_transmission_flow
         JOIN
-        (SELECT timepoint
-        FROM inputs_temporal
-        WHERE temporal_scenario_id = {}) as relevant_timepoints
-        USING (timepoint)        
+        (
+            SELECT DISTINCT timepoint
+            FROM inputs_temporal
+            WHERE temporal_scenario_id = {}
+            AND subproblem_id = {}
+            AND stage_id = {}
+        ) AS relevant_timepoints
+        USING (timepoint)
         JOIN
-        (SELECT transmission_line
-        FROM inputs_transmission_portfolios
-        WHERE transmission_portfolio_scenario_id = {}) as relevant_tx
+        (
+            SELECT transmission_line
+            FROM inputs_transmission_portfolios
+            WHERE transmission_portfolio_scenario_id = {}
+        ) AS relevant_tx
         USING (transmission_line)
         WHERE transmission_flow_scenario_id = {}
         AND stage_ID = {}
         """.format(
             subscenarios.TEMPORAL_SCENARIO_ID,
+            subproblem,
+            stage,
             subscenarios.TRANSMISSION_PORTFOLIO_SCENARIO_ID,
             subscenarios.TRANSMISSION_FLOW_SCENARIO_ID,
             stage,

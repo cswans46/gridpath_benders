@@ -308,24 +308,32 @@ def get_inputs_from_database(
 
     c = conn.cursor()
     hurdle_rates = c.execute(
-        """SELECT transmission_line, timepoint, 
+        """SELECT transmission_line, timepoint,
         hurdle_rate_by_timepoint_positive_direction_per_mwh,
         hurdle_rate_by_timepoint_negative_direction_per_mwh
         FROM inputs_transmission_portfolios
         CROSS JOIN
-            (SELECT timepoint
-            FROM inputs_temporal
-            WHERE temporal_scenario_id = {}) AS relevant_timepoints 
+            (
+                SELECT DISTINCT timepoint
+                FROM inputs_temporal
+                WHERE temporal_scenario_id = {}
+                AND subproblem_id = {}
+                AND stage_id = {}
+            ) AS relevant_timepoints
         LEFT OUTER JOIN
-            (SELECT transmission_line, timepoint, 
-            hurdle_rate_by_timepoint_positive_direction_per_mwh,
-            hurdle_rate_by_timepoint_negative_direction_per_mwh
-            FROM inputs_transmission_hurdle_rates_by_timepoint
-            WHERE transmission_hurdle_rate_by_timepoint_scenario_id = {}) AS relevant_hrs
+            (
+                SELECT transmission_line, timepoint,
+                hurdle_rate_by_timepoint_positive_direction_per_mwh,
+                hurdle_rate_by_timepoint_negative_direction_per_mwh
+                FROM inputs_transmission_hurdle_rates_by_timepoint
+                WHERE transmission_hurdle_rate_by_timepoint_scenario_id = {}
+            ) AS relevant_hrs
         USING (transmission_line, timepoint)
         WHERE transmission_portfolio_scenario_id = {};
         """.format(
             subscenarios.TEMPORAL_SCENARIO_ID,
+            subproblem,
+            stage,
             subscenarios.TRANSMISSION_HURDLE_RATE_BY_TIMEPOINT_SCENARIO_ID,
             subscenarios.TRANSMISSION_PORTFOLIO_SCENARIO_ID,
         )
