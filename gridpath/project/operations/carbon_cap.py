@@ -31,7 +31,10 @@ from gridpath.auxiliary.db_interface import (
     directories_to_db_values,
 )
 from gridpath.auxiliary.validations import write_validation_to_database, validate_idxs
-
+from gridpath.project.operations.common_functions import (
+    filter_project_input_rows,
+    get_subproblem_projects,
+)
 
 def add_model_components(
     m,
@@ -250,119 +253,19 @@ def write_model_inputs(
     )
 
     if subproblem != "":
-        # Get project-vintage-lifetime combinations from database
-        c = conn.cursor()
-        # Gather vintage, project, lifetime map for filtering
-        new_project = [
-            (int(str(vintage)[:4]), project)
-            for vintage, project in c.execute(
-                f"""
-                SELECT vintage, project
-                FROM inputs_project_new_cost
-                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-        spec_project = [
-            (int(str(period)[:4]), project)
-            for period, project in c.execute(
-                f"""
-                SELECT period, project
-                FROM inputs_project_specified_capacity
-                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-
-        project_years = spec_project + new_project
-
-        # Call in locally the sql query for periods.tab for this subproblem
-        from gridpath.temporal.investment.periods import (
-            get_inputs_from_database as get_periods_from_database
+        active_projects = get_subproblem_projects(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
         )
-        # Fetch this subproblem's associated period.
-        periods_for_filtering = get_periods_from_database(
-            scenario_id,
-            subscenarios,
-            db_weather_iteration,
-            db_hydro_iteration,
-            db_availability_iteration,
-            db_subproblem,
-            db_stage,
-            conn,
-        ).fetchall()
-        # In case there are several periods (this should never happen)
-        periods = {int(row[0]) for row in periods_for_filtering}
 
-        # Identify project/vintage combinations that should be included
-        period = next(iter(periods))
-
-        valid_projects = {
-            project
-            for vintage, project in project_years
-            if vintage == period
-        }
-
-        project_zones_rows = [
-            row
-            for row in project_zones.fetchall()
-            if row[0] in valid_projects
-        ]
-        # Create a separate filtered projects class to avoid consuming the projects component before later
-        # project.tab is actually written.
-        class FilteredProjects:
-            def __init__(self, rows):
-                self.description = project_zones.description
-                self.rows = rows
-
-            def fetchall(self):
-                return self.rows
-
-        project_zones = FilteredProjects(project_zones_rows)
-
-        # Call in locally the sql query for periods.tab for this subproblem
-        from gridpath.temporal.investment.periods import (
-            get_inputs_from_database as get_periods_from_database
+        project_zones = filter_project_input_rows(
+            cursor=project_zones,
+            active_projects=active_projects,
         )
-        # Fetch this subproblem's associated period.
-        periods_for_filtering = get_periods_from_database(
-            scenario_id,
-            subscenarios,
-            db_weather_iteration,
-            db_hydro_iteration,
-            db_availability_iteration,
-            db_subproblem,
-            db_stage,
-            conn,
-        ).fetchall()
-        # In case there are several periods (this should never happen)
-        periods = {int(row[0]) for row in periods_for_filtering}
-
-        # Identify project/vintage combinations that should be included
-        period = next(iter(periods))
-
-        valid_projects = {
-            project
-            for vintage, project in project_years
-            if vintage == period
-        }
-
-        project_zones_rows = [
-            row
-            for row in project_zones.fetchall()
-            if row[0] in valid_projects
-        ]
-        # Create a separate filtered projects class to avoid consuming the projects component before later
-        # project.tab is actually written.
-        class FilteredProjects:
-            def __init__(self, rows):
-                self.description = project_zones.description
-                self.rows = rows
-
-            def fetchall(self):
-                return self.rows
-
-        project_zones = FilteredProjects(project_zones_rows)
 
     with open(
         os.path.join(

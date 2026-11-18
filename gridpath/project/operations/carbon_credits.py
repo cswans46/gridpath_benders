@@ -27,7 +27,7 @@ from gridpath.auxiliary.auxiliary import (
 from gridpath.auxiliary.db_interface import directories_to_db_values
 from gridpath.common_functions import create_results_df, update_results_df
 from gridpath.project import PROJECT_PERIOD_DF
-from gridpath.project.operations.common_functions import load_operational_type_modules
+from gridpath.project.operations.common_functions import load_operational_type_modules, filter_project_input_rows, get_subproblem_projects
 import gridpath.project.operations.operational_types as op_type_init
 
 Infinity = float("inf")
@@ -638,7 +638,6 @@ def write_model_inputs(
             get_inputs_from_database as get_periods_from_database
         )
 
-        # Fetch this subproblem's periods.
         periods_for_filtering = get_periods_from_database(
             scenario_id,
             subscenarios,
@@ -650,137 +649,44 @@ def write_model_inputs(
             conn,
         ).fetchall()
 
-        periods = {int(row[0]) for row in periods_for_filtering}
-
-        # Identify project/vintage combinations that should be included
-        period = next(iter(periods))
-
-        # --------------------------------------------------------------
-        # Get project-vintage-lifetime combinations.
-        # --------------------------------------------------------------
-
-        c = conn.cursor()
-
-        new_project = [
-            (int(str(vintage)[:4]), project)
-            for vintage, project in c.execute(
-                f"""
-                SELECT vintage, project
-                FROM inputs_project_new_cost
-                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-        spec_project = [
-            (int(str(period)[:4]), project)
-            for period, project in c.execute(
-                f"""
-                SELECT period, project
-                FROM inputs_project_specified_capacity
-                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-
-        project_years = spec_project + new_project
-
-        # --------------------------------------------------------------
-        # Identify projects with at least one active vintage in one of
-        # this subproblem's operational periods.
-        # --------------------------------------------------------------
-
-        included_projects = {
-            project
-            for vintage, project in project_years
-            if vintage == period
+        periods = {
+            int(str(row[0])[:4])
+            for row in periods_for_filtering
         }
 
-        # --------------------------------------------------------------
-        # Filter project_generation_zones.
-        # --------------------------------------------------------------
+        if not periods:
+            raise ValueError(
+                f"No periods found for carbon-credits filtering "
+                f"in subproblem '{subproblem}'."
+            )
 
-        generation_zones_rows = project_generation_zones.fetchall()
-
-        generation_included_rows = [
-            row
-            for row in generation_zones_rows
-            if row[0] in included_projects
-        ]
-
-        # --------------------------------------------------------------
-        # Filter project_purchase_zones.
-        # --------------------------------------------------------------
-
-        purchase_zones_rows = project_purchase_zones.fetchall()
-
-        purchase_included_rows = [
-            row
-            for row in purchase_zones_rows
-            if row[0] in included_projects
-        ]
-
-        # --------------------------------------------------------------
-        # Filter project_carbon_credits by period.
-        #
-        # This remains a separate filter because carbon credits are
-        # themselves period-specific.
-        # --------------------------------------------------------------
-
-        carbon_credits_rows = project_carbon_credits.fetchall()
-
-        credit_included_rows = [
-            row for row in carbon_credits_rows
-            if row[0] in included_projects
-               and int(row[1]) in periods
-        ]
-
-        # ------------------------------------------------------------------
-        # Replace cursors with filtered iterable objects.
-        # ------------------------------------------------------------------
-
-        class FilteredProjectCarbonCredits:
-            def __init__(self, rows):
-                self.description = project_carbon_credits.description
-                self.rows = rows
-
-            def fetchall(self):
-                return self.rows
-
-            def __iter__(self):
-                return iter(self.rows)
-
-        class FilteredProjectGenerationZones:
-            def __init__(self, rows):
-                self.description = project_generation_zones.description
-                self.rows = rows
-
-            def fetchall(self):
-                return self.rows
-
-            def __iter__(self):
-                return iter(self.rows)
-
-        class FilteredProjectPurchaseZones:
-            def __init__(self, rows):
-                self.description = project_purchase_zones.description
-                self.rows = rows
-
-            def fetchall(self):
-                return self.rows
-
-            def __iter__(self):
-                return iter(self.rows)
-
-        project_carbon_credits = FilteredProjectCarbonCredits(
-            credit_included_rows
+        active_projects = get_subproblem_projects(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
         )
 
-        project_generation_zones = FilteredProjectGenerationZones(
-            generation_included_rows
+        # Generation-zone assignments are project-specific.
+        project_generation_zones = filter_project_input_rows(
+            cursor=project_generation_zones,
+            active_projects=active_projects,
         )
 
-        project_purchase_zones = FilteredProjectPurchaseZones(
-            purchase_included_rows
+        # Purchase-zone assignments are project-specific.
+        project_purchase_zones = filter_project_input_rows(
+            cursor=project_purchase_zones,
+            active_projects=active_projects,
+        )
+
+        # Carbon-credit quantities are project- and period-specific.
+        project_carbon_credits = filter_project_input_rows(
+            cursor=project_carbon_credits,
+            active_projects=active_projects,
+            period_index=1,
+            periods=periods,
         )
 
     # projects.tab

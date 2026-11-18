@@ -27,6 +27,11 @@ from pyomo.environ import (
     Reals,
 )
 
+from gridpath.project.operations.common_functions import (
+    filter_project_input_rows,
+    get_subproblem_projects,
+)
+
 from gridpath.auxiliary.auxiliary import (
     cursor_to_df,
     subset_init_by_param_value,
@@ -319,8 +324,8 @@ def load_model_data(
         input_col = "average_heat_rate_mmbtu_per_mwh"
 
         periods_df = pd.read_csv(periods_file, sep="\t")
-        cta_df = pd.read_csv(carbon_tax_allowance_file, sep="\t")
-        cta_df = cta_df[cta_df["project"].isin(projects)]
+        cta_df_raw = pd.read_csv(carbon_tax_allowance_file, sep="\t")
+        cta_df = cta_df_raw[cta_df_raw["project"].isin(projects)]
 
         periods = set(periods_df["period"])
         cta_projects = cta_df["project"].unique()
@@ -356,6 +361,64 @@ def load_model_data(
                     average_heat_rate_curves_dict.update(
                         {(project, period): average_heat_rate}
                     )
+                    
+        project = "AB_DieselRecipEng_new_ph2_pool_blending_CES"
+        period = 2030
+
+        print(
+            "CARBON TAX HEAT RATE DIAGNOSTIC:",
+            {
+                # Was the project originally present in the allowance file?
+                "project_in_allowance_file": (
+                    project in set(cta_df_raw["project"])
+                ),
+
+                # Did the project survive the intersection with heat-rate projects?
+                "project_in_filtered_allowance_file": (
+                    project in set(cta_df["project"])
+                ),
+
+                # Was the project present in the heat-rate file?
+                "project_in_heat_rate_file": (
+                    project in set(hr_df["project"])
+                ),
+
+                # Which periods are actually available in the heat-rate file?
+                "heat_rate_periods": (
+                    sorted(
+                        hr_df.loc[
+                            hr_df["project"] == project, "period"
+                        ].unique().tolist()
+                    )
+                    if project in set(hr_df["project"])
+                    else []
+                ),
+
+                # Which periods are required by the model?
+                "model_periods": sorted(periods),
+
+                # What allowance records exist for this project?
+                "allowance_rows": (
+                    cta_df_raw.loc[
+                        cta_df_raw["project"] == project,
+                        [
+                            "project",
+                            "fuel_group",
+                            "period",
+                            "carbon_tax_allowance_tco2_per_mwh",
+                        ],
+                    ].to_dict("records")
+                    if project in set(cta_df_raw["project"])
+                    else []
+                ),
+
+                # Was the required average heat-rate key constructed?
+                "average_heat_rate_key_exists": (
+                    project,
+                    period,
+                ) in average_heat_rate_curves_dict,
+            },
+        )
 
         data_portal.data()[
             "carbon_tax_allowance_average_heat_rate"
@@ -512,38 +575,10 @@ def write_model_inputs(
     )
 
     if subproblem != "":
-        # Gather vintage, project, lifetime map for filtering
         from gridpath.temporal.investment.periods import (
             get_inputs_from_database as get_periods_from_database
         )
 
-        # Get project-vintage-lifetime combinations from database
-        c = conn.cursor()
-
-        new_project = [
-            (int(str(vintage)[:4]), project)
-            for vintage, project in c.execute(
-                f"""
-                SELECT vintage, project
-                FROM inputs_project_new_cost
-                WHERE project_new_cost_scenario_id = {subscenarios.PROJECT_NEW_COST_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-        spec_project = [
-            (int(str(period)[:4]), project)
-            for period, project in c.execute(
-                f"""
-                SELECT period, project
-                FROM inputs_project_specified_capacity
-                WHERE project_specified_capacity_scenario_id = {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
-                """
-            ).fetchall()
-        ]
-
-        project_years = spec_project + new_project
-
-        # Fetch this subproblem's associated period.
         periods_for_filtering = get_periods_from_database(
             scenario_id,
             subscenarios,
@@ -554,42 +589,33 @@ def write_model_inputs(
             db_stage,
             conn,
         ).fetchall()
-        # In case there are several periods (this should never happen)
-        periods = {int(row[0]) for row in periods_for_filtering}
 
-        # Identify project/vintage combinations that should be included
-        period = next(iter(periods))
-
-        carbon_tax_allowance_rows = project_carbon_tax_allowance.fetchall()
-
-        valid_projects = {
-            project
-            for vintage, project in project_years
-            if vintage == period
+        periods = {
+            int(str(row[0])[:4])
+            for row in periods_for_filtering
         }
 
-        included_rows = [
-            row
-            for row in carbon_tax_allowance_rows
-            if row[0] in valid_projects
-               and int(str(row[1])[:4]) == period
-        ]
+        if not periods:
+            raise ValueError(
+                f"No periods found for carbon-tax filtering "
+                f"in subproblem '{subproblem}'."
+            )
 
-        carbon_tax_allowance_rows = included_rows
-        # Create a separate filtered projects class to avoid consuming the projects component before later
-        # project.tab is actually written.
-        class FilteredCarbonTax:
-            def __init__(self, rows):
-                self.description = project_carbon_tax_allowance.description
-                self.rows = rows
+        active_projects = get_subproblem_projects(
+            scenario_directory,
+            weather_iteration,
+            hydro_iteration,
+            availability_iteration,
+            subproblem,
+            stage,
+        )
 
-            def fetchall(self):
-                return self.rows
-
-            def __iter__(self):
-                return iter(self.rows)
-
-        project_carbon_tax_allowance = FilteredCarbonTax(carbon_tax_allowance_rows)
+        project_carbon_tax_allowance = filter_project_input_rows(
+            cursor=project_carbon_tax_allowance,
+            active_projects=active_projects,
+            period_index=1,
+            periods=periods,
+        )
 
     # projects.tab
     # Make a dict for easy access

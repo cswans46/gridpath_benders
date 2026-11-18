@@ -452,49 +452,48 @@ def write_model_inputs(
             ).fetchall()
         ]
 
-        # Exclude new-build lines that have no operational vintage
-        # in any period of this subproblem.
-        excluded_new_build_transmissions = {
+        # Identify new-build transmission lines that are operational
+        # during the current subproblem's period.
+        active_new_build_transmissions = {
             transmission
-            for transmission in {
-                transmission
-                for vintage, transmission, lifetime in vintage_transmission_lifetimes
-            }
-            if all(
-                period < vintage or period >= vintage + lifetime
-                for vintage, tx, lifetime in vintage_transmission_lifetimes
-                if tx == transmission
+            for vintage, transmission, lifetime in vintage_transmission_lifetimes
+            if any(
+                vintage <= period < vintage + lifetime
                 for period in periods
             )
         }
 
-        # Exclude specified-capacity lines that have no specified capacity
-        # in any period of this subproblem.
-        excluded_specified_capacity_transmissions = {
+        # Identify specified-capacity transmission lines that have
+        # specified capacity during the current subproblem's period.
+        active_specified_capacity_transmissions = {
             transmission
-            for transmission in {
-                transmission
-                for transmission, period in specified_capacity_transmission_periods
-            }
-            if all(
-                period != specified_period
-                for tx, specified_period in specified_capacity_transmission_periods
-                if tx == transmission
-                for period in periods
-            )
+            for transmission, specified_period in specified_capacity_transmission_periods
+            if specified_period in periods
         }
 
-        # Combine exclusions and filter transmission_lines.tab.
-        excluded_transmissions = (
-            excluded_new_build_transmissions
-            | excluded_specified_capacity_transmissions
-        )
+        # Filter transmission lines according to their capacity type.
+        # Only the corresponding capacity mechanism determines whether
+        # a transmission line is active in the current subproblem.
+        transmission_rows = []
 
-        transmission_rows = [
-            row
-            for row in transmission_lines.fetchall()
-            if row[0] not in excluded_transmissions
-        ]
+        for row in transmission_lines.fetchall():
+            transmission = row[0]
+            capacity_type = row[1]
+
+            if capacity_type == "tx_new_lin":
+                if transmission in active_new_build_transmissions:
+                    transmission_rows.append(row)
+
+            elif capacity_type == "tx_spec":
+                if transmission in active_specified_capacity_transmissions:
+                    transmission_rows.append(row)
+
+            else:
+                raise ValueError(
+                    f"Unexpected transmission capacity type "
+                    f"'{capacity_type}' for transmission line "
+                    f"'{transmission}'."
+                )
 
         # Preserve the original transmission-lines component for subsequent writing.
         class FilteredTransmissionlines:
