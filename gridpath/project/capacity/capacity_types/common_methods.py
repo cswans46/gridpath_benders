@@ -449,39 +449,16 @@ def spec_determine_inputs(
             spec_fuel_rel_fixed_cost_dict[(row[0], row[1])] = row[18]
             spec_fuel_stor_fixed_cost_dict[(row[0], row[1])] = row[19]
 
-    # Quick check that all relevant projects from projects.tab have capacity
-    # params specified
-    projects_w_params = [gp[0] for gp in project_period_list]
-    import csv
-    from pathlib import Path
+    # Check that all relevant projects from projects.tab have
+    # specified-capacity parameters for this subproblem.
+    projects_w_params = {project for project, period in project_period_list}
+    missing_projects = set(project_list) - projects_w_params
 
-    projects_w_params = [gp[0] for gp in project_period_list]
-    diff = list(set(project_list) - set(projects_w_params))
-
-    diagnostic_file = Path(
-        r"C:\Users\SwansonC\ECD\Benders\gridpath\spec_capacity_diagnostic.csv"
-    )
-    
-    file_exists = diagnostic_file.exists()
-
-    with open(diagnostic_file, "a", newline="") as f:
-        writer = csv.writer(f)
-
-        if not file_exists:
-            writer.writerow(["subproblem", "project", "missing"])
-
-        for project in project_list:
-            writer.writerow([
-                subproblem,
-                project,
-                project in diff,
-            ])
-            
-    diff = list(set(project_list) - set(projects_w_params))
-
-    if diff:
+    if missing_projects:
         raise ValueError(
-            "Missing capacity inputs for the following projects: {}".format(diff)
+            "Missing capacity inputs for the following projects: {}".format(
+                sorted(missing_projects)
+            )
         )
 
     # For fixed costs, remove the NAs (set to "."); these default to zero in

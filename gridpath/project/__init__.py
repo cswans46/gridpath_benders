@@ -540,6 +540,14 @@ def write_model_inputs(
         # In case there are several periods (this should never happen)
         periods = {int(row[0]) for row in periods_for_filtering}
         
+        if len(periods) != 1:
+            raise ValueError(
+                f"Expected exactly one period for subproblem {subproblem}, "
+                f"but found {sorted(periods)}."
+            )
+
+        current_period = next(iter(periods))
+        
         # Get projects with specified capacity in the periods relevant
         # to this subproblem.
         specified_capacity_projects = {
@@ -552,8 +560,32 @@ def write_model_inputs(
                     {subscenarios.PROJECT_SPECIFIED_CAPACITY_SCENARIO_ID}
                 """
             ).fetchall()
-            if int(period) in periods
+            if int(period) == current_period
         }
+        
+        print(f"\nSubproblem: {subproblem}")
+        print("Temporal periods:")
+        for row in periods_for_filtering:
+            print(row)
+            
+        problem_projects = {
+            "AB202c4e746f03526552afca25b9cc36cc",
+            "AB2f672109dcb75b70fcb7dcb534255091",
+            "NB137a58bc599308e699314afe16fb1c88",
+            "NB6676548c78bc8ad3bb434c2e0be253ce",
+            "NS650cd0332327cc46082ab125c514db75",
+            "NS731c9aa591beedd121a9371202b34067",
+            "NSe7179f6498074fc30958a33ffe5b5c0f",
+            "ON219293b5bce2f4be362e5aa9c4d83348",
+            "ON_Biomass_indus_cogen_Bi_grouped_small_2",
+            "ONe16a526ff8091f5ca6b98018471d2337",
+            "ONf89cc54da5a17cb38726f1798b7ae290",
+        }
+
+        print("Vintage and lifetime records:")
+        for vintage, project, lifetime in vintage_project_lifetimes:
+            if project in problem_projects:
+                print(project, vintage, lifetime)
 
         # Identify project/vintage combinations that should be included
         excluded_projects = {
