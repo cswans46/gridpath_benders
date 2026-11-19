@@ -447,12 +447,15 @@ def benders(
     # bounds here, from the master, and hand them to the workers.
     # ---------------------------------------------------------
 
-    linking_var_bounds = compute_linking_variable_bounds(
-        planning_problem,
-        linking_vars,
-        optimiser,
-        allow_obbt=setup.get("RecourseBoundOBBT", True),
-    )
+    linking_var_bounds = None
+
+    if not use_pj_initialization:
+        linking_var_bounds = compute_linking_variable_bounds(
+            planning_problem,
+            linking_vars,
+            optimiser,
+            allow_obbt=setup.get("RecourseBoundOBBT", True),
+        )
 
     print("Building subproblems for Benders decomposition...")
 
