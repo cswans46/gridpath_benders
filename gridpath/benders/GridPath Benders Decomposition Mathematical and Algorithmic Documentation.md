@@ -102,11 +102,11 @@ x \in X_{\mathrm{master}}
 $$
 
 $$
-\vartheta_w \geq \frac{\(L_w\)}{S} \qquad \forall w\in W
+\vartheta_w \geq \frac{L_w}{S} \qquad \forall w\in W
 $$
 
 $$
-\vartheta_w \geq \frac{\(Q_w(\bar{x}^{k})}{S} + \sum_{i\in I_w^{k}} \frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^{k}) \qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
+\vartheta_w \geq \frac{Q_w(\bar{x}^{k})}{S} + \sum_{i\in I_w^{k}} \frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^{k}) \qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
 $$
 
 $$
@@ -145,10 +145,10 @@ The following Pyomo `ConstraintList` components are populated as the algorithm g
 - `BendersDiscreteOptimalityCuts`: state-conditioned optimality cuts for discrete master states.
 - `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq L_w/S\).
 
-**Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` \(U_w\), an upper bound on its operational NPV. Because \(Q_w\) = −NPV, the master receives
+**Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` \(U_w\), an upper bound on its operational NPV. Because Q_w = −NPV, the master receives
 
 $$
-L_w = -U_w, \qquad \vartheta_w \ge \(L_w\) / S \quad (\text{replaces } \vartheta_w \ge 0)
+L_w = -U_w, \qquad \vartheta_w \ge L_w / S \quad (\text{replaces } \vartheta_w \ge 0)
 $$
 
 The LP that produces \(U_w\) is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
