@@ -1,0 +1,246 @@
+\documentclass[aspectratio=169,10pt]{beamer}
+\usetheme{Madrid}
+\usecolortheme{default}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+\title[GridPath Benders]{GridPath Benders Decomposition}
+\subtitle{Mathematical formulation, software architecture, and algorithm flow}
+\author{GridPath Benders implementation overview}
+\date{\today}
+\tikzset{process/.style={draw,rounded corners,align=center,minimum height=8mm,text width=30mm,fill=blue!7},file/.style={draw,rounded corners,align=center,minimum height=7mm,text width=33mm,fill=green!8,font=\small},decision/.style={draw,diamond,aspect=2,align=center,fill=orange!12,text width=22mm,inner sep=1pt},arrow/.style={-{Stealth[length=2mm]},thick}}
+\begin{document}
+\begin{frame}\titlepage\end{frame}
+
+\begin{frame}{Purpose and decomposition}
+\begin{itemize}
+\item The planning model chooses investment and policy-allocation decisions.
+\item Operational subproblems evaluate operating value conditional on those decisions.
+\item Workers return recourse values, dual sensitivities, or feasibility information.
+\item The master accumulates cuts and chooses the next planning point.
+\end{itemize}
+\[
+\max_{x\in X}\left\{\mathrm{NPV}_{\mathrm{plan}}(x)-\sum_{w\in W}Q_w(x_L)\right\},
+\quad Q_w(x_L)=-\max_{z_w\in Z_w(x_L)}\mathrm{OP\_NPV}_w(z_w).
+\]
+\end{frame}
+
+\begin{frame}{Mathematical objects}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule Symbol & Meaning\\\midrule
+$x$ & All planning/master variables\\
+$x_L\subseteq x$ & Linking variables shared with operational workers\\
+$\vartheta_w$ & Master approximation of recourse cost for worker $w$\\
+$Q_w(x_L)$ & Operating cost, equal to negative operational NPV\\
+$W$ & Set of operational subproblem keys\\
+$S$ & Scaling constant, $10^9$\\
+$L_w$ & Global lower bound on recourse cost for worker $w$\\
+$\lambda_{w,i}$ & Optimality-cut sensitivity for linking variable $i$\\
+$\bar{s}_w,\mu_{w,i}$ & Phase-I slack and feasibility-cut sensitivities\\
+$UB,LB$ & Master upper bound and best evaluated complete-plan lower bound\\
+\bottomrule
+\end{tabular}
+\[
+\vartheta_w\approx Q_w(x_L)/S;\quad
+\text{master objective}=\mathrm{NPV}_{\mathrm{plan}}-S\sum_w\vartheta_w.
+\]
+\end{frame}
+
+\begin{frame}{Master problem}
+\small
+\[
+\begin{aligned}
+\max_{x,\vartheta}\quad&
+\mathrm{NPV}_{\mathrm{plan}}(x)-S\sum_{w\in W}\vartheta_w\\
+\text{s.t.}\quad&x\in X_{\mathrm{master}},\\
+&\vartheta_w\geq L_w/S &&\forall w\in W,\\
+&\vartheta_w\geq \frac{Q_w(\bar{x}^{k})}{S}
++\sum_{i\in I_w^k}\frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^k)
+&&\forall w,\ k\in K_w^{\mathrm{opt}},\\
+&c_w^k\bar{s}_w^k+\sum_{i\in I_w^k}\mu_{w,i}^k(x_i-\bar{x}_i^k)\leq0
+&&\forall w,\ k\in K_w^{\mathrm{feas}}.
+\end{aligned}
+\]
+\begin{itemize}
+\item $\vartheta_w$ is real and has no upper bound.
+\item $L_w/S$ and generated cuts provide lower bounds.
+\item Original GridPath planning constraints and domains are retained, except for documented relaxations and safeguards.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Which variables link master and workers?}
+\begin{columns}[T]
+\column{0.49\textwidth}\textbf{Capacity and build decisions}
+\begin{itemize}\item Generation capacity/build\item Transmission capacity/build\item Storage power and energy capacity\end{itemize}
+\column{0.49\textwidth}\textbf{Policy-allocation decisions}
+\begin{itemize}\item Emissions and energy targets\item Performance-standard budgets\item Carbon-credit demand/supply/threshold allocations\item Transmission-direction targets\item Fuel-burn and capacity-factor limits\item Yearly storage start/end SOC allocations\end{itemize}
+\end{columns}
+Yearly storage SOC allocations are chained cyclically across subproblems; allocated start SOC is also limited by storage energy capacity.
+\end{frame}
+
+\begin{frame}{Software architecture: entry point and driver}
+\centering
+\begin{tikzpicture}[node distance=6mm and 8mm]
+\node[file] (run) {\texttt{run\_scenario.py}\\Scenario setup and outputs};
+\node[file,below=of run] (common) {\texttt{common\_functions.py}\\CLI flags};
+\node[process,below=of common] (driver) {\texttt{algorithms.py}\\Benders driver};
+\node[file,left=of driver,xshift=-3mm] (plan) {\texttt{planning.py}\\Master build and solve};
+\node[file,right=of driver,xshift=3mm] (create) {\texttt{operational\_model\_creation.py}\\Worker model creation};
+\node[file,below=of driver,yshift=-5mm] (sub) {\texttt{subproblems.py}\\Persistent workers, solves, duals};
+\draw[arrow](run)--(common);\draw[arrow](common)--(driver);
+\draw[arrow](driver)--(plan);\draw[arrow](driver)--(create);
+\draw[arrow](create)|-(sub);\draw[arrow](driver)--(sub);
+\draw[arrow](sub)|-(plan);\draw[arrow](plan)-|(driver);
+\end{tikzpicture}
+\small The driver coordinates the master and workers; it owns iterations, bound tracking, and cut-generation decisions.
+\end{frame}
+
+\begin{frame}{Software architecture: supporting modules}
+\centering
+\begin{tikzpicture}[node distance=7mm and 8mm]
+\node[process] (driver) {\texttt{algorithms.py}\\Iteration orchestration};
+\node[file,below left=of driver,xshift=-7mm] (restore) {\texttt{restoration.py}\\Phase-I feasibility};
+\node[file,below=of driver] (reg) {\texttt{regularization.py}\\Level set, L1, L2};
+\node[file,below right=of driver,xshift=7mm] (soc) {\texttt{soc\_allocation.py}\\Storage allocation vars};
+\node[file,below=of restore,yshift=-4mm] (solver) {\texttt{gurobi/mosek/gams}\\Solver integrations};
+\node[file,below=of reg,yshift=-4mm] (policy) {\texttt{benders\_policy\_constraint.py}\\Policy and SOC rows};
+\draw[arrow](driver)--(restore);\draw[arrow](driver)--(reg);\draw[arrow](driver)--(soc);
+\draw[arrow](restore)--(solver);\draw[arrow](reg)--(solver);
+\draw[arrow](soc)--(policy);\draw[arrow](policy)-|(driver);
+\end{tikzpicture}
+\small MOSEK supplies native disjunctive constraints and the conic L2 path.
+\end{frame}
+
+\begin{frame}{Worker lifecycle and recourse evaluation}
+\begin{enumerate}
+\item Build one operational model in each persistent worker process.
+\item Relax operational integrality and solve a global LP relaxation to obtain operating-NPV upper bound $U_w$.
+\item Set $L_w=-U_w$ and report worker readiness.
+\item Receive the master's linking-variable point $\bar{x}_L$ each iteration.
+\item Add linking equalities $x_i=\bar{x}_i$ as constraints, preserving dual values.
+\item Solve the operational LP; for integer operations, solve/fix the integer state and re-solve an LP for duals.
+\item Return $Q_w(\bar{x})$, sensitivities, and state information—or invoke Phase-I restoration.
+\end{enumerate}
+\end{frame}
+
+\begin{frame}{Optimality and feasibility cuts}
+\small
+\textbf{Optimality cut.} For LP recourse, $Q_w$ is convex and its supporting hyperplane underestimates it:
+\[
+Q_w(x_L)\geq Q_w(\bar{x}_L^k)+
+\sum_{i\in I_w^k}\lambda_{w,i}^k(x_i-\bar{x}_i^k).
+\]
+The master imposes $\vartheta_w$ above this expression divided by $S$.
+
+\vspace{2mm}
+\textbf{Feasibility cut.} A Phase-I problem minimizes a common scaled violation $s_{\max}\geq0$. Its duals provide:
+\[
+c_w^k\bar{s}_w^k+
+\sum_{i\in I_w^k}\mu_{w,i}^k(x_i-\bar{x}_i^k)\leq0.
+\]
+This excludes trial points certified infeasible by the restoration problem.
+\end{frame}
+
+\begin{frame}{Discrete master decisions}
+\begin{columns}[T]
+\column{0.49\textwidth}\textbf{Linearized/big-$M$ cuts}
+\begin{itemize}\item Generate a cut at a discrete state.\item Add mismatch indicators.\item Use calculated $M$ to deactivate the cut away from that state.\item No-good cuts exclude infeasible discrete patterns.\end{itemize}
+\column{0.49\textwidth}\textbf{Native DJCs}
+\begin{itemize}\item MOSEK disjunction: state matches and cut holds, OR state differs.\item Avoids explicit big-$M$ coefficients for that disjunction.\item Requires native MOSEK path.\end{itemize}
+\end{columns}
+\vspace{2mm}
+\textbf{Pecci--Jenkins relaxation:} relax master integer/binary domains first; after the continuous phase, restore integrality and continue with state-conditioned cuts.
+\end{frame}
+
+\begin{frame}{Stabilization: level set, L1, and L2}
+\[
+\ell=UB-\gamma(UB-LB),\qquad
+\mathrm{MasterObjective}(x,\vartheta)\geq\ell.
+\]
+\begin{itemize}
+\item \textbf{L1:} minimize $\sum_i w_i|x_i-\bar{x}_i|$, represented with positive/negative deviation variables.
+\item \textbf{L2:} minimize $\sum_i w_i(x_i-\bar{x}_i)^2$, using a quadratic/conic epigraph path for MOSEK.
+\item Only continuous linking variables are penalized; the centre is the last point evaluated by workers.
+\item Stabilization chooses the next trial point; it does not replace the master bound or cuts.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Algorithm flowchart: one Benders iteration}
+\centering
+\begin{tikzpicture}[node distance=5mm and 6mm,scale=.82,transform shape]
+\node[process] (master) {Solve master\\candidate $\bar{x}^k$};
+\node[process,right=of master] (send) {Send linking values\\to workers};
+\node[process,right=of send] (solve) {Workers solve\\operational models};
+\node[decision,below=of solve] (feas) {All workers\\feasible?};
+\node[process,left=of feas] (rest) {Phase-I restoration\\feasibility cuts};
+\node[process,right=of feas] (opt) {Optimality cuts\\from duals};
+\node[process,below=of feas,yshift=-3mm] (inc) {Evaluate complete plan\\update $LB$ and incumbent};
+\node[process,below=of inc] (bound) {Update $UB$, gap,\\stabilization};
+\node[decision,below=of bound] (stop) {Converged or\\limit reached?};
+\node[process,left=of stop,xshift=-7mm] (done) {Return results};
+\draw[arrow](master)--(send);\draw[arrow](send)--(solve);\draw[arrow](solve)--(feas);
+\draw[arrow](feas)--node[above,font=\scriptsize]{No}(rest);
+\draw[arrow](feas)--node[above,font=\scriptsize]{Yes}(opt);
+\draw[arrow](rest)|-(inc);\draw[arrow](opt)|-(inc);
+\draw[arrow](inc)--(bound);\draw[arrow](bound)--(stop);
+\draw[arrow](stop)--node[above,font=\scriptsize]{Yes}(done);
+\draw[arrow](stop.east)--++(10mm,0)|-(master.east);
+\end{tikzpicture}
+\end{frame}
+
+\begin{frame}{Bounds: initialization versus safeguard}
+\small
+\begin{description}
+\item[Ordinary initialization] Workers return $U_w$, an upper bound on operating NPV. Set $L_w=-U_w$ and impose $\vartheta_w\geq L_w/S$. The first full master objective initializes $UB$.
+\item[Pecci--Jenkins initialization] The temporary planning-only objective is not a bound on the full problem. Therefore $UB=+\infty$ during feasibility restoration; a full master solve initializes a valid $UB$ afterwards.
+\item[Running upper bound] After full master solves, update $UB\leftarrow\min(UB,UB_{\mathrm{new}})$.
+\item[Emergency variable cap] Only after an unbounded master result, eligible continuous planning variables without an upper bound may be capped at $10^8$. This is an arbitrary safeguard, not the algorithmic $UB$ or a proven physical limit.
+\end{description}
+\end{frame}
+
+\begin{frame}{Implementation cautions}
+\begin{itemize}
+\item The $10^8$ cap can loosen $U_w$, make $L_w$ more negative, and inflate big-$M$ values.
+\item A fixed-operational-integer dual cut is conditional on that operational integer state.
+\item Feasibility restoration relies on an LP dual certificate; unfixed non-linking integer variables are unsupported for that certificate.
+\item A newly constructed Pyomo solver interface is a wrapper retry, not proof of a clean external solver process.
+\item The code re-solves the updated Pyomo model after adding cuts; internal warm-start or process reuse is solver-interface dependent.
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Key files}
+\scriptsize
+\begin{tabular}{@{}p{0.37\textwidth}p{0.56\textwidth}@{}}
+\toprule File & Responsibility\\\midrule
+\texttt{algorithms.py} & Driver loop, workers, bounds, cuts, discrete states, convergence\\
+\texttt{planning.py} & Master objective, theta variables, cut lists, solve and extraction\\
+\texttt{operational\_model\_creation.py} & Worker model creation and linking-variable identification\\
+\texttt{subproblems.py} & Persistent workers, linking rows, recourse solves, duals\\
+\texttt{restoration.py} & Phase-I restoration and dual certificate\\
+\texttt{regularization.py} & Level-set problem, L1 and L2 stabilization\\
+\texttt{soc\_allocation.py} & Storage SOC allocation variables and targets\\
+\texttt{benders\_policy\_constraint.py} & Master policy-allocation and SOC constraints\\
+\texttt{mosek\_benders.py} & Native MOSEK DJC support\\
+\texttt{run\_scenario.py} & Scenario entry point and result exports\\
+\bottomrule
+\end{tabular}
+\end{frame}
+
+\begin{frame}{Selected references}
+\footnotesize
+\begin{thebibliography}{9}
+\bibitem{Benders1962} Benders, J. F. (1962). Partitioning procedures for solving mixed-variables programming problems. \emph{Numerische Mathematik}, 4, 238--252.
+\bibitem{Geoffrion1972} Geoffrion, A. M. (1972). Generalized Benders decomposition. \emph{JOTA}, 10, 237--260.
+\bibitem{Jacobson2024} Jacobson, A., Pecci, F., Sepulveda, N., Xu, Q., and Jenkins, J. D. (2024; online 2023). A computationally efficient Benders decomposition for energy systems planning problems with detailed operations and time-coupling constraints. \emph{INFORMS Journal on Optimization}, 6(1), 32--45.
+\bibitem{PecciJenkins2025} Pecci, F. and Jenkins, J. D. (2025). Regularized Benders decomposition for high performance capacity expansion models. \emph{IEEE Transactions on Power Systems}, 40(4), 3105--3116.
+\bibitem{Codato2006} Codato, G. and Fischetti, M. (2006). Combinatorial Benders' cuts for mixed-integer linear programming. \emph{Operations Research}, 54(4), 756--766.
+\bibitem{Hooker2003} Hooker, J. N. and Ottosson, G. (2003). Logic-based Benders decomposition. \emph{Mathematical Programming}, 96, 33--60.
+\bibitem{Balas1979} Balas, E. (1979). Disjunctive programming. \emph{Annals of Discrete Mathematics}, 5, 3--51.
+\bibitem{Ruszczynski1986} Ruszczyński, A. (1986). A regularized decomposition method for minimizing a sum of polyhedral functions. \emph{Mathematical Programming}, 35, 309--333.
+\bibitem{Rahmaniani2017} Rahmaniani, R. et al. (2017). The Benders decomposition algorithm: A literature review. \emph{European Journal of Operational Research}, 259(3), 801--817.
+\end{thebibliography}
+\end{frame}
+\end{document}
