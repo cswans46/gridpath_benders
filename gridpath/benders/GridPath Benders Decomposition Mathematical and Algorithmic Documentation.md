@@ -28,7 +28,7 @@ The full problem maximises planning NPV minus the operating cost summed across a
 $$
 \begin{aligned}
 \max_{x \in X}\quad & \mathrm{NPV}_{\mathrm{plan}}(x) - \sum_{w \in W} Q_w(x_L) \\
-Q_w(\bar x)\quad &= -\max\{\mathrm{OP\_NPV}_w(z_w) : z_w \in Z_w,\ x_L = \bar x\}
+Q_w(\bar x)\quad &= -\max_{\substack{z_w \in Z_w \\ x_L = \bar x}}\ \mathrm{OP\_NPV}_w(z_w)
 \end{aligned}
 $$
 
