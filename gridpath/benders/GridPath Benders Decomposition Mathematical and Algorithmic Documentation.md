@@ -40,7 +40,7 @@ $$
 | \(\bar{x}\) | Trial point: the master values of \(x_L\) sent to the workers (`continuous_point`) |
 | \(Q_w(\bar{x})\) | Recourse cost, `op_cost = −OP_NPV` in dollars |
 | \(\vartheta_w\) | `vTHETA[w]`, the master's approximation of \(Q_w\), in units of \(S=10^9\) dollars |
-| \(S\) | `BENDERS_THETA_SCALE = \(10^9\)` (`planning.py:19`) |
+| \(S\) | `BENDERS_THETA_SCALE = 1e9` (`planning.py:19`) |
 | \(\lambda_w\) | Sensitivity of \(Q_w\) to \(x_L\), from the dual of the linking equalities |
 | \(L_w\) | Global lower bound on \(Q_w\), from the LP-relaxation upper bound of operating NPV |
 | \(UB\), \(LB\) | Master optimum (non-increasing) and best complete plan's NPV (non-decreasing) |
@@ -123,7 +123,7 @@ Discounting and period weights are whatever the original GridPath `NPV` expressi
 
 **Other symbols appearing in the master formulation**
 
-- \(S\): the scaling constant `BENDERS_THETA_SCALE = \(10^9\)`; monetary cut values are divided by \(S\) before entering the master.
+- \(S\): the scaling constant `BENDERS_THETA_SCALE = 1e9`; monetary cut values are divided by \(S\) before entering the master.
 - \(W\), \(w\): the set of operational subproblems and one subproblem key, respectively. A key identifies the scenario dimensions and subproblem/stage.
 - \(X_{\mathrm{master}}\): the feasible region of the planning model, including its original constraints and variable bounds/domains.
 - \(L_w\): a global lower bound on the recourse cost for subproblem \(w\), calculated as the negative of the worker's LP-relaxation upper bound on operating NPV.
@@ -153,17 +153,17 @@ $$
 
 The LP that produces \(U_w\) is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
 
-`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on ϑ: the maximisation pushes ϑ down, and the cuts and \(L_w\) stop it.
+`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on \(\vartheta_w\): the maximisation pushes ϑ down, and the cuts and \(L_w\) stop it.
 
 **Solving the master.** `solve_planning_problem` (`planning.py:39-133`) calls the selected Pyomo solver interface on the current master model. A solve is accepted only when the solver status is `ok` and the termination condition is `optimal`.
 
 1. **Initial solve and retry.** The function first calls `optimiser.solve(instance)`. If the result is not optimal, it obtains the name of the existing Pyomo solver interface, constructs another interface object with `SolverFactory(solver_name)`, checks that the new interface is available, copies the original interface's options, and tries the same Pyomo model again. A **fresh solver object** therefore means a newly constructed Pyomo solver wrapper/plugin instance. It does not mean that the optimization model is rebuilt, that a different solver is selected, or that a completely new external solver process is guaranteed. The retry is conditional on the original interface having a usable name and the new interface being available. There is one retry, not an indefinite sequence of retries or a systematic switch to another algorithm.
 
-2. **Unboundedness fallback and the \(\(10^8\)\) cap.** If the termination condition after the retry is `unbounded` or `infeasibleOrUnbounded`, the function examines the active planning variables whose names occur in `planning_variables`. It adds the upper bound `BENDERS_MASTER_VARIABLE_CAP = 1e8` only to variables that are continuous (not integer or binary) and currently have no upper bound. Any upper bound already supplied by GridPath is left unchanged, and integer and binary variables are not capped by this fallback. The model is then solved again using the original `optimiser` object. This is a safeguard against an unbounded master, often involving continuous build variables whose effective restrictions are expected to arise through Benders cuts. It is **not** a general upper bound imposed on all planning variables during initialization. The value \(\(10^8\)\) is an arbitrary large cap, not a physically or mathematically established bound; a successful solve after adding it does not prove that the cap is non-binding. If no eligible variable is found, this fallback does not add a cap or perform that additional solve.
+2. **Unboundedness fallback and the \(10^8\) cap.** If the termination condition after the retry is `unbounded` or `infeasibleOrUnbounded`, the function examines the active planning variables whose names occur in `planning_variables`. It adds the upper bound `BENDERS_MASTER_VARIABLE_CAP = 1e8` only to variables that are continuous (not integer or binary) and currently have no upper bound. Any upper bound already supplied by GridPath is left unchanged, and integer and binary variables are not capped by this fallback. The model is then solved again using the original `optimiser` object. This is a safeguard against an unbounded master, often involving continuous build variables whose effective restrictions are expected to arise through Benders cuts. It is **not** a general upper bound imposed on all planning variables during initialization. The value \(10^8\) is an arbitrary large cap, not a physically or mathematically established bound; a successful solve after adding it does not prove that the cap is non-binding. If no eligible variable is found, this fallback does not add a cap or perform that additional solve.
 
 3. **Failure handling.** After the retry and any applicable unboundedness fallback, the function again requires solver status `ok` and termination condition `optimal`. If either condition is not met, it writes the current master model to the path specified by the `GRIDPATH_BENDERS_FAILURE_LP` environment variable, if set, using symbolic solver labels, and then raises `RuntimeError` with the final solver status and termination condition. The LP file is a diagnostic aid; exporting it does not repair the model.
 
-**How the master upper bound is initialized and updated.** The algorithm's upper bound \(UB\) depends on the initialization path. This is separate from the \(\(10^8\)\) variable cap described above: that cap is a fallback applied only after an unbounded solve, whereas \(UB\) is the algorithmic bound used to track the best master relaxation.
+**How the master upper bound is initialized and updated.** The algorithm's upper bound \(UB\) depends on the initialization path. This is separate from the \(10^8\) variable cap described above: that cap is a fallback applied only after an unbounded solve, whereas \(UB\) is the algorithmic bound used to track the best master relaxation.
 
 - **Ordinary initialization (without Pecci–Jenkins initialization).** Before the first full master solve, the workers provide a global upper bound \(U_w\) on operating NPV for each subproblem \(w\). Since recourse cost is defined as \(Q_w=-\mathrm{OP\_NPV}_w\), the algorithm converts this into a recourse-cost lower bound \(L_w=-U_w\). It imposes \(\vartheta_w\ge L_w/S\) through `ThetaLowerBound`. The first master is solved with the full Benders objective, including the recourse-cost term \(-S\sum_w\vartheta_w\), and its objective value initializes \(UB\). This is a valid upper bound for the maximization problem because the master uses valid lower bounds on recourse cost and therefore relaxes the full problem.
 
@@ -171,7 +171,7 @@ The LP that produces \(U_w\) is solved over the whole operational model with the
 
 - **Subsequent full master solves.** Whenever the full Benders master is solved, its objective value is \(UB_{\mathrm{new}}=\mathrm{value}(\mathrm{MasterObjective})\). The algorithm updates the running bound as \(UB\leftarrow\min(UB,UB_{\mathrm{new}})\). Taking the minimum retains the tightest upper bound found for this maximization problem. During Pecci–Jenkins feasibility restoration, \(UB\) remains \(+\infty\); the planning-only objective is not used for convergence or as a substitute upper bound.
 
-The \(\(10^8\)\) cap and \(UB\) therefore serve different purposes. The cap is a heuristic bound on selected master variables added in response to unboundedness. \(UB\) is an objective bound maintained by the Benders algorithm; outside the Pecci–Jenkins initialization phase, it comes from solving the full master with the recourse-cost term included.
+The \(10^8\) cap and \(UB\) therefore serve different purposes. The cap is a heuristic bound on selected master variables added in response to unboundedness. \(UB\) is an objective bound maintained by the Benders algorithm; outside the Pecci–Jenkins initialization phase, it comes from solving the full master with the recourse-cost term included.
 
 **Solution returned from the master.** `process_planning_sol` packages the planning-variable values in a `PlanningSolution`. It returns initialized values without rounding integer or binary variables. An uninitialized variable may be omitted only if no operational subproblem requires it; a required linking variable that is missing or has no value causes an error. The separate `planning_cost = value(ePlanningNPV)` is planning-only NPV and excludes the \(\vartheta\)-weighted recourse-cost term. By contrast, \(UB\), when evaluated from `MasterObjective` under the full Benders objective, includes that term.
 
@@ -191,7 +191,7 @@ The variables are constrained rather than fixed, so the solver returns a dual fo
 **Recourse value and dual scaling.** The LP is solved with the objective divided by `BENDERS_RECOURSE_OBJECTIVE_SCALE = \(10^6\)` (restored afterwards), so every dual is multiplied back by that scale:
 
 $$
-\(Q_w(\bar x) = -\mathrm{OP\_NPV}^{*}, \qquad \lambda_i = -\pi_i \cdot 10^{6} = \partial \(Q_w\) / \partial \bar x_i
+Q_w(\bar{x})=-\mathrm{OP\_NPV}^{*},\qquad \lambda_i=-10^6\pi_i=\frac{\partial Q_w}{\partial\bar{x}_i}
 $$
 
 Here \(\pi_i\) is the solver's dual on row i (`process_subproblem_solution`, `subproblems.py:1458`). The sign flip converts a maximised NPV sensitivity into a cost sensitivity. Before a solution is accepted, `primal_violations` checks rows, bounds, linking equalities and integrality at \(10^{-7}\). On a violation `solve_original` retries with primal simplex, then interior point, on row-scaled clones.
@@ -211,14 +211,14 @@ Here \(\pi_i\) is the solver's dual on row i (`process_subproblem_solution`, `su
 | `operational_discrete_state` | Operational integer values z\*, with `fixed_z` only |
 | `is_mip`, `operational_mip_variables` | Whether non-linking discrete variables existed, and their names |
 
-**Infeasible subproblems and restoration.** If the LP is not optimal, `restoration.restore` solves a Phase-I problem on a clone. `add_slacks_to_subproblem` (`subproblems.py:151-292`) relaxes every active row with a finite bound, except the linking equalities, by a multiple of one shared variable \(s_{\max}\) ≥ 0, and moves variable bounds into rows so they can be relaxed too. Each row's multiple is its own scale `_constraint_scale`, so a unit of \(s_{\max}\) is comparable across rows:
+**Infeasible subproblems and restoration.** If the LP is not optimal, `restoration.restore` solves a Phase-I problem on a clone. `add_slacks_to_subproblem` (`subproblems.py:151-292`) relaxes every active row with a finite bound, except the linking equalities, by a multiple of one shared variable \(s_{\max}\geq0\), and moves variable bounds into rows so they can be relaxed too. Each row's multiple is its own scale `_constraint_scale`, so a unit of \(s_{\max}\) is comparable across rows:
 
 $$
 \min 10^{6} s_{\max}
 \quad \text{s.t.}\quad g_r(z) \le b_r + \sigma_r s_{\max} \forall r,\qquad x_L = \bar x, s_{\max} \ge 0
 $$
 
-where \(\sigma_r\) is the row scale. The solver runs primal simplex, then interior point if that fails, and `_certificate` recomputes the dual objective and checks primal residuals, dual signs, stationarity and complementarity at \(10^{-8}\). If both algorithms fail the certificate, a `RuntimeError` is raised. The result is `feasible = False` with ``theta_coeff` = 0`; section 5 gives the cut. If the minimum slack is at most `ZERO_SLACK_TOLERANCE = \(10^{-9}\)`, the original LP is re-solved and, if that succeeds, treated as feasible after all.
+where \(\sigma_r\) is the row scale. The solver runs primal simplex, then interior point if that fails, and `_certificate` recomputes the dual objective and checks primal residuals, dual signs, stationarity and complementarity at \(10^{-8}\). If both algorithms fail the certificate, a `RuntimeError` is raised. The result is `feasible = False` with `theta_coeff = 0`; section 5 gives the cut. If the minimum slack is at most `ZERO_SLACK_TOLERANCE = \(10^{-9}\)`, the original LP is re-solved and, if that succeeds, treated as feasible after all.
 
 Restoration raises `NotImplementedError` if a non-linking integer variable is still unfixed, because LP duals would then give an invalid feasibility cut.
 
@@ -229,14 +229,14 @@ All cuts are lower bounds on \(\vartheta_w\), written in units of S. They share 
 **Optimality cut.** \(Q_w\) is convex in \(x_L\), so its supporting hyperplane at \(\bar{x}\) under-estimates it everywhere:
 
 $$
-\(Q_w(x) \ge \(Q_w(\bar x) + \lambda_w^{\top}(x_L - \bar x)
+Q_w(x_L)\geq Q_w(\bar{x}_L)+\lambda_w^{\top}(x_L-\bar{x}_L)
 \Longrightarrow
-\vartheta_w \ge \frac{\(Q_w(\bar x)}{S} + \sum_i \frac{\lambda_{w,i}}{S}(x_i - \bar x_i)
+\vartheta_w\geq\frac{Q_w(\bar{x}_L)}{S}+\sum_{i\in I_w}\frac{\lambda_{w,i}}{S}(x_i-\bar{x}_i)
 $$
 
 The code adds `\(\kappa\)·ϑ_w − op_cost/S − Σ(\(\lambda_i\)/S)(x_i − \(\bar{x}\)_i) ≥ 0` with \(\kappa\) = ``theta_coeff``. The intercept is the solved `op_cost`, not a recomputed constant. Cuts with \(\kappa\) = 1 are added for every feasible result, in the relaxed phase and in the all-continuous case.
 
-**Feasibility cut.** Let \(\bar{s}\) be the optimal Phase-I slack at \(\bar{x}\) and \(\mu\) the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = \(10^6\)`. The minimum slack s(x) is convex and zero exactly when the subproblem is feasible, so
+**Feasibility cut.** Let \(\bar{s}\) be the optimal Phase-I slack at \(\bar{x}\) and \(\mu\) the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = \(10^6\)`. The minimum slack \(s(x)\) is convex and zero exactly when the subproblem is feasible, so
 
 $$
 s(x) \ge \bar s + \mu^{\top}(x_L - \bar x)
@@ -244,14 +244,14 @@ s(x) \ge \bar s + \mu^{\top}(x_L - \bar x)
 \bar s + \mu^{\top}(x_L - \bar x) \le 0 \quad \text{is necessary for feasibility}
 $$
 
-The worker multiplies the intercept and duals by \(c=\max(1,1/\bar{s})\) so a small violation is not ignored, and returns ``theta_coeff` = 0`. With \(\kappa\) = 0 the routine uses a scale of 1 and writes `c·\(\bar{s}\) + Σ \(\lambda_i\) (x_i − \(\bar{x}\)_i) ≤ 0` with no ϑ term. It goes into the same `BendersOptimalityCuts` list. In the relaxed phase, `benders()` also checks that a new restoration cut does not exclude an earlier LP-feasible sample and raises `RuntimeError` if it does.
+The worker multiplies the intercept and duals by \(c=\max(1,1/\bar{s})\) so a small violation is not ignored, and returns `theta_coeff = 0`. With \(\kappa=0\), the routine uses a scale of 1 and writes \(c\bar{s}+\sum_i\mu_i(x_i-\bar{x}_i)\leq0\), with no \(\vartheta\) term. It goes into the same `BendersOptimalityCuts` list. In the relaxed phase, `benders()` also checks that a new restoration cut does not exclude an earlier LP-feasible sample and raises `RuntimeError` if it does.
 
 **State-conditioned cuts for discrete linking variables.** Once the master's binary or integer variables are restored to their true domains, a dual cut computed at one integer pattern d is valid only at that pattern. `register_benders_state` stores per subproblem and iteration: `op_cost`, ``theta_coeff``, `continuous_lambda`, `continuous_point`, `master_discrete_state` and the recourse lower bound. `add_state_recourse_cut` (`algorithms.py:2017-2404`) then adds the cut only when the master's discrete variables equal d, using a binary z that is 0 exactly on a match:
 
 $$
 \vartheta_w \ge \frac{\(Q_w(\bar x) + \lambda^{\top}(x_{cont} - \bar x_{cont}) - Mz}{S},
 \qquad
-M = \max\bigl(0, \(Q_w(\bar x) + \max_{x \in [lb,ub]} \lambda^{\top}(x - \bar x) - \(L_w\)\bigr)
+M = \max\bigl(0, Q_w(\bar{x})+\max_{x\in[lb,ub]}\lambda^{\top}(x-\bar{x})-L_w\bigr)
 $$
 
 When \(z=1\) the right-hand side is at most \(L_w\)/S, so the cut is slack there. Variable bounds for M come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
@@ -316,9 +316,10 @@ The `pj_relax` label is the code's own; the document uses it without claiming th
 
 During the master's relaxed phase the worker overrides the method to `pj_relax` (`subproblems.py:851-855`), because only the LP relaxation gives a globally valid cut there.
 
-$$
-\text{fixed\_z cut:}\quad \(Q_w(x) \ge \(Q_w(\bar x \mid z^{*}) + \lambda^{\top}(x_L - \bar x) \quad \text{valid only for fixed } z^{*}
-$$
+$
+Q_w(x_L\mid z^*)\geq Q_w(\bar{x}_L\mid z^*)+\lambda^{\top}(x_L-\bar{x}_L)
+\qquad\text{(valid only for fixed }z^*\text{)}
+$
 
 Inferred from the formulas, not stated in the code: at other x the MIP may choose a different z with lower cost, so a fixed-z cut can overestimate the true MIP cost. The resulting UB should then be treated as heuristic for subproblems that contain operational integers, while `pj_relax` keeps UB valid at the price of a looser bound.
 
@@ -396,7 +397,7 @@ The original operational instance is not changed, so the `\(x=\bar{x}\)` solves 
 
 Setup key `RecourseBoundOBBT` (default `True`) controls whether step 3 of the bound sources (OBBT on the master) is tried before falling back to the 1e8 cap. OBBT costs one master solve per linking variable that has neither an explicit bound nor a capacity-constraint bound. Set it to `False` to skip those solves; those variables then take the 1e8 cap directly.
 
-Consequences to keep in mind. A variable on the \(\(10^8\)\) cap gives a valid but potentially very loose bound, so \(U_w\) can be large, \(L_w\) very negative, and \(\(M_w\)\) in the big-M formula below can grow accordingly. The log line `Using assumed Benders upper bound ... for <name>` marks each such variable, and the INFO line `Linking-variable bounds: N variables bounded (M with an assumed cap ...)` summarises them. Giving those variables real upper bounds in the master tightens everything downstream.
+Consequences to keep in mind. A variable on the \(10^8\) cap gives a valid but potentially very loose bound, so \(U_w\) can be large, \(L_w\) very negative, and \(\(M_w\)\) in the big-M formula below can grow accordingly. The log line `Using assumed Benders upper bound ... for <name>` marks each such variable, and the INFO line `Linking-variable bounds: N variables bounded (M with an assumed cap ...)` summarises them. Giving those variables real upper bounds in the master tightens everything downstream.
 
 **Variable bounds** (`get_continuous_variable_bounds`). For a continuous linking variable the bound is taken from the first source that gives one:
 
@@ -407,7 +408,7 @@ Consequences to keep in mind. A variable on the \(\(10^8\)\) cap gives a valid b
 
 The exact capacity-bound formula is not reproduced here; read `find_gridpath_capacity_upper_bound` in the code for it.
 
-**Dual-term bound.** `continuous_dual_term_upper_bound` bounds \(\lambda^{\top}(x-\bar{x})\) over the box of variable bounds, i.e. \(\sum_i\max\{\lambda_i(l_i-\bar{x}_i),\lambda_i(u_i-\bar{x}_i)\}\). This is the term that enters the big-M below.
+**Dual-term bound.** `continuous_dual_term_upper_bound` bounds \(\lambda^{\top}(x-\bar{x})\)\) over the box of variable bounds, i.e. \(\sum_i\max\{\lambda_i(l_i-\bar{x}_i),\lambda_i(u_i-\bar{x}_i)\}\). This is the term that enters the big-M below.
 
 **Big-M for state-conditioned cuts.**
 
