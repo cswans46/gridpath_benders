@@ -1530,25 +1530,16 @@ def process_subproblem_solution(
             subproblem_key=subproblem_key, dual_scale=retry_dual_scale,
         )
     return restoration_result
+
 def relax_operational_integrality(model):
-    """
-    Relax operational integer variables for LP-based recourse
-    lower-bound calculation.
-
-    Variable bounds are preserved.
-    """
-
-    for var in model.component_data_objects(
-        pyo.Var,
-        active=True,
-        descend_into=True,
-    ):
-
-        if var.is_binary():
-            var.domain = pyo.UnitInterval
-
-        elif var.is_integer():
+    for var in model.component_data_objects(pyo.Var, active=True, descend_into=True):
+        if var.fixed:
+            continue
+        if var.is_binary() or var.is_integer():
+            lb, ub = var.bounds        # effective bounds, including domain bounds
             var.domain = pyo.Reals
+            var.setlb(lb)
+            var.setub(ub)
 
 
 def calculate_recourse_upper_bound(
