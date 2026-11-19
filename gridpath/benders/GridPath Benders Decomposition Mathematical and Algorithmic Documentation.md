@@ -143,12 +143,12 @@ The following Pyomo `ConstraintList` components are populated as the algorithm g
 - `BendersOptimalityCuts`: continuous recourse optimality cuts and, in the current implementation, feasibility cuts.
 - `BendersFeasibilityCuts`: reserved feasibility-cut container (not the destination used by the shared cut routine described in section 5).
 - `BendersDiscreteOptimalityCuts`: state-conditioned optimality cuts for discrete master states.
-- `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq \(L_w\)/S\).
+- `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq L_w/S\).
 
 **Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` \(U_w\), an upper bound on its operational NPV. Because \(Q_w\) = −NPV, the master receives
 
 $$
-\(L_w\) = -\(U_w\), \qquad \vartheta_w \ge \(L_w\) / S \quad (\text{replaces } \vartheta_w \ge 0)
+L_w = -U_w, \qquad \vartheta_w \ge \(L_w\) / S \quad (\text{replaces } \vartheta_w \ge 0)
 $$
 
 The LP that produces \(U_w\) is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
@@ -161,7 +161,7 @@ The LP that produces \(U_w\) is solved over the whole operational model with the
 2. if the result is unbounded, set an upper bound of `BENDERS_MASTER_VARIABLE_CAP = 1e8` on every non-integer planning variable that has none, and re-solve (a heuristic for build variables that only appear in cuts);
 3. if it still fails, raise `RuntimeError`, writing the LP to `$GRIDPATH_BENDERS_FAILURE_LP` first if that variable is set.
 
-`process_planning_sol` returns a `PlanningSolution` with `values` (every planning variable, not rounded) and `planning_cost = value(ePlanningNPV)`, which excludes the ϑ term. The upper bound is `UB = value(MasterObjective)`; `benders()` keeps `\(UB=\min(UB,UB_{\mathrm{new}})\)`, valid because cuts only tighten a maximisation master.
+`process_planning_sol` returns a `PlanningSolution` with `values` (every planning variable, not rounded) and `planning_cost = value(ePlanningNPV)`, which excludes the ϑ term. The upper bound is `UB = value(MasterObjective)`; `benders()` keeps `UB = min(UB, UB_new)`, valid because cuts only tighten a maximisation master.
 
 Cuts are appended to the model and the whole instance is re-passed to the solver each iteration; `planning.py` has no warm-start or incremental-cut logic (inferred for the native wrappers, which were not checked for warm starts).
 
