@@ -2567,7 +2567,9 @@ def solve(instance,
             # Select which method to employ in the presence of binary operational non-linking variables
             "OperationalDiscreteMethod": parsed_arguments.benders_operational_discrete_method,
             # Employ which program to use for stabilisation (l1,l2, or none for P&J-style regularisation).
-            "StabilizationMethod": parsed_arguments.benders_stabilization_method
+            "StabilizationMethod": parsed_arguments.benders_stabilization_method,
+            # Employ PJ style initialization (skips endogenous calculation of upper bound for first subproblem solve).
+            "UsePjInitialization": parsed_arguments.benders_use_pj_initialization,
         }
 
         # Optional override of the Benders setup, e.g. for permutation tests:

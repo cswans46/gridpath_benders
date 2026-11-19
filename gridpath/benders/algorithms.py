@@ -317,6 +317,32 @@ def benders(
         v for v in planning_variables
         if v.is_integer() and not v.is_binary()
     ]
+    
+    # ---------------------------------------------------------
+    # P&J-style initialization without a global recourse bound
+    # ---------------------------------------------------------
+
+    linking_variable_names = set(linking_vars)
+
+    has_discrete_linking_vars = any(
+        var.name in linking_variable_names
+        for var in binary_vars + integer_vars
+    )
+
+    use_pj_initialization = (
+        setup.get("UsePjInitialization", True)
+        and not has_discrete_linking_vars
+    )
+
+    if (
+        setup.get("UsePjInitialization", True)
+        and has_discrete_linking_vars
+    ):
+        logger.warning(
+            "UsePjInitialization requested, but discrete linking "
+            "variables are present. Retaining the global recourse "
+            "bound calculation for this run."
+        )
 
     # "none" assumes continuous linking variables. If discrete ones exist,
     # fall back to P&J (relaxation, then state cuts) instead of failing.
@@ -478,6 +504,7 @@ def benders(
                 gams_options if is_gams else None,
                 startup_semaphore,
                 linking_var_bounds,
+                not use_pj_initialization,
             ),
         )
 
@@ -507,9 +534,10 @@ def benders(
             result["linking_vars_by_type"]
         )
 
-        recourse_cost_lower_bounds[key] = -float(
-            result["recourse_upper_bound"]
-        )
+        if result["recourse_upper_bound"] is not None:
+            recourse_cost_lower_bounds[key] = -float(
+                result["recourse_upper_bound"]
+            )
 
         if requested_master_method in ("djc", "linearized") and (
             requested_master_method == "djc" or use_native_djc
@@ -533,14 +561,34 @@ def benders(
 
     # A maximized operational NPV has an LP-relaxation upper bound. Its
     # negative is a valid lower bound for the net-operating-cost theta.
-    set_recourse_cost_lower_bounds(
-        planning_problem,
-        recourse_cost_lower_bounds,
-    )
+    if not use_pj_initialization:
+        set_recourse_cost_lower_bounds(
+            planning_problem,
+            recourse_cost_lower_bounds,
+        )
 
     # ---------------------------------------------------------
     # Initially solve planning problem
     # ---------------------------------------------------------
+
+    # Preserve the original master objective.
+    original_master_objective_expr = planning_problem.MasterObjective.expr
+
+    pj_initialization_complete = not use_pj_initialization
+
+    if use_pj_initialization:
+        # Keep the planning-only objective active during initialization
+        # and any necessary feasibility-restoration iterations.
+        planning_problem.MasterObjective.set_value(
+            planning_problem.ePlanningNPV
+        )
+
+        # The default theta >= 0 constraint is not necessarily valid:
+        # net operating costs can be negative when carbon-credit revenue
+        # exceeds operating costs. Preserve an explicitly supplied
+        # operating-cost lower bound, but remove the default otherwise.
+        if not hasattr(planning_problem, "eLowerBoundOperatingCost"):
+            planning_problem.ThetaLowerBound.clear()
 
     planning_sol, master_obj, planning_results = solve_planning_problem(
         planning_problem,
@@ -548,7 +596,8 @@ def benders(
         optimiser
     )
 
-    UB = master_obj
+    # The planning-only objective is NOT a valid Benders upper bound.
+    UB = math.inf if use_pj_initialization else master_obj
     LB = -math.inf
 
     LB_hist = [LB]
@@ -961,7 +1010,65 @@ def benders(
                 # after the incumbent check
                 subop_sol_best = dict(subop_sol)
 
+        # ---------------------------------------------------------
+        # Complete P&J-style feasibility restoration
+        # ---------------------------------------------------------
 
+        if use_pj_initialization and not pj_initialization_complete:
+
+            all_subproblems_feasible = (
+                set(subop_sol) == set(worker_keys)
+                and all(
+                    result["feasible"]
+                    for result in subop_sol.values()
+                )
+            )
+
+            if all_subproblems_feasible:
+
+                # Every subproblem must have valid optimality-cut data
+                # before the full theta-dependent objective is restored.
+                for key, result in subop_sol.items():
+
+                    theta_coeff = float(
+                        result.get("theta_coeff", 1.0)
+                    )
+
+                    if not math.isfinite(theta_coeff) or theta_coeff <= 1e-12:
+                        raise RuntimeError(
+                            "Cannot restore the Benders master objective: "
+                            f"subproblem '{key}' returned an invalid "
+                            f"theta coefficient ({theta_coeff})."
+                        )
+
+                    if (
+                        result.get("continuous_lambda") is None
+                        or result.get("continuous_point") is None
+                    ):
+                        raise RuntimeError(
+                            "Cannot restore the Benders master objective: "
+                            f"subproblem '{key}' has no valid linking "
+                            "dual information for its optimality cut."
+                        )
+
+                logger.info(
+                    "P&J initialization: all operational subproblems are "
+                    "feasible and have valid optimality-cut data. "
+                    "Restoring the full Benders master objective."
+                )
+
+                planning_problem.MasterObjective.set_value(
+                    original_master_objective_expr
+                )
+
+                pj_initialization_complete = True
+
+            else:
+                logger.info(
+                    "P&J initialization: at least one operational subproblem "
+                    "is infeasible. Continuing feasibility restoration."
+                )
+        
         # ---------------------------------------------------------
         # Resolve master
         # ---------------------------------------------------------
@@ -972,14 +1079,15 @@ def benders(
                 continue
             evaluating_seed = False
 
-        unst_planning_sol, UB_new,planning_results = solve_planning_problem(
+        unst_planning_sol, UB_new, planning_results = solve_planning_problem(
             planning_problem,
             planning_variable_names,
             optimiser
         )
 
-        # Master objective is an UPPER bound for maximization
-        UB = min(UB, UB_new)
+        # Only the full Benders master objective provides a valid upper bound.
+        if pj_initialization_complete:
+            UB = min(UB, UB_new)
 
         # ---------------------------------------------------------
         # Calculate Convergence
@@ -1909,6 +2017,28 @@ def add_relaxed_benders_cut(
         - sum(lambda_i * (x_i - xbar_i))
         >= 0
     """
+    
+    theta_coeff = float(theta_coeff)
+    op_cost = float(op_cost)
+
+    if not math.isfinite(theta_coeff) or theta_coeff < 0:
+        raise ValueError(
+            f"Invalid theta coefficient for subproblem "
+            f"'{subproblem_key}': {theta_coeff}."
+        )
+
+    if not math.isfinite(op_cost):
+        raise ValueError(
+            f"Non-finite operational cost for subproblem "
+            f"'{subproblem_key}': {op_cost}."
+        )
+
+    if theta_coeff > 1e-12:
+        if benders_lambda is None or benders_point is None:
+            raise ValueError(
+                f"Subproblem '{subproblem_key}' cannot generate "
+                "an optimality cut: missing duals or linking point."
+            )
 
     theta = planning_problem.vTHETA[subproblem_key]
 

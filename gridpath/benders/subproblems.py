@@ -594,6 +594,7 @@ def benders_subproblem_worker(
     solver_options=None,
     startup_semaphore=None,
     linking_var_bounds=None,
+    calculate_global_recourse_bound=True,
 ):
     """
     Entry point of a persistent Benders worker process.
@@ -618,6 +619,7 @@ def benders_subproblem_worker(
             solver_options=solver_options,
             startup_guard=guard,
             linking_var_bounds=linking_var_bounds,
+            calculate_global_recourse_bound=calculate_global_recourse_bound,
         )
     finally:
         guard.release()
@@ -635,6 +637,7 @@ def _benders_subproblem_worker_impl(
     solver_options=None,
     startup_guard=None,
     linking_var_bounds=None,
+    calculate_global_recourse_bound=True,
 ):
     """Build and serve one persistent operational Benders subproblem.
 
@@ -706,15 +709,18 @@ def _benders_subproblem_worker_impl(
     )
 
     # ================================================================
-    # Recourse lower bound.
+    # Global recourse upper bound
     # ================================================================
-    
-    recourse_ub = calculate_recourse_upper_bound(
-        instance,
-        optimiser,
-        linking_var_names=present_linking_vars,
-        linking_var_bounds=linking_var_bounds,
-    )
+
+    recourse_ub = None
+
+    if calculate_global_recourse_bound:
+        recourse_ub = calculate_recourse_upper_bound(
+            instance,
+            optimiser,
+            linking_var_names=present_linking_vars,
+            linking_var_bounds=linking_var_bounds,
+        )
 
     # ================================================================
     # Dual suffix.

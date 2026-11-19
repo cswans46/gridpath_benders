@@ -229,6 +229,12 @@ def get_benders_flag_parser():
         help="The stabilization method for Benders decomposition (l1, l2, or none). Defaults to 'none'. 'none' without stabparam means no stabilisation. 'none' with stabparam means P&J-style regularisation.",
     )
     parser.add_argument(
+        "--benders_use_pj_initialization",
+        default=True,
+        type=str2bool,
+        help="Flag to enable PJ style initialization for Benders decomposition (skips endogenous calculation of upper bound for first subproblem solve). Defaults to True.",
+    )
+    parser.add_argument(
         "--benders_operational_solver",
         default="automatic",
         choices=("automatic", "interior_point", "primal_simplex"),
