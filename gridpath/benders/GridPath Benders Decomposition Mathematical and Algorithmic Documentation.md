@@ -18,7 +18,7 @@ The document covers the Benders code in `gridpath/benders/`, its entry points in
 | `benders/restoration.py` | Phase-I feasibility restoration with a dual certificate |
 | `benders/regularization.py` | Level-set (stabilisation) problem, L1 and L2 |
 | `benders/operational_model_creation.py` | Operational model and linking-variable identification |
-| `benders/soc_allocation.py` | State-of-charge allocation for yearly-balanced storage |
+| `benders/soc_allocation.py` | Shared SOC allocation targets and variables used by master and operational subproblems |\n| `system/policy/benders_policy_constraint.py` | Master-side policy allocation constraints, including cyclic storage SOC chaining and capacity limits |
 | `benders/{gurobi,mosek,gams}_*.py` | Solver wrappers (MOSEK adds native L2 cones and disjunctive constraints) |
 
 ## 2. Problem structure and notation
@@ -50,7 +50,9 @@ $$
 - the variables inside the investment expressions `Capacity_MW`, `Tx_Min_Capacity_MW`, `Tx_Max_Capacity_MW`, `TxNewLin_Capacity_MW` and `Energy_Storage_Capacity_MWh`, which are the build and capacity decisions;
 - the **policy allocation variables**: the master splits each system-wide target (carbon cap, period energy target, performance standards, carbon credits, transmission targets, fuel burn and capacity-factor limits) into one budget per subproblem. The subproblem reads its budget in place of the original target when `_is_benders_subproblem` is true.
 
-For yearly-balanced storage, `soc_allocation.py` adds start and end state-of-charge allocations (in units of 1000 MWh) so that the first and last timepoints of each subproblem are fixed by master variables, which lets the master chain subproblems together (inferred: the chaining constraint lives in `benders_policy_constraint.py`, which was not read).
+For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem. The allocations are expressed in units of 1000 MWh (`STOR_SOC_ALLOCATION_UNIT_MWH = 1000.0`).
+
+The master-side constraints are implemented in `gridpath/system/policy/benders_policy_constraint.py`. For each project, balancing type, period and subproblem, `Stor_SOC_Chain_Constraint` equates the end-SOC allocation of the current subproblem to the start-SOC allocation of the next subproblem. Subproblems are sorted numerically, and the final subproblem is connected back to the first, so the sequence is cyclic. `Stor_SOC_Capacity_Constraint` also limits each allocated start SOC, converted to MWh, to the project's energy-storage capacity. These two constraints are added to the master only; the operational models receive the corresponding allocation variables through `add_stor_soc_allocation_components` in `soc_allocation.py`.
 
 Each worker keeps only the linking variables that exist in its model (`classify_linking_vars`) and splits them into continuous, binary and integer sets.
 
