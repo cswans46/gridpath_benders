@@ -555,3 +555,63 @@ Everything below comes from reading the code. **None of it was run**, and items 
 
 - Memory holds all N operational models for the whole run (section 10).
 - This text describes the code at HEAD of `new_gridpath_w_BD_imp` plus my reporting and efficiency patches where stated.
+
+
+## 14. References
+
+The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.
+
+### Benders decomposition and energy-system planning
+
+1. **Benders, J. F. (1962).** “Partitioning procedures for solving mixed-variables programming problems.” *Numerische Mathematik*, 4, 238–252. [https://doi.org/10.1007/BF01386316](https://doi.org/10.1007/BF01386316).  
+   The original Benders decomposition framework: fixing complicating (master) variables, solving the resulting subproblem, and using dual information to generate optimality and feasibility cuts.
+
+2. **Geoffrion, A. M. (1972).** “Generalized Benders decomposition.” *Journal of Optimization Theory and Applications*, 10, 237–260. [https://doi.org/10.1007/BF00934810](https://doi.org/10.1007/BF00934810).  
+   Extends the classical framework beyond linear subproblems and provides a broader duality-based foundation for decomposition.
+
+3. **Jacobson, A., Pecci, F., Sepulveda, N., Xu, Q., & Jenkins, J. D. (2024; first published online 2023).** “A computationally efficient Benders decomposition for energy systems planning problems with detailed operations and time-coupling constraints.” *INFORMS Journal on Optimization*, 6(1), 32–45. [https://doi.org/10.1287/ijoo.2023.0005](https://doi.org/10.1287/ijoo.2023.0005).  
+   The key reference for decomposing energy-system planning from detailed operational subproblems, parallel subproblem solution, and master-side policy-budgeting variables. The article was published online in August 2023 and appears in the 2024 journal issue.
+
+4. **Pecci, F., & Jenkins, J. D. (2025).** “Regularized Benders decomposition for high performance capacity expansion models.” *IEEE Transactions on Power Systems*, 40(4), 3105–3116. [https://doi.org/10.1109/TPWRS.2025.3526413](https://doi.org/10.1109/TPWRS.2025.3526413).  
+   The principal reference for the Pecci–Jenkins level-set approach in large-scale capacity-expansion models, including time-coupling constraints, storage-state linking, parallel operational subproblems, and regularization in mixed-integer planning. The current implementation adapts this family of methods; its exact code paths and options are documented in sections 6–7.
+
+### Feasibility cuts, discrete decisions, and big-M formulations
+
+5. **Codato, G., & Fischetti, M. (2006).** “Combinatorial Benders' cuts for mixed-integer linear programming.” *Operations Research*, 54(4), 756–766. [https://doi.org/10.1287/opre.1060.0286](https://doi.org/10.1287/opre.1060.0286).  
+   A central reference for combinatorial feasibility cuts. Their method derives inequalities from irreducible infeasible subsystems and is specifically motivated by avoiding dependence on arbitrary big-M coefficients. The no-good feasibility cuts in this code exclude an infeasible discrete linking assignment; they are related combinatorial cuts, but are not claimed to reproduce the full Codato–Fischetti IIS procedure.
+
+6. **Hooker, J. N., & Ottosson, G. (2003).** “Logic-based Benders decomposition.” *Mathematical Programming*, 96, 33–60. [https://doi.org/10.1007/s10107-003-0375-9](https://doi.org/10.1007/s10107-003-0375-9).  
+   Develops Benders cuts based on logical inference rather than only LP duality. Relevant background for feasibility logic and cuts that exclude discrete assignments.
+
+7. **Hooker, J. N. (2007).** “Planning and scheduling by logic-based Benders decomposition.” *Operations Research*, 55(3), 588–602. [https://doi.org/10.1287/opre.1060.0371](https://doi.org/10.1287/opre.1060.0371).  
+   Further develops logic-based Benders methods for mixed-integer planning and scheduling.
+
+8. **Magnanti, T. L., & Wong, R. T. (1981).** “Accelerating Benders decomposition: Algorithmic enhancement and model selection criteria.” *Operations Research*, 29(3), 464–484. [https://doi.org/10.1287/opre.29.3.464](https://doi.org/10.1287/opre.29.3.464).  
+   Foundational work on strengthening Benders cuts by selecting among alternative dual optima (Pareto-optimal cuts) and on the importance of master formulation quality.
+
+9. **Balas, E. (1979).** “Disjunctive programming.” In *Annals of Discrete Mathematics*, Vol. 5, pp. 3–51. [https://doi.org/10.1016/S0167-5060(08)70342-X](https://doi.org/10.1016/S0167-5060(08)70342-X).  
+   Foundational treatment of disjunctive programming and convexification of unions of polyhedra, which provides the mathematical background for expressing logical alternatives as disjunctions.
+
+10. **MOSEK ApS.** *MOSEK Optimizer API Documentation*, section 6.9, “Disjunctive constraints,” and section 13.4.5, “Disjunctive constraints.” [DJC formulation documentation](https://docs.mosek.com/latest/pythonapi/tutorial-djc-optimizer.html) · [MIP and big-M discussion](https://docs.mosek.com/latest/capi/mip-optimizer.html).  
+    The solver-level reference for the native DJC interface used by the MOSEK integration, and for how DJCs may be transformed internally into mixed-integer formulations, including big-M formulations. These are software documentation references rather than journal articles.
+
+**Big-M interpretation in this implementation.** The state-conditioned optimality cuts use a mismatch indicator and a calculated (M) based on recourse lower bounds and finite bounds on the continuous linking variables (section 6). This is distinct from the combinatorial no-good feasibility cut, which excludes a discrete assignment without using a recourse-cost big-M. The Codato–Fischetti and Hooker references provide the relevant background for these discrete-cut ideas; they should not be read as asserting that every cut here is identical to those papers' constructions.
+
+### Stabilization and level-set methods
+
+11. **Ruszczyński, A. (1986).** “A regularized decomposition method for minimizing a sum of polyhedral functions.” *Mathematical Programming*, 35(3), 309–333. [https://doi.org/10.1007/BF01580883](https://doi.org/10.1007/BF01580883).  
+    A foundational regularized decomposition method for convex piecewise-linear value functions, using a quadratic regularizing term in the master problem.
+
+12. **Lemaréchal, C., Nemirovskii, A., & Nesterov, Y. (1995).** “New variants of bundle methods.” *Mathematical Programming*, 69(1–3), 111–147. [https://doi.org/10.1007/BF01585555](https://doi.org/10.1007/BF01585555).  
+    General background on bundle and level methods for nonsmooth convex optimization, relevant to stabilization of cutting-plane algorithms.
+
+13. **Linderoth, J., & Wright, S. (2003).** “Decomposition algorithms for stochastic programming on a computational grid.” *Computational Optimization and Applications*, 24, 207–250. [https://doi.org/10.1023/A:102181592cén](https://doi.org/10.1023/A:102181592cén).  
+    Discusses parallel master–worker decomposition and trust-region stabilization for stochastic programming. *(Check DOI before relying on this citation; the publisher record should be used for the final DOI.)*
+
+14. **Zverovich, V., Fábián, C. I., Ellison, E. F. D., & Mitra, G. (2012).** “A computational study of a solver system for processing two-stage stochastic LPs with enhanced Benders decomposition.” *Mathematical Programming Computation*, 4, 211–238. [https://doi.org/10.1007/s12532-012-0038-z](https://doi.org/10.1007/s12532-012-0038-z).  
+    Computational comparison of regularized decomposition, level methods, and trust-region stabilization within Benders decomposition.
+
+15. **Göke, L., Schmidt, F., & Kendziorski, M. (2024).** “Stabilized Benders decomposition for energy planning under climate uncertainty.” *European Journal of Operational Research*, 316(1), 183–199. [https://doi.org/10.1016/j.ejor.2024.01.016](https://doi.org/10.1016/j.ejor.2024.01.016).  
+    An energy-planning application of stabilized Benders decomposition under climate uncertainty.
+
+**How these references relate to the implemented L1/L2 options.** In `regularization.py`, the level-set constraint restricts the master objective to remain within a specified fraction of the current optimality gap. The optional L1 and L2 secondary objectives then select a nearby trial point using, respectively, a weighted absolute-deviation objective and a weighted squared-deviation objective over the selected continuous linking variables. The L2 objective is also represented by an epigraph and rotated quadratic cone in the MOSEK path. Pecci and Jenkins (2025) is the closest application-specific reference for level-set regularization in capacity-expansion Benders; Ruszczyński (1986), Lemaréchal et al. (1995), Linderoth and Wright (2003), and Zverovich et al. (2012) provide broader background on regularized decomposition, bundle/level methods, and trust-region approaches. The particular L1/L2 objective variants in this repository are implementation choices and should not be attributed as exact formulations from any one of these papers.
