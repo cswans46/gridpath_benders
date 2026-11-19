@@ -579,17 +579,25 @@ def write_model_inputs(
         if prj in active_projects
     ]
 
-    prj_contributions = False
-    for ip, prj, min_pwr, max_pwr, min_cap, max_cap in project_contributions:
-        if (
-            min_pwr is not None
-            or max_pwr is not None
-            or min_cap is not None
-            or max_cap is not None
-        ):
-            prj_contributions = True
+    prj_contributions = any(
+        min_pwr is not None
+        or min_cap is not None
+        or max_pwr is not None
+        or max_cap is not None
+        for ip, prj, min_pwr, min_cap, max_pwr, max_cap
+        in project_contributions
+    )
+    
+    contributions_file = os.path.join(
+        inputs_dir,
+        "instantaneous_penetration_requirement_project_contributions.tab",
+    )
+
+    if os.path.exists(contributions_file):
+        os.remove(contributions_file)
 
     if prj_contributions:
+        
         with open(
             os.path.join(
                 inputs_dir,
@@ -600,7 +608,6 @@ def write_model_inputs(
         ) as prj_file:
             writer = csv.writer(prj_file, delimiter="\t", lineterminator="\n")
 
-            # Write header
             writer.writerow(
                 [
                     "instantaneous_penetration_zone",
@@ -611,13 +618,15 @@ def write_model_inputs(
                     "max_ratio_capacity_req",
                 ]
             )
-            for ip, prj, min_pwr, max_pwr, min_cap, max_cap in project_contributions:
+
+            for ip, prj, min_pwr, min_cap, max_pwr, max_cap in project_contributions:
                 if min_pwr is None:
                     min_pwr = "."
-                if max_pwr is None:
-                    max_pwr = "."
                 if min_cap is None:
                     min_cap = "."
+                if max_pwr is None:
+                    max_pwr = "."
                 if max_cap is None:
                     max_cap = "."
-                writer.writerow([ip, prj, min_pwr, max_pwr, min_cap, max_cap])
+
+                writer.writerow([ip, prj, min_pwr, min_cap, max_pwr, max_cap])
