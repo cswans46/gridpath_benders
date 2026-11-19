@@ -48,7 +48,34 @@ $$
 **Linking variables.** `define_linking_vars` (`operational_model_creation.py:15-86`) collects two groups:
 
 - the variables inside the investment expressions `Capacity_MW`, `Tx_Min_Capacity_MW`, `Tx_Max_Capacity_MW`, `TxNewLin_Capacity_MW` and `Energy_Storage_Capacity_MWh`, which are the build and capacity decisions;
-- the **policy allocation variables**: the master splits each system-wide target (carbon cap, period energy target, performance standards, carbon credits, transmission targets, fuel burn and capacity-factor limits) into one budget per subproblem. The subproblem reads its budget in place of the original target when `_is_benders_subproblem` is true.
+- the **policy allocation variables**: the master splits each system-wide target into budgets for individual subproblems. The components explicitly treated as policy-budget/linking variables by `define_linking_vars` in `operational_model_creation.py` are listed below. A component is included only when it exists on the model:
+  - **Emissions and energy targets**
+    - `CARBON_CAP_ALLOCATION`
+    - `PERIOD_ENERGY_TARGET_ALLOCATION`
+  - **Performance standards**
+    - `PERFORMANCE_STANDARD_MWH_ALLOCATION`
+    - `PERFORMANCE_STANDARD_MW_ALLOCATION`
+  - **Carbon-credit budgets and limits**
+    - `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`
+    - `BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION`
+    - `BENDERS_CARBON_CREDIT_GENERATED_TOTAL`
+    - `BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION`
+  - **Transmission targets**
+    - `TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION`
+    - `TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION`
+    - `TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION`
+    - `TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION`
+  - **Fuel-burn limits**
+    - `FUEL_BURN_MIN_ABS_ALLOCATION`
+    - `FUEL_BURN_MAX_ABS_ALLOCATION`
+  - **Capacity-factor limits**
+    - `CAP_FACTOR_MIN_ALLOCATION`
+    - `CAP_FACTOR_MAX_ALLOCATION`
+  - **Yearly storage state-of-charge allocations**
+    - `STOR_START_SOC_ALLOCATION`
+    - `STOR_END_SOC_ALLOCATION`
+
+  The operational subproblem receives the corresponding allocation variables and uses its own subproblem's budget in place of the system-wide target where the policy module supports this substitution.
 
 For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem. The allocations are expressed in units of 1000 MWh (`STOR_SOC_ALLOCATION_UNIT_MWH = 1000.0`).
 
