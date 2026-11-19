@@ -90,26 +90,37 @@ Each worker keeps only the linking variables that exist in its model (`classify_
 The master is the GridPath planning model with its NPV objective replaced by a version that carries one cost variable per subproblem. `add_approximate_variable_cost` (`planning.py:189-213`) deactivates `NPV`, stores its expression as `ePlanningNPV`, and defines `MasterObjective`:
 
 $$
-\begin{aligned}
-\max_{x,\vartheta}\quad
-& \mathrm{NPV}_{\mathrm{plan}}(x)
-- S\sum_{w\in W}\vartheta_w \\
-\text{s.t.}\quad
-& x\in X_{\mathrm{master}} \\
-& \vartheta_w\geq \frac{L_w}{S}
-&& \forall w\in W \\
-& \vartheta_w\geq
+\max_{x,\vartheta}
+\quad \mathrm{NPV}_{\mathrm{plan}}(x)
+- S\sum_{w\in W}\vartheta_w
+$$
+
+subject to
+
+$$
+x\in X_{\mathrm{master}}
+$$
+
+$$
+\vartheta_w\geq \frac{L_w}{S}
+\qquad \forall w\in W
+$$
+
+$$
+\vartheta_w\geq
 \frac{Q_w(\bar{x}^{k})}{S}
 +\sum_{i\in I_w^{k}}
 \frac{\lambda_{w,i}^{k}}{S}
 (x_i-\bar{x}_i^{k})
-&& \forall w\in W,\ k\in K_w^{\mathrm{opt}} \\
-& c_w^{k}\bar{s}_w^{k}
+\qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
+$$
+
+$$
+c_w^{k}\bar{s}_w^{k}
 +\sum_{i\in I_w^{k}}
 \mu_{w,i}^{k}(x_i-\bar{x}_i^{k})
 \leq 0
-&& \forall w\in W,\ k\in K_w^{\mathrm{feas}}
-\end{aligned}
+\qquad \forall w\in W,\ k\in K_w^{\mathrm{feas}}
 $$
 
 Discounting and period weights are whatever the original GridPath `NPV` expression contains; `planning.py` adds none. The helper refuses to run without an `NPV` objective and does nothing if `vTHETA` already exists.
