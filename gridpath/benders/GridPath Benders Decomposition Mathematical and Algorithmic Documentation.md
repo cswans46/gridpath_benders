@@ -605,7 +605,7 @@ The references below cover the mathematical foundations of Benders decomposition
 12. **Lemaréchal, C., Nemirovskii, A., & Nesterov, Y. (1995).** “New variants of bundle methods.” *Mathematical Programming*, 69(1–3), 111–147. [https://doi.org/10.1007/BF01585555](https://doi.org/10.1007/BF01585555).  
     General background on bundle and level methods for nonsmooth convex optimization, relevant to stabilization of cutting-plane algorithms.
 
-13. **Linderoth, J., & Wright, S. (2003).** “Decomposition algorithms for stochastic programming on a computational grid.” *Computational Optimization and Applications*, 24, 207–250. [https://doi.org/10.1023/A:102181592cén](https://doi.org/10.1023/A:102181592cén).  
+13. **Linderoth, J., & Wright, S. (2003).** “Decomposition algorithms for stochastic programming on a computational grid.” *Computational Optimization and Applications*, 24, 207–250. [Author's PDF](https://jlinderoth.github.io/papers/Linderoth-Wright-03.pdf).  
     Discusses parallel master–worker decomposition and trust-region stabilization for stochastic programming. *(Check DOI before relying on this citation; the publisher record should be used for the final DOI.)*
 
 14. **Zverovich, V., Fábián, C. I., Ellison, E. F. D., & Mitra, G. (2012).** “A computational study of a solver system for processing two-stage stochastic LPs with enhanced Benders decomposition.” *Mathematical Programming Computation*, 4, 211–238. [https://doi.org/10.1007/s12532-012-0038-z](https://doi.org/10.1007/s12532-012-0038-z).  
