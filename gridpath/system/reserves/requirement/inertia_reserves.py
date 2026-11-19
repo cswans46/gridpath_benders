@@ -503,10 +503,27 @@ def write_model_inputs(
     # Project contributions to the magnitude requirement
     project_contributions = project_contributions.fetchall()
 
-    prj_contributions = False
-    for ba, prj, pwr, cap in project_contributions:
-        if pwr is not None or cap is not None:
-            prj_contributions = True
+    # Retain only projects included in the current model instance.
+    # In Benders, projects.tab contains the filtered PROJECTS set.
+    projects_file = os.path.join(inputs_dir, "projects.tab")
+
+    with open(projects_file, "r", newline="") as f:
+        projects_reader = csv.DictReader(f, delimiter="\t")
+        active_projects = {
+            row["project"]
+            for row in projects_reader
+        }
+
+    project_contributions = [
+        (ba, prj, pwr, cap)
+        for ba, prj, pwr, cap in project_contributions
+        if prj in active_projects
+    ]
+
+    prj_contributions = any(
+        pwr is not None or cap is not None
+        for ba, prj, pwr, cap in project_contributions
+    )
 
     if prj_contributions:
         with open(

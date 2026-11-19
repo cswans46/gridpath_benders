@@ -69,7 +69,6 @@ def add_model_components(
         default=Infinity,
     )
 
-
 def load_model_data(
     m,
     d,
@@ -82,30 +81,40 @@ def load_model_data(
     stage,
 ):
     """
-
-    :param m:
-    :param d:
-    :param data_portal:
-    :param scenario_directory:
-    :param subproblem:
-    :param stage:
-    :return:
+    Load performance standard inputs.
     """
 
-    data_portal.load(
-        filename=os.path.join(
-            scenario_directory,
-            weather_iteration,
-            hydro_iteration,
-            availability_iteration,
-            subproblem,
-            stage,
-            "inputs",
-            "performance_standard.tab",
-        ),
-        index=m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD,
-        param=(m.performance_standard_tco2_per_mwh, m.performance_standard_tco2_per_mw),
+    performance_standard_file = os.path.join(
+        scenario_directory,
+        weather_iteration,
+        hydro_iteration,
+        availability_iteration,
+        subproblem,
+        stage,
+        "inputs",
+        "performance_standard.tab",
     )
+
+    # Check whether the file contains any data rows.
+    # A header-only file is valid when no performance standard
+    # applies during the current subproblem's periods.
+    with open(performance_standard_file, "r", newline="") as f:
+        reader = csv.DictReader(f, delimiter="\t")
+        has_data = next(reader, None) is not None
+
+# Must control for this as 2025 and 2030 Benders subproblems will not have a performance standard.
+    if not has_data:
+        return
+
+    data_portal.load(
+        filename=performance_standard_file,
+        index=m.PERFORMANCE_STANDARD_ZONE_PERIODS_WITH_PERFORMANCE_STANDARD,
+        param=(
+            m.performance_standard_tco2_per_mwh,
+            m.performance_standard_tco2_per_mw,
+        ),
+    )
+
 
 def _performance_standard_zone_periods_init(m,
                                   scenario_directory,

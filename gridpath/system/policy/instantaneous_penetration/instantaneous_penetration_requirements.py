@@ -492,6 +492,16 @@ def write_model_inputs(
         stage,
         "inputs",
     )
+    
+    # Retain only projects included in the current model instance.
+    projects_file = os.path.join(inputs_dir, "projects.tab")
+
+    with open(projects_file, "r", newline="") as f:
+        projects_reader = csv.DictReader(f, delimiter="\t")
+        active_projects = {
+            row["project"]
+            for row in projects_reader
+        }
 
     # Write the by-timepoint requirement file if by-tmp requirement specified
     timepoint_req = tmp_req.fetchall()
@@ -561,6 +571,13 @@ def write_model_inputs(
 
     # Project contributions to the magnitude requirement
     project_contributions = project_contributions.fetchall()
+
+    project_contributions = [
+        (ip, prj, min_pwr, min_cap, max_pwr, max_cap)
+        for ip, prj, min_pwr, min_cap, max_pwr, max_cap
+        in project_contributions
+        if prj in active_projects
+    ]
 
     prj_contributions = False
     for ip, prj, min_pwr, max_pwr, min_cap, max_cap in project_contributions:

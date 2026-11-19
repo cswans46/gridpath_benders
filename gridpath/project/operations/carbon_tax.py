@@ -318,111 +318,84 @@ def load_model_data(
     )
 
     if os.path.exists(hr_curves_file) and os.path.exists(carbon_tax_allowance_file):
+
         hr_df = pd.read_csv(hr_curves_file, sep="\t")
-        projects = set(hr_df["project"].unique())
+        periods_df = pd.read_csv(periods_file, sep="\t")
+        cta_df_raw = pd.read_csv(carbon_tax_allowance_file, sep="\t")
 
         input_col = "average_heat_rate_mmbtu_per_mwh"
 
-        periods_df = pd.read_csv(periods_file, sep="\t")
-        cta_df_raw = pd.read_csv(carbon_tax_allowance_file, sep="\t")
-        cta_df = cta_df_raw[cta_df_raw["project"].isin(projects)]
-
         periods = set(periods_df["period"])
-        cta_projects = cta_df["project"].unique()
+
+        # Use the actual model domain, rather than only projects
+        # appearing in the allowance input file.
+        cta_projects = set(data_portal.data()["CARBON_TAX_PRJS"][None])
+        hr_projects = set(hr_df["project"])
+
+        missing_heat_rate_projects = cta_projects - hr_projects
+
+        if missing_heat_rate_projects:
+            raise ValueError(
+                "Missing heat-rate curves for carbon-tax projects: "
+                f"{sorted(missing_heat_rate_projects)}"
+            )
 
         average_heat_rate_curves_dict = {}
 
         for project in cta_projects:
+
             df_slice = hr_df[hr_df["project"] == project]
             slice_periods = set(df_slice["period"])
 
-            if slice_periods == set([0]):
+            if slice_periods == {0}:
                 p_iterable = [0]
             elif periods.issubset(slice_periods):
                 p_iterable = periods
             else:
-                raise ValueError("""{} for project '{}' isn't specified for all 
-                    modelled periods. Set period to 0 if inputs are the 
-                    same for each period or make sure all modelled periods 
-                    are included.""".format(input_col, project))
+                raise ValueError(
+                    f"{input_col} for project '{project}' isn't specified "
+                    "for all modelled periods. Set period to 0 if inputs "
+                    "are the same for each period or make sure all "
+                    "modelled periods are included."
+                )
 
             for period in p_iterable:
-                df_slice_p = df_slice[df_slice["period"] == period]
-                df_slice_p = df_slice_p.sort_values(by=["load_point_fraction"])
-                average_heat_rate = df_slice_p[input_col].values[-1]
 
-                # If period is 0, create same inputs for all periods
+                df_slice_p = df_slice[
+                    df_slice["period"] == period
+                ].sort_values(by="load_point_fraction")
+
+                if df_slice_p.empty or df_slice_p[input_col].isna().any():
+                    raise ValueError(
+                        f"Invalid heat-rate curve for project '{project}', "
+                        f"period {period}."
+                    )
+
+                average_heat_rate = df_slice_p[input_col].iloc[-1]
+
+                if average_heat_rate <= 0:
+                    raise ValueError(
+                        f"Non-positive average heat rate for project "
+                        f"'{project}', period {period}: {average_heat_rate}"
+                    )
+
+                # Period 0 means the same heat rate applies to all periods.
                 if period == 0:
                     average_heat_rate_curves_dict.update(
-                        {(project, p): average_heat_rate for p in periods}
+                        {
+                            (project, p): average_heat_rate
+                            for p in periods
+                        }
                     )
-                # If not, create inputs for just this period
                 else:
-                    average_heat_rate_curves_dict.update(
-                        {(project, period): average_heat_rate}
-                    )
-                    
-        project = "AB_DieselRecipEng_new_ph2_pool_blending_CES"
-        period = 2030
-
-        print(
-            "CARBON TAX HEAT RATE DIAGNOSTIC:",
-            {
-                # Was the project originally present in the allowance file?
-                "project_in_allowance_file": (
-                    project in set(cta_df_raw["project"])
-                ),
-
-                # Did the project survive the intersection with heat-rate projects?
-                "project_in_filtered_allowance_file": (
-                    project in set(cta_df["project"])
-                ),
-
-                # Was the project present in the heat-rate file?
-                "project_in_heat_rate_file": (
-                    project in set(hr_df["project"])
-                ),
-
-                # Which periods are actually available in the heat-rate file?
-                "heat_rate_periods": (
-                    sorted(
-                        hr_df.loc[
-                            hr_df["project"] == project, "period"
-                        ].unique().tolist()
-                    )
-                    if project in set(hr_df["project"])
-                    else []
-                ),
-
-                # Which periods are required by the model?
-                "model_periods": sorted(periods),
-
-                # What allowance records exist for this project?
-                "allowance_rows": (
-                    cta_df_raw.loc[
-                        cta_df_raw["project"] == project,
-                        [
-                            "project",
-                            "fuel_group",
-                            "period",
-                            "carbon_tax_allowance_tco2_per_mwh",
-                        ],
-                    ].to_dict("records")
-                    if project in set(cta_df_raw["project"])
-                    else []
-                ),
-
-                # Was the required average heat-rate key constructed?
-                "average_heat_rate_key_exists": (
-                    project,
-                    period,
-                ) in average_heat_rate_curves_dict,
-            },
-        )
+                    average_heat_rate_curves_dict[
+                        (project, period)
+                    ] = average_heat_rate
 
         data_portal.data()[
             "carbon_tax_allowance_average_heat_rate"
         ] = average_heat_rate_curves_dict
+
 
 
 # Database
