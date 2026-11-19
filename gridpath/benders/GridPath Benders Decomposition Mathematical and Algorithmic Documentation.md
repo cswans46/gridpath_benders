@@ -89,11 +89,11 @@ Each worker keeps only the linking variables that exist in its model (`classify_
 
 The master is the GridPath planning model with its NPV objective replaced by a version that carries one cost variable per subproblem. `add_approximate_variable_cost` (`planning.py:189-213`) deactivates `NPV`, stores its expression as `ePlanningNPV`, and defines `MasterObjective`:
 
-$$
+```math
 \max_{x,\vartheta}
 \quad \mathrm{NPV}_{\mathrm{plan}}(x)
 - S\sum_{w\in W}\vartheta_w
-$$
+```
 
 subject to
 
