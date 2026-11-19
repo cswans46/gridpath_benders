@@ -153,7 +153,7 @@ $$
 
 The LP that produces \(U_w\) is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
 
-`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on \(\vartheta_w\): the maximisation pushes ϑ down, and the cuts and \(L_w\) stop it.
+`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every \(x\), but can be loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on \(\vartheta_w\): the maximisation pushes \(\vartheta_w\) down, and the cuts and \(L_w\) stop it.
 
 **Solving the master.** `solve_planning_problem` (`planning.py:39-133`) calls the selected Pyomo solver interface on the current master model. A solve is accepted only when the solver status is `ok` and the termination condition is `optimal`.
 
@@ -246,15 +246,15 @@ $$
 
 The worker multiplies the intercept and duals by \(c=\max(1,1/\bar{s})\) so a small violation is not ignored, and returns `theta_coeff = 0`. With \(\kappa=0\), the routine uses a scale of 1 and writes \(c\bar{s}+\sum_i\mu_i(x_i-\bar{x}_i)\leq0\), with no \(\vartheta\) term. It goes into the same `BendersOptimalityCuts` list. In the relaxed phase, `benders()` also checks that a new restoration cut does not exclude an earlier LP-feasible sample and raises `RuntimeError` if it does.
 
-**State-conditioned cuts for discrete linking variables.** Once the master's binary or integer variables are restored to their true domains, a dual cut computed at one integer pattern d is valid only at that pattern. `register_benders_state` stores per subproblem and iteration: `op_cost`, `theta_coeff`, `continuous_lambda`, `continuous_point`, `master_discrete_state` and the recourse lower bound. `add_state_recourse_cut` (`algorithms.py:2017-2404`) then adds the cut only when the master's discrete variables equal d, using a binary z that is 0 exactly on a match:
+**State-conditioned cuts for discrete linking variables.** Once the master's binary or integer variables are restored to their true domains, a dual cut computed at one integer pattern d is valid only at that pattern. `register_benders_state` stores per subproblem and iteration: `op_cost`, `theta_coeff`, `continuous_lambda`, `continuous_point`, `master_discrete_state` and the recourse lower bound. `add_state_recourse_cut` (`algorithms.py:2017-2404`) then adds the cut only when the master's discrete variables equal d, using a binary \(z\) that is zero exactly when the discrete state matches:
 
 $$
-\vartheta_w \ge \frac{\(Q_w(\bar x) + \lambda^{\top}(x_{cont} - \bar x_{cont}) - Mz}{S},
+\vartheta_w\geq\frac{Q_w(\bar{x})+\lambda^{\top}(x_{\mathrm{cont}}-\bar{x}_{\mathrm{cont}})-Mz}{S},
 \qquad
 M = \max\bigl(0, Q_w(\bar{x})+\max_{x\in[lb,ub]}\lambda^{\top}(x-\bar{x})-L_w\bigr)
 $$
 
-When \(z=1\) the right-hand side is at most \(L_w\)/S, so the cut is slack there. Variable bounds for M come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
+When \(z=1\) the right-hand side is at most \(L_w\)/S, so the cut is slack there. Variable bounds for \(M\) come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
 
 - **Binary** \(x_j\) with stored value \(d_j\): \(m_j\) = 1 − \(x_j\) if \(d_j\) = 1, else \(m_j\) = \(x_j\). Then z ≥ \(m_j\) for every j and z ≤ Σ \(m_j\), so z = 0 only if every variable matches.
 - **Integer** \(x_j\) with stored value t: two binaries `below` and `above` with big-M constraints, and a mismatch variable bounded by their sum.
@@ -381,7 +381,7 @@ Bounds matter in three places: the lower bound \(L_w\) on each subproblem value 
 | Certificate tolerance | \(10^{-8}\) | Dual-ray entries below it are treated as zero in feasibility cuts |
 | Variable-bound cap | `1e8` | Last-resort bound for an otherwise unbounded continuous linking variable; when it is used it is also enforced in the master and applied in each worker's recourse LP |
 
-**Subproblem lower bound \(L_w\).** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `-recourse_upper_bound`, is \(L_w\). The master then imposes \(\vartheta_w\) ≥ \(L_w\)/S, which is valid because every real operational NPV is at most the relaxation's. The linking variables in that LP are bounded using the master-derived bounds described next.
+**Subproblem lower bound \(L_w\).** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `-recourse_upper_bound`, is \(L_w\). The master then imposes \(\vartheta_w\geq L_w/S\), which is valid because every real operational NPV is at most the relaxation's. The linking variables in that LP are bounded using the master-derived bounds described next.
 
 **Linking-variable bounds in the recourse LP.** The worker's recourse LP is a clone of the operational model taken before the \(x=\bar{x}\) linking constraints exist. The master's constraints that are shared by name are deactivated in it (section 4), and it has no investment cost. A linking variable with no explicit upper bound can therefore grow without limit, and because `OP_NPV` is maximised and includes revenue terms (for example sold carbon credits) the LP can be unbounded. In a failing run every linking variable reported `lb = 0, ub = None`: `GenNewLin_Build_MW`, `StorNewLin_Build_MW` and `_MWh`, `TxNewLin_Build_MW`, `BENDERS_CARBON_CREDIT_GENERATED_TOTAL` and `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`. MOSEK reported the LP as unbounded and the worker raised `RuntimeError`. Which family drives the ray was not isolated; the carbon-credit variables are the most likely cause because they map directly to revenue.
 
@@ -408,7 +408,7 @@ Consequences to keep in mind. A variable on the \(10^8\) cap gives a valid but p
 
 The exact capacity-bound formula is not reproduced here; read `find_gridpath_capacity_upper_bound` in the code for it.
 
-**Dual-term bound.** `continuous_dual_term_upper_bound` bounds \(\lambda^{\top}(x-\bar{x})\)\) over the box of variable bounds, i.e. \(\sum_i\max\{\lambda_i(l_i-\bar{x}_i),\lambda_i(u_i-\bar{x}_i)\}\). This is the term that enters the big-M below.
+**Dual-term bound.** `continuous_dual_term_upper_bound` bounds \(\lambda^{\top}(x-\bar{x})\) over the box of variable bounds, i.e. \(\sum_i\max\{\lambda_i(l_i-\bar{x}_i),\lambda_i(u_i-\bar{x}_i)\}\). This is the term that enters the big-M below.
 
 **Big-M for state-conditioned cuts.**
 
