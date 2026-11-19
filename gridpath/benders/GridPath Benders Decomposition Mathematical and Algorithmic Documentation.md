@@ -606,12 +606,15 @@ The references below cover the mathematical foundations of Benders decomposition
     General background on bundle and level methods for nonsmooth convex optimization, relevant to stabilization of cutting-plane algorithms.
 
 13. **Linderoth, J., & Wright, S. (2003).** “Decomposition algorithms for stochastic programming on a computational grid.” *Computational Optimization and Applications*, 24, 207–250. [Author's PDF](https://jlinderoth.github.io/papers/Linderoth-Wright-03.pdf).  
-    Discusses parallel master–worker decomposition and trust-region stabilization for stochastic programming. *(Check DOI before relying on this citation; the publisher record should be used for the final DOI.)*
+    Discusses parallel master–worker decomposition and trust-region stabilization for stochastic programming.
 
 14. **Zverovich, V., Fábián, C. I., Ellison, E. F. D., & Mitra, G. (2012).** “A computational study of a solver system for processing two-stage stochastic LPs with enhanced Benders decomposition.” *Mathematical Programming Computation*, 4, 211–238. [https://doi.org/10.1007/s12532-012-0038-z](https://doi.org/10.1007/s12532-012-0038-z).  
     Computational comparison of regularized decomposition, level methods, and trust-region stabilization within Benders decomposition.
 
 15. **Göke, L., Schmidt, F., & Kendziorski, M. (2024).** “Stabilized Benders decomposition for energy planning under climate uncertainty.” *European Journal of Operational Research*, 316(1), 183–199. [https://doi.org/10.1016/j.ejor.2024.01.016](https://doi.org/10.1016/j.ejor.2024.01.016).  
     An energy-planning application of stabilized Benders decomposition under climate uncertainty.
+
+16. **Rahmaniani, R., Crainic, T. G., Gendreau, M., & Rei, W. (2017).** “The Benders decomposition algorithm: A literature review.” *European Journal of Operational Research*, 259(3), 801–817. [https://doi.org/10.1016/j.ejor.2016.12.005](https://doi.org/10.1016/j.ejor.2016.12.005).  
+    A broad review of Benders decomposition theory and computational enhancements, including cut generation, stabilization, and applications. This is a useful general reference for methods not tied to a single implementation detail.
 
 **How these references relate to the implemented L1/L2 options.** In `regularization.py`, the level-set constraint restricts the master objective to remain within a specified fraction of the current optimality gap. The optional L1 and L2 secondary objectives then select a nearby trial point using, respectively, a weighted absolute-deviation objective and a weighted squared-deviation objective over the selected continuous linking variables. The L2 objective is also represented by an epigraph and rotated quadratic cone in the MOSEK path. Pecci and Jenkins (2025) is the closest application-specific reference for level-set regularization in capacity-expansion Benders; Ruszczyński (1986), Lemaréchal et al. (1995), Linderoth and Wright (2003), and Zverovich et al. (2012) provide broader background on regularized decomposition, bundle/level methods, and trust-region approaches. The particular L1/L2 objective variants in this repository are implementation choices and should not be attributed as exact formulations from any one of these papers.
