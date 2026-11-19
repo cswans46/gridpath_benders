@@ -396,10 +396,12 @@ Bounds matter in three places: the lower bound \(L_w\) on each subproblem value 
 The bounds are derived on the master and then supplied to the worker's *recourse-bound LP*. This is needed because that LP is a clone of the operational model before the linking equalities \(x_L=\bar{x}_L\) are added. It also omits the master's capacity/potential constraints and investment costs. A linking variable that is free in this clone can therefore move independently of the master and, in a revenue-maximising operational objective, may make the LP unbounded.
 
 **Mathematical definition of OBBT.** Suppose continuous linking variable \(x_i\) has no usable explicit upper bound and no upper bound that can be derived from a GridPath capacity/potential constraint. The code temporarily replaces the master objective by \(\max x_i\), relaxes the master binary variables to \([0,1]\) and integer variables to continuous variables, and solves the resulting LP relaxation:
-$
+
+$$
 u_i^{\mathrm{OBBT}} =
 \max\{x_i : (x,\ldots)\in X_{\mathrm{master}}^{\mathrm{LP}}\}.
-$
+$$
+
 If this problem is solved to optimality, its optimal value is a valid upper bound for the original mixed-integer master: the LP relaxation contains every feasible integer master point, so its maximum cannot be smaller than the maximum over the original feasible set. The original master objective and discrete domains are restored in a `finally` block after the OBBT solve. The code performs an upper-bound OBBT solve only; the lower bound is taken from the variable's explicit bound or Pyomo domain.
 
 **Algorithm and execution order.** Unless Pecci–Jenkins initialization is active, `benders()` calls `compute_linking_variable_bounds` after creating the solver and before starting any worker processes. For each name returned by `define_linking_vars`, the routine:
@@ -433,7 +435,7 @@ The exact capacity-bound formula is not reproduced here; read `find_gridpath_cap
 **Big-M for state-conditioned cuts.**
 
 $$
-\(M_w\) = \max\Bigl(0, \mathrm{op\_cost}_w + \max_{x}\lambda^{\top}(x-\bar x) - \(L_w\)\Bigr)
+M_w = \max\left\{0, \mathrm{op\_cost}_w + \max_{x\in X_L}\lambda^{\top}(x-\bar{x}) - L_w\right\}
 $$
 
 where \(\mathrm{op\_cost}_w=-\mathrm{OP\_NPV}_w(\bar{x})\). The value \(M_w\) is the largest amount by which the cut's right-hand side can exceed the global lower bound, so deactivating the cut (\(z=1\)) leaves \(\vartheta_w\geq L_w/S\) effective. A loose \(L_w\) or loose variable bounds inflate \(M_w\) and weaken the LP relaxation of the master.
