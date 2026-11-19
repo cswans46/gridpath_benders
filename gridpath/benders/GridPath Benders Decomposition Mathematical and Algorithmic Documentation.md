@@ -34,56 +34,56 @@ $$
 
 | Symbol | Meaning in the code |
 | --- | --- |
-| \(x\) | All planning (master) variables, \`all_variables(planning_problem)\` |
+| \(x\) | All planning (master) variables, `all_variables(planning_problem)` |
 | \(x_L \subseteq x\) | **Linking variables**: the planning variables that appear in subproblems (section below) |
-| \(w \in W\) | A subproblem key \`ScenarioKey(weather, hydro, availability, subproblem, stage)\` |
-| \(\bar{x}\) | Trial point: the master values of \(x_L\) sent to the workers (\`continuous_point\`) |
-| \(Q_w(\bar{x})\) | Recourse cost, \`op_cost = −OP_NPV\` in dollars |
-| \(\vartheta_w\) | \`vTHETA[w]\`, the master's approximation of \(Q_w\), in units of \(S=10^9\) dollars |
-| \(S\) | \`BENDERS_THETA_SCALE = 1e9\` (\`planning.py:19\`) |
+| \(w \in W\) | A subproblem key `ScenarioKey(weather, hydro, availability, subproblem, stage)` |
+| \(\bar{x}\) | Trial point: the master values of \(x_L\) sent to the workers (`continuous_point`) |
+| \(Q_w(\bar{x})\) | Recourse cost, `op_cost = −OP_NPV` in dollars |
+| \(\vartheta_w\) | `vTHETA[w]`, the master's approximation of \(Q_w\), in units of \(S=10^9\) dollars |
+| \(S\) | `BENDERS_THETA_SCALE = 1e9` (`planning.py:19`) |
 | \(\lambda_w\) | Sensitivity of \(Q_w\) to \(x_L\), from the dual of the linking equalities |
 | \(L_w\) | Global lower bound on \(Q_w\), from the LP-relaxation upper bound of operating NPV |
 | \(UB\), \(LB\) | Master optimum (non-increasing) and best complete plan's NPV (non-decreasing) |
 
-**Linking variables.** \`define_linking_vars\` (\`operational_model_creation.py:15-86\`) collects two groups:
+**Linking variables.** `define_linking_vars` (`operational_model_creation.py:15-86`) collects two groups:
 
-- the variables inside the investment expressions \`Capacity_MW\`, \`Tx_Min_Capacity_MW\`, \`Tx_Max_Capacity_MW\`, \`TxNewLin_Capacity_MW\` and \`Energy_Storage_Capacity_MWh\`, which are the build and capacity decisions;
-- the **policy allocation variables**: the master splits each system-wide target into budgets for individual subproblems. The components explicitly treated as policy-budget/linking variables by \`define_linking_vars\` in \`operational_model_creation.py\` are listed below. A component is included only when it exists on the model:
+- the variables inside the investment expressions `Capacity_MW`, `Tx_Min_Capacity_MW`, `Tx_Max_Capacity_MW`, `TxNewLin_Capacity_MW` and `Energy_Storage_Capacity_MWh`, which are the build and capacity decisions;
+- the **policy allocation variables**: the master splits each system-wide target into budgets for individual subproblems. The components explicitly treated as policy-budget/linking variables by `define_linking_vars` in `operational_model_creation.py` are listed below. A component is included only when it exists on the model:
   - **Emissions and energy targets**
-    - \`CARBON_CAP_ALLOCATION\`
-    - \`PERIOD_ENERGY_TARGET_ALLOCATION\`
+    - `CARBON_CAP_ALLOCATION`
+    - `PERIOD_ENERGY_TARGET_ALLOCATION`
   - **Performance standards**
-    - \`PERFORMANCE_STANDARD_MWH_ALLOCATION\`
-    - \`PERFORMANCE_STANDARD_MW_ALLOCATION\`
+    - `PERFORMANCE_STANDARD_MWH_ALLOCATION`
+    - `PERFORMANCE_STANDARD_MW_ALLOCATION`
   - **Carbon-credit budgets and limits**
-    - \`BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION\`
-    - \`BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION\`
-    - \`BENDERS_CARBON_CREDIT_GENERATED_TOTAL\`
-    - \`BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION\`
+    - `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`
+    - `BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION`
+    - `BENDERS_CARBON_CREDIT_GENERATED_TOTAL`
+    - `BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION`
   - **Transmission targets**
-    - \`TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION\`
-    - \`TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION\`
-    - \`TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION\`
-    - \`TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION\`
+    - `TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION`
+    - `TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION`
+    - `TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION`
+    - `TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION`
   - **Fuel-burn limits**
-    - \`FUEL_BURN_MIN_ABS_ALLOCATION\`
-    - \`FUEL_BURN_MAX_ABS_ALLOCATION\`
+    - `FUEL_BURN_MIN_ABS_ALLOCATION`
+    - `FUEL_BURN_MAX_ABS_ALLOCATION`
   - **Capacity-factor limits**
-    - \`CAP_FACTOR_MIN_ALLOCATION\`
-    - \`CAP_FACTOR_MAX_ALLOCATION\`
+    - `CAP_FACTOR_MIN_ALLOCATION`
+    - `CAP_FACTOR_MAX_ALLOCATION`
   - **Yearly storage state-of-charge allocations**
-    - \`STOR_START_SOC_ALLOCATION\`
-    - \`STOR_END_SOC_ALLOCATION\`
+    - `STOR_START_SOC_ALLOCATION`
+    - `STOR_END_SOC_ALLOCATION`
 
   The operational subproblem receives the corresponding allocation variables and uses its own subproblem's budget in place of the system-wide target where the policy module supports this substitution.
 
-For yearly-balanced storage, \`soc_allocation.py\` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with \`operational_type == "stor"\` and \`balancing_type_project == "year"\`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem. The allocations are expressed in units of 1000 MWh (\`STOR_SOC_ALLOCATION_UNIT_MWH = 1000.0\`).
+For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem. The allocations are expressed in units of 1000 MWh (`STOR_SOC_ALLOCATION_UNIT_MWH = 1000.0`).
 
-The master-side constraints are implemented in \`gridpath/system/policy/benders_policy_constraint.py\`. For each project, balancing type, period and subproblem, \`Stor_SOC_Chain_Constraint\` equates the end-SOC allocation of the current subproblem to the start-SOC allocation of the next subproblem. Subproblems are sorted numerically, and the final subproblem is connected back to the first, so the sequence is cyclic. \`Stor_SOC_Capacity_Constraint\` also limits each allocated start SOC, converted to MWh, to the project's energy-storage capacity. These two constraints are added to the master only; the operational models receive the corresponding allocation variables through \`add_stor_soc_allocation_components\` in \`soc_allocation.py\`.
+The master-side constraints are implemented in `gridpath/system/policy/benders_policy_constraint.py`. For each project, balancing type, period and subproblem, `Stor_SOC_Chain_Constraint` equates the end-SOC allocation of the current subproblem to the start-SOC allocation of the next subproblem. Subproblems are sorted numerically, and the final subproblem is connected back to the first, so the sequence is cyclic. `Stor_SOC_Capacity_Constraint` also limits each allocated start SOC, converted to MWh, to the project's energy-storage capacity. These two constraints are added to the master only; the operational models receive the corresponding allocation variables through `add_stor_soc_allocation_components` in `soc_allocation.py`.
 
-Each worker keeps only the linking variables that exist in its model (\`classify_linking_vars\`) and splits them into continuous, binary and integer sets.
+Each worker keeps only the linking variables that exist in its model (`classify_linking_vars`) and splits them into continuous, binary and integer sets.
 
-**Sign convention.** GridPath maximises NPV. The master maximises \`NPV_plan − S·Σϑ\`, so \(\vartheta\) is a *cost* with a negative sign, and an optimality cut is a *lower* bound on \(\vartheta\).
+**Sign convention.** GridPath maximises NPV. The master maximises `NPV_plan − S·Σϑ`, so \(\vartheta\) is a *cost* with a negative sign, and an optimality cut is a *lower* bound on \(\vartheta\).
 
 ## 3. Master (planning) problem
 
