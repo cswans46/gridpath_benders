@@ -2811,6 +2811,30 @@ def compute_linking_variable_bounds(
 
     return bounds
 
+def get_variable_lower_bound(var):
+    """
+    Return a finite lower bound from the variable bounds or domain.
+    Return None if no finite lower bound is available.
+    """
+
+    lb = pyo.value(var.lb) if var.has_lb() else None
+
+    if lb is not None:
+        return float(lb)
+
+    # Fall back to the domain's bounds (e.g. NonNegativeReals).
+    try:
+        domain_lb, _ = var.domain.bounds()
+    except (AttributeError, TypeError):
+        domain_lb = None
+
+    if domain_lb is not None:
+        domain_lb = float(pyo.value(domain_lb))
+
+        if math.isfinite(domain_lb):
+            return domain_lb
+
+    return None
 
 def get_continuous_variable_bounds(
     planning_problem,
@@ -2839,13 +2863,13 @@ def get_continuous_variable_bounds(
     if ub is not None:
 
         if lb is None:
-            if var.is_nonnegative():
-                lb = 0.0
-            else:
-                raise ValueError(
-                    f"No finite lower bound found for "
-                    f"continuous linking variable '{var.name}'."
-                )
+            lb = get_variable_lower_bound(var)
+
+        if lb is None:
+            raise ValueError(
+                f"No finite lower bound found for "
+                f"continuous linking variable '{var.name}'."
+            )
 
         cache[var.name] = (lb, ub)
         return lb, ub
@@ -2862,13 +2886,13 @@ def get_continuous_variable_bounds(
     if gridpath_ub is not None:
 
         if lb is None:
-            if var.is_nonnegative():
-                lb = 0.0
-            else:
-                raise ValueError(
-                    f"No finite lower bound found for "
-                    f"continuous linking variable '{var.name}'."
-                )
+            lb = get_variable_lower_bound(var)
+
+        if lb is None:
+            raise ValueError(
+                f"No finite lower bound found for "
+                f"continuous linking variable '{var.name}'."
+            )
 
         ub = float(gridpath_ub)
 
@@ -2915,13 +2939,13 @@ def get_continuous_variable_bounds(
         )
 
     if lb is None:
-        if var.is_nonnegative():
-            lb = 0.0
-        else:
-            raise ValueError(
-                f"No finite lower bound found for "
-                f"continuous linking variable '{var.name}'."
-            )
+        lb = get_variable_lower_bound(var)
+
+    if lb is None:
+        raise ValueError(
+            f"No finite lower bound found for "
+            f"continuous linking variable '{var.name}'."
+        )
 
     cache[var.name] = (lb, ub)
 
@@ -3123,11 +3147,9 @@ def find_gridpath_capacity_upper_bound(
 
                 if coef >= 0:
 
-                    if other_var.has_lb():
-                        other_lb = pyo.value(other_var.lb)
-                    elif other_var.is_nonnegative():
-                        other_lb = 0.0
-                    else:
+                    other_lb = get_variable_lower_bound(other_var)
+
+                    if other_lb is None:
                         valid = False
                         break
 

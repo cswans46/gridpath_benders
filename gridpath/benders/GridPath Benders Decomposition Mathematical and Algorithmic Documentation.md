@@ -80,6 +80,8 @@ Discounting and period weights are whatever the original GridPath `NPV` expressi
 L_w = -U_w, \qquad \vartheta_w \ge L_w / S \quad (\text{replaces } \vartheta_w \ge 0)
 ```
 
+The LP that produces U\_w is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
+
 `set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on ϑ: the maximisation pushes ϑ down, and the cuts and L\_w stop it.
 
 **Solving.** `solve_planning_problem` (`planning.py:39-125`):
@@ -294,9 +296,25 @@ Bounds matter in three places: the lower bound L\_w on each subproblem value (wh
 | `BENDERS_RECOURSE_OBJECTIVE_SCALE` | 1e6 | Operational objective is divided by this; duals are multiplied back by it (λ = −dual · scale) |
 | Phase-I elastic weight | 1e6 | Objective min 1e6 · s\_max in the restoration LP |
 | Certificate tolerance | 1e-8 | Dual-ray entries below it are treated as zero in feasibility cuts |
-| Variable-bound cap | 1e8 | Last-resort bound for an otherwise unbounded continuous linking variable |
+| Variable-bound cap | 1e8 | Last-resort bound for an otherwise unbounded continuous linking variable; when it is used it is also enforced in the master and applied in each worker's recourse LP |
 
-**Subproblem lower bound L\_w.** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `−recourse_upper_bound`, is L\_w. The master then imposes ϑ\_w ≥ L\_w/S, which is valid because every real operational NPV is at most the relaxation's.
+**Subproblem lower bound L\_w.** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `−recourse_upper_bound`, is L\_w. The master then imposes ϑ\_w ≥ L\_w/S, which is valid because every real operational NPV is at most the relaxation's. The linking variables in that LP are bounded using the master-derived bounds described next.
+
+**Linking-variable bounds in the recourse LP.** The worker's recourse LP is a clone of the operational model taken before the `x = x̄` linking constraints exist. The master's constraints that are shared by name are deactivated in it (section 4), and it has no investment cost. A linking variable with no explicit upper bound can therefore grow without limit, and because `OP_NPV` is maximised and includes revenue terms (for example sold carbon credits) the LP can be unbounded. In a failing run every linking variable reported `lb = 0, ub = None`: `GenNewLin_Build_MW`, `StorNewLin_Build_MW` and `_MWh`, `TxNewLin_Build_MW`, `BENDERS_CARBON_CREDIT_GENERATED_TOTAL` and `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`. MOSEK reported the LP as unbounded and the worker raised `RuntimeError`. Which family drives the ray was not isolated; the carbon-credit variables are the most likely cause because they map directly to revenue.
+
+The fix takes the bounds from the master and applies them to the recourse LP only:
+
+1. `benders()` calls `compute_linking_variable_bounds` after the solver is created and before any worker is started. For every continuous linking variable present in the master it calls `get_continuous_variable_bounds` (sources 1 to 4 above) and collects `{name: (lb, ub)}`. Binary and integer linking variables are skipped, as are variables for which no lower bound can be established (those raise `ValueError` inside the helper, which is logged as a warning and skipped).
+2. Any variable that ends up on the 1e8 cap (recorded in `planning_problem._benders_assumed_bounds`) also gets that upper bound set on the master variable. Without this the bound used in the workers would not be valid at every master point.
+3. The dictionary is passed to each worker as the last element of the `Process` arguments (`linking_var_bounds`).
+4. `calculate_recourse_upper_bound(instance, optimiser, linking_var_names, linking_var_bounds)` clones the model, relaxes operational integrality, and calls `apply_linking_variable_bounds`. That function sets a lower or upper bound on the clone only where the variable has none, so an existing explicit bound is never loosened. It returns the names that still lack a bound.
+5. If any variable still lacks a bound, a warning lists the count and the first ten names. If the LP is then not optimal, the `RuntimeError` message also gives the count and the first ten names.
+
+The original operational instance is not changed, so the `x = x̄` solves in the worker loop are unaffected.
+
+Setup key `RecourseBoundOBBT` (default `True`) controls whether step 3 of the bound sources (OBBT on the master) is tried before falling back to the 1e8 cap. OBBT costs one master solve per linking variable that has neither an explicit bound nor a capacity-constraint bound. Set it to `False` to skip those solves; those variables then take the 1e8 cap directly.
+
+Consequences to keep in mind. A variable on the 1e8 cap gives a valid but very loose bound, so U\_w is large, L\_w is very negative, and M\_w in the big-M formula below grows with it. The log line `Using assumed Benders upper bound ... for <name>` marks each such variable, and the INFO line `Linking-variable bounds: N variables bounded (M with an assumed cap ...)` summarises them. Giving those variables real upper bounds in the master tightens everything downstream.
 
 **Variable bounds** (`get_continuous_variable_bounds`). For a continuous linking variable the bound is taken from the first source that gives one:
 
@@ -325,7 +343,7 @@ where op\_cost\_w = −OP\_NPV at x̄. M\_w is the largest amount by which the c
 
 ```latex
 \begin{aligned}
-&\textbf{Init: } UB=+\infty,\; LB=-\infty,\; \gamma=\gamma_0,\; \text{start one worker per scenario key, collect } L_w \\
+&\textbf{Init: } UB=+\infty,\; LB=-\infty,\; \gamma=\gamma_0,\; \text{derive linking-variable bounds from the master, start one worker per scenario key, collect } L_w \\
 &\textbf{Solve master once} \to \bar x^{0} \\
 &\textbf{for } k = 0,1,\dots,\mathrm{MaxIter}: \\
 &\quad 1.\ \text{send } \bar x^{k} \text{ to all workers (sliding window)} \\
@@ -418,6 +436,7 @@ The step numbering above is a condensed reading of the loop; the code splits som
 | none | DjcSeedMaxStates | 1024 | Cap on seeded states |
 | none | StallIter | 20 | Stall window |
 | none | StallGap | 1e-6 | Stall improvement threshold |
+| none | RecourseBoundOBBT | True | Try OBBT on the master when bounding linking variables for the recourse LP (section 8); False goes straight to the 1e8 cap |
 
 The environment variable `GRIDPATH_BENDERS_SETUP` holds a JSON object that is merged over the setup dictionary at run time (`run_scenario.py`, around line 2575), so it can set the keys that have no CLI flag.
 
@@ -433,6 +452,13 @@ Everything below comes from reading the code. **None of it was run**, and items 
 - *`benders_states`* is appended every iteration with no visible de-duplication.
 - *Level-set `continue`* skips `planning_sol_hist.append`.
 - *DJC* sets `master_integrality_restored` to False (around line 373), which may be inconsistent with the later phase logic.
+
+**Recourse-LP bounds (section 8).** The change that bounds linking variables in the recourse LP was compile-checked only; it has not been run on a scenario.
+
+- OBBT runs on the master before the workers start, once per linking variable with no explicit or capacity-constraint bound. For a large master this adds startup time. If OBBT returns nothing (for example the master is unbounded in that variable), the variable takes the 1e8 cap, and the only trace is the warning in the log.
+- `compute_linking_variable_bounds` bounds only variables that exist in the master. A linking variable that exists only in a subproblem is left to whatever bounds it already has, and is reported as still unbounded.
+- `relax_operational_integrality` replaces a general-integer variable's domain with `Reals`, which drops bounds that came from the domain (for example the lower bound of `NonNegativeIntegers`) even though its docstring says bounds are preserved. A strict LP has no such variables. A model with operational integers should read `var.bounds` first and set them again after the domain change.
+- `subproblems_temp.py` and `benders.py` appear to be older copies of the worker and driver code. They were not changed, and `benders.py` still starts workers with the old argument list; the new `linking_var_bounds` argument defaults to `None`, so they still run but do not get the bounds.
 
 **Numerical edge cases**
 
