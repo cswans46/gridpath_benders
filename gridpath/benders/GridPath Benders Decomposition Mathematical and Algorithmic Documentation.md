@@ -115,11 +115,35 @@ $$
 
 Discounting and period weights are whatever the original GridPath `NPV` expression contains; `planning.py` adds none. The helper refuses to run without an `NPV` objective and does nothing if `vTHETA` already exists.
 
-**Variables**
+**Decision variables**
 
-- x: every variable of the planning model, with GridPath's own bounds and domains. The Benders code changes them in two places only: the Pecci–Jenkins relaxation of integer and binary variables (section 6) and an emergency cap (below).
-- ϑ\_w (`vTHETA[w]`): real, with no upper bound. Its scale S = 10⁹ keeps cut coefficients near one.
-- Three empty `ConstraintList`s filled during the run: `BendersOptimalityCuts`, `BendersFeasibilityCuts`, `BendersDiscreteOptimalityCuts`. A fourth, `ThetaLowerBound`, holds the bounds on ϑ.
+- \(x\): the complete vector of planning (master) variables, with GridPath's original bounds and domains. The Benders implementation changes these domains only for the Pecci–Jenkins relaxation of integer and binary variables (section 6); it can also impose the emergency upper cap described below.
+- \(x_i\): component \(i\) of the planning vector. In the cuts, only the linking-variable components represented in the relevant worker's cut are included.
+- \(\vartheta_w\) (`vTHETA[w]`): one real master variable for each subproblem \(w\), with no upper bound. It approximates the recourse cost in units of \(S\).
+
+**Other symbols appearing in the master formulation**
+
+- \(S\): the scaling constant `BENDERS_THETA_SCALE = 1e9`; monetary cut values are divided by \(S\) before entering the master.
+- \(W\), \(w\): the set of operational subproblems and one subproblem key, respectively. A key identifies the scenario dimensions and subproblem/stage.
+- \(X_{\mathrm{master}}\): the feasible region of the planning model, including its original constraints and variable bounds/domains.
+- \(L_w\): a global lower bound on the recourse cost for subproblem \(w\), calculated as the negative of the worker's LP-relaxation upper bound on operating NPV.
+- \(Q_w(\bar{x}^{k})\): recourse cost at the trial point for subproblem \(w\) in iteration \(k\), equal to minus the operational NPV returned by the worker.
+- \(\bar{x}^{k}\), \(\bar{x}_i^{k}\): the trial values of the linking variables sent to the worker in iteration \(k\), and the value of component \(i\), respectively.
+- \(I_w^{k}\): the indices of the linking-variable components included in the cut for subproblem \(w\) at iteration \(k\).
+- \(\lambda_{w,i}^{k}\): optimality-cut coefficient for linking variable \(i\); it is the corresponding sensitivity of recourse cost, obtained from the duals of the linking equalities.
+- \(K_w^{\mathrm{opt}}\), \(K_w^{\mathrm{feas}}\): the iterations at which an optimality cut or feasibility cut, respectively, has been generated for subproblem \(w\).
+- \(\bar{s}_w^{k}\): the optimal Phase-I restoration slack at the trial point for a feasibility cut.
+- \(c_w^{k}\): the feasibility-cut scaling factor, \(c_w^{k}=\max(1,1/\bar{s}_w^{k})\).
+- \(\mu_{w,i}^{k}\): feasibility-cut coefficient for linking variable \(i\), obtained from the Phase-I restoration duals after row-scale and restoration-objective-scale normalization.
+
+**Constraint containers**
+
+The following Pyomo `ConstraintList` components are populated as the algorithm generates cuts:
+
+- `BendersOptimalityCuts`: continuous recourse optimality cuts and, in the current implementation, feasibility cuts.
+- `BendersFeasibilityCuts`: reserved feasibility-cut container (not the destination used by the shared cut routine described in section 5).
+- `BendersDiscreteOptimalityCuts`: state-conditioned optimality cuts for discrete master states.
+- `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq L_w/S\).
 
 **Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` U\_w, an upper bound on its operational NPV. Because Q\_w = −NPV, the master receives
 
