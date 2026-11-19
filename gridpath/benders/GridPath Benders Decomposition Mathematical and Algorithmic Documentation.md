@@ -98,29 +98,19 @@ $$
 subject to
 
 $$
-x\in X_{\mathrm{master}}
+x \in X_{\mathrm{master}}
 $$
 
 $$
-\vartheta_w\geq \frac{L_w}{S}
-\qquad \forall w\in W
+\vartheta_w \geq \frac{L_w}{S} \qquad \forall w\in W
 $$
 
 $$
-\vartheta_w\geq
-\frac{Q_w(\bar{x}^{k})}{S}
-+\sum_{i\in I_w^{k}}
-\frac{\lambda_{w,i}^{k}}{S}
-(x_i-\bar{x}_i^{k})
-\qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
+\vartheta_w \geq \frac{Q_w(\bar{x}^{k})}{S} + \sum_{i\in I_w^{k}} \frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^{k}) \qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
 $$
 
 $$
-c_w^{k}\bar{s}_w^{k}
-+\sum_{i\in I_w^{k}}
-\mu_{w,i}^{k}(x_i-\bar{x}_i^{k})
-\leq 0
-\qquad \forall w\in W,\ k\in K_w^{\mathrm{feas}}
+c_w^{k}\bar{s}_w^{k} + \sum_{i\in I_w^{k}} \mu_{w,i}^{k}(x_i-\bar{x}_i^{k}) \leq 0 \qquad \forall w\in W,\ k\in K_w^{\mathrm{feas}}
 $$
 
 Discounting and period weights are whatever the original GridPath `NPV` expression contains; `planning.py` adds none. The helper refuses to run without an `NPV` objective and does nothing if `vTHETA` already exists.
