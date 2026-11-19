@@ -83,7 +83,7 @@ The master-side constraints are implemented in `gridpath/system/policy/benders_p
 
 Each worker keeps only the linking variables that exist in its model (`classify_linking_vars`) and splits them into continuous, binary and integer sets.
 
-**Sign convention.** GridPath maximises NPV. The master maximises `NPV_plan − S·Σϑ`, so \(\vartheta\) is a *cost* with a negative sign, and an optimality cut is a *lower* bound on \(\vartheta\).
+**Sign convention.** GridPath maximises NPV. The master maximises \(\mathrm{NPV}_{\mathrm{plan}}-S\sum_w\vartheta_w\), so \(\vartheta\) is a *cost* with a negative sign, and an optimality cut is a *lower* bound on \(\vartheta\).
 
 ## 3. Master (planning) problem
 
@@ -236,7 +236,7 @@ $$
 
 The code adds \(\kappa\vartheta_w-\mathrm{op\_cost}/S-\sum_i(\lambda_i/S)(x_i-\bar{x}_i)\geq0\), with \(\kappa\) equal to `theta_coeff`. The intercept is the solved `op_cost`, not a recomputed constant. Cuts with \(\kappa=1\) are added for every feasible result, in the relaxed phase and in the all-continuous case.
 
-**Feasibility cut.** Let \(\bar{s}\) be the optimal Phase-I slack at \(\bar{x}\) and \(\mu\) the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = \(10^6\)`. The minimum slack \(s(x)\) is convex and zero exactly when the subproblem is feasible, so
+**Feasibility cut.** Let \(\bar{s}\) be the optimal Phase-I slack at \(\bar{x}\) and \(\mu\) the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = 1e6`. The minimum slack \(s(x)\) is convex and zero exactly when the subproblem is feasible, so
 
 $$
 s(x) \ge \bar s + \mu^{\top}(x_L - \bar x)
@@ -256,8 +256,8 @@ $$
 
 When \(z=1\) the right-hand side is at most \(L_w\)/S, so the cut is slack there. Variable bounds for M come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
 
-- **Binary** x\_j with stored value d\_j: m\_j = 1 − x\_j if d\_j = 1, else m\_j = x\_j. Then z ≥ m\_j for every j and z ≤ Σ m\_j, so z = 0 only if every variable matches.
-- **Integer** x\_j with stored value t: two binaries `below` and `above` with big-M constraints, and a mismatch variable bounded by their sum.
+- **Binary** \(x_j\) with stored value \(d_j\): \(m_j\) = 1 − \(x_j\) if \(d_j\) = 1, else \(m_j\) = \(x_j\). Then z ≥ \(m_j\) for every j and z ≤ Σ \(m_j\), so z = 0 only if every variable matches.
+- **Integer** \(x_j\) with stored value t: two binaries `below` and `above` with big-M constraints, and a mismatch variable bounded by their sum.
 
 Each cut lives in a Pyomo `Block` named `BendersDiscretePattern_{key}_{id}`.
 
@@ -455,7 +455,7 @@ $$
 
 | Status | Condition | Default |
 | --- | --- | --- |
-| Converged | \(gap\le\mathrm{ConvTol}\) and \(LB\le UB+\mathrm{ConvTol}\cdot |UB|\) | ConvTol = \(10^{-10}\) |
+| Converged | \(gap\le\mathrm{ConvTol}\) and \(LB\le UB+\mathrm{ConvTol}\cdot |UB|\) | `ConvTol = 1e-10` |
 | Stalled | gap improves by less than StallGap over StallIter iterations | 20 iterations, 1e-6 |
 | Time limit | wall-clock time exceeds MaxCpuTime | 3600 s |
 | Max iterations | \(k\) reaches MaxIter | 200 |
