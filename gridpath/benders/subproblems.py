@@ -593,6 +593,7 @@ def benders_subproblem_worker(
     parsed_arguments,
     solver_options=None,
     startup_semaphore=None,
+    linking_var_bounds=None,
 ):
     """
     Entry point of a persistent Benders worker process.
@@ -616,6 +617,7 @@ def benders_subproblem_worker(
             parsed_arguments,
             solver_options=solver_options,
             startup_guard=guard,
+            linking_var_bounds=linking_var_bounds,
         )
     finally:
         guard.release()
@@ -632,6 +634,7 @@ def _benders_subproblem_worker_impl(
     parsed_arguments,
     solver_options=None,
     startup_guard=None,
+    linking_var_bounds=None,
 ):
     """Build and serve one persistent operational Benders subproblem.
 
@@ -706,24 +709,11 @@ def _benders_subproblem_worker_impl(
     # Recourse lower bound.
     # ================================================================
     
-    for name in present_linking_vars:
-        var = instance.find_component(name)
-
-        if var is None:
-            continue
-
-        unbounded_lb = var.lb is None
-        unbounded_ub = var.ub is None
-
-        if unbounded_lb or unbounded_ub:
-            print(
-                f"Unbounded linking variable: {name}; "
-                f"lower bound={var.lb}; upper bound={var.ub}"
-            )
-
     recourse_ub = calculate_recourse_upper_bound(
         instance,
         optimiser,
+        linking_var_names=present_linking_vars,
+        linking_var_bounds=linking_var_bounds,
     )
 
     # ================================================================
@@ -1542,43 +1532,52 @@ def relax_operational_integrality(model):
             var.setub(ub)
 
 
+def apply_linking_variable_bounds(lp_instance, linking_var_names, linking_var_bounds):
+    linking_var_bounds = linking_var_bounds or {}
+    still_unbounded = []
+    for name in linking_var_names or []:
+        var = lp_instance.find_component(name)
+        if var is None or var.fixed:
+            continue
+        master_bounds = linking_var_bounds.get(name)
+        if master_bounds is not None:
+            lb, ub = master_bounds
+            if var.lb is None and lb is not None:
+                var.setlb(lb)
+            if var.ub is None and ub is not None:
+                var.setub(ub)
+        if var.lb is None or var.ub is None:
+            still_unbounded.append(name)
+    return still_unbounded
+
+
 def calculate_recourse_upper_bound(
-    instance,
-    optimiser,
+    instance, optimiser, linking_var_names=None, linking_var_bounds=None,
 ):
-    """
-    Calculate a global LP-relaxation upper bound for operational NPV.
-
-    The original model is not modified.
-    """
-
     lp_instance = instance.clone()
+    relax_operational_integrality(lp_instance)
 
-    relax_operational_integrality(
-        lp_instance
+    still_unbounded = apply_linking_variable_bounds(
+        lp_instance, linking_var_names, linking_var_bounds
     )
-
-    results, _ = _solve_scaled_recourse_lp(
-        lp_instance,
-        optimiser,
-    )
-
-    termination = (
-        results.solver.termination_condition
-    )
-
-    if termination != TerminationCondition.optimal:
-
-        raise RuntimeError(
-            "LP relaxation for recourse lower bound did not solve "
-            f"to optimality. Termination condition: {termination}"
+    if still_unbounded:
+        logging.getLogger(__name__).warning(
+            "Recourse bound LP: %d linking variable(s) still lack a bound, e.g. %s",
+            len(still_unbounded), still_unbounded[:10],
         )
 
-    upper_bound = value(
-        lp_instance.OP_NPV
-    )
+    results, _ = _solve_scaled_recourse_lp(lp_instance, optimiser)
+    termination = results.solver.termination_condition
 
-    return upper_bound
+    if termination != TerminationCondition.optimal:
+        raise RuntimeError(
+            "LP relaxation for recourse lower bound did not solve "
+            f"to optimality. Termination condition: {termination}. "
+            f"{len(still_unbounded)} linking variable(s) lacked a lower "
+            f"or upper bound (first 10: {still_unbounded[:10]})."
+        )
+
+    return value(lp_instance.OP_NPV)
 
 
 def solve_operational_mip_and_fix_z(

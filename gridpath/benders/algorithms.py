@@ -411,6 +411,23 @@ def benders(
     # Create and Solve Subproblem in assigning processors
     # ---------------------------------------------------------
 
+    # ---------------------------------------------------------
+    # Finite bounds for continuous linking variables.
+    #
+    # Workers solve a global LP relaxation of the recourse problem to get
+    # a bound on theta. That LP does not contain the master's capacity /
+    # potential constraints or investment costs, so linking variables
+    # without an explicit upper bound can drive it unbounded. Derive
+    # bounds here, from the master, and hand them to the workers.
+    # ---------------------------------------------------------
+
+    linking_var_bounds = compute_linking_variable_bounds(
+        planning_problem,
+        linking_vars,
+        optimiser,
+        allow_obbt=setup.get("RecourseBoundOBBT", True),
+    )
+
     print("Building subproblems for Benders decomposition...")
 
     ctx = mp.get_context("spawn")
@@ -460,6 +477,7 @@ def benders(
                 parsed_arguments,
                 gams_options if is_gams else None,
                 startup_semaphore,
+                linking_var_bounds,
             ),
         )
 
@@ -2736,10 +2754,69 @@ def add_discrete_pattern_indicator(
 
     return block
 
+def compute_linking_variable_bounds(
+    planning_problem,
+    linking_vars,
+    optimiser,
+    allow_obbt=True,
+):
+    """
+    Return {name: (lb, ub)} for every continuous linking variable that
+    exists in the planning problem.
+
+    Bounds come from ``get_continuous_variable_bounds``: explicit Pyomo
+    bounds, then GridPath capacity/potential constraints, then (optionally)
+    OBBT on the master, and finally BENDERS_MASTER_VARIABLE_CAP as an
+    assumed bound. Any variable that ends up with an assumed bound also
+    gets that bound enforced in the master, so the bound used by the
+    workers' recourse LP is valid at every master point.
+    """
+
+    bounds = {}
+    skipped = []
+
+    for name in linking_vars:
+        var = planning_problem.find_component(name)
+
+        if var is None or var.is_binary() or var.is_integer():
+            continue
+
+        try:
+            bounds[name] = get_continuous_variable_bounds(
+                planning_problem,
+                var,
+                optimiser,
+                allow_obbt=allow_obbt,
+            )
+        except ValueError as exc:
+            skipped.append(name)
+            logger.warning("No linking-variable bounds for %s: %s", name, exc)
+
+    assumed = getattr(planning_problem, "_benders_assumed_bounds", set())
+
+    for name in assumed:
+        if name not in bounds:
+            continue
+        var = planning_problem.find_component(name)
+        if var is not None and not var.has_ub():
+            var.setub(bounds[name][1])
+
+    logger.info(
+        "Linking-variable bounds: %d variables bounded (%d with an assumed "
+        "cap enforced in the master, %d skipped).",
+        len(bounds),
+        len(assumed),
+        len(skipped),
+    )
+
+    return bounds
+
+
 def get_continuous_variable_bounds(
     planning_problem,
     var,
     optimiser,
+    allow_obbt=True,
 ):
     if not hasattr(
         planning_problem,
@@ -2802,10 +2879,14 @@ def get_continuous_variable_bounds(
     # 3. OBBT fallback
     # ---------------------------------------------------------
 
-    ub = obbt_upper_bound(
-        planning_problem,
-        var,
-        optimiser,
+    ub = (
+        obbt_upper_bound(
+            planning_problem,
+            var,
+            optimiser,
+        )
+        if allow_obbt
+        else None
     )
 
     if ub is None:
