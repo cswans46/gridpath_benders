@@ -23,26 +23,26 @@ The document covers the Benders code in `gridpath/benders/`, its entry points in
 
 ## 2. Problem structure and notation
 
-The full problem maximises planning NPV minus the operating cost summed across all subproblems. The decomposition replaces each operating cost by a cost function Q\_w(x) of the investment decisions, which is convex and piecewise linear when the subproblem is a linear program.
+The full problem maximises planning NPV minus the operating cost summed across all subproblems. The decomposition replaces each operating cost by a cost function \(\(Q_w\)\)(x) of the investment decisions, which is convex and piecewise linear when the subproblem is a linear program.
 
 $$
 \begin{aligned}
-\max_{x \in X}\quad & \mathrm{NPV}_{\mathrm{plan}}(x) - \sum_{w \in W} Q_w(x_L) \\
-Q_w(\bar x)\quad &= -\max_{\substack{z_w \in Z_w \\ x_L = \bar x}}\ \mathrm{OP\_NPV}_w(z_w)
+\max_{x \in X}\quad & \mathrm{NPV}_{\mathrm{plan}}(x) - \sum_{w \in W} \(Q_w\)(x_L) \\
+\(Q_w\)(\bar x)\quad &= -\max_{\substack{z_w \in Z_w \\ x_L = \bar x}}\ \mathrm{OP\_NPV}_w(z_w)
 \end{aligned}
 $$
 
 | Symbol | Meaning in the code |
 | --- | --- |
-| x | All planning (master) variables, `all_variables(planning_problem)` |
-| x\_L ⊆ x | **Linking variables**: the planning variables that appear in subproblems (section below) |
-| w ∈ W | A subproblem key `ScenarioKey(weather, hydro, availability, subproblem, stage)` |
-| x̄ | Trial point: the master values of x\_L sent to the workers (`continuous_point`) |
-| Q\_w(x̄) | Recourse cost, `op_cost = −OP_NPV` in dollars |
-| ϑ\_w | `vTHETA[w]`, the master's approximation of Q\_w, in units of S = 10⁹ dollars |
+| \(x\) | All planning (master) variables, `all_variables(planning_problem)` |
+| \(x_L\) ⊆ x | **Linking variables**: the planning variables that appear in subproblems (section below) |
+| \(w\in W\) | A subproblem key `ScenarioKey(weather, hydro, availability, subproblem, stage)` |
+| \(\bar{x}\) | Trial point: the master values of \(x_L\) sent to the workers (`continuous_point`) |
+| \(\(Q_w\)\)(\(\bar{x}\)) | Recourse cost, `op_cost = −OP_NPV` in dollars |
+| \(\vartheta_w\) | `vTHETA[w]`, the master's approximation of \(\(Q_w\)\), in units of S = 10⁹ dollars |
 | S | `BENDERS_THETA_SCALE = 1e9` (`planning.py:19`) |
-| λ\_w | Sensitivity of Q\_w to x\_L, from the dual of the linking equalities |
-| L\_w | Global lower bound on Q\_w, from the LP-relaxation upper bound of operating NPV |
+| \(\lambda_w\) | Sensitivity of \(\(Q_w\)\) to \(x_L\), from the dual of the linking equalities |
+| \(\(L_w\)\) | Global lower bound on \(\(Q_w\)\), from the LP-relaxation upper bound of operating NPV |
 | UB, LB | Master optimum (non-increasing) and best complete plan's NPV (non-decreasing) |
 
 **Linking variables.** `define_linking_vars` (`operational_model_creation.py:15-86`) collects two groups:
@@ -102,11 +102,11 @@ x \in X_{\mathrm{master}}
 $$
 
 $$
-\vartheta_w \geq \frac{L_w}{S} \qquad \forall w\in W
+\vartheta_w \geq \frac{\(L_w\)}{S} \qquad \forall w\in W
 $$
 
 $$
-\vartheta_w \geq \frac{Q_w(\bar{x}^{k})}{S} + \sum_{i\in I_w^{k}} \frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^{k}) \qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
+\vartheta_w \geq \frac{\(Q_w\)(\bar{x}^{k})}{S} + \sum_{i\in I_w^{k}} \frac{\lambda_{w,i}^{k}}{S}(x_i-\bar{x}_i^{k}) \qquad \forall w\in W,\ k\in K_w^{\mathrm{opt}}
 $$
 
 $$
@@ -126,8 +126,8 @@ Discounting and period weights are whatever the original GridPath `NPV` expressi
 - \(S\): the scaling constant `BENDERS_THETA_SCALE = 1e9`; monetary cut values are divided by \(S\) before entering the master.
 - \(W\), \(w\): the set of operational subproblems and one subproblem key, respectively. A key identifies the scenario dimensions and subproblem/stage.
 - \(X_{\mathrm{master}}\): the feasible region of the planning model, including its original constraints and variable bounds/domains.
-- \(L_w\): a global lower bound on the recourse cost for subproblem \(w\), calculated as the negative of the worker's LP-relaxation upper bound on operating NPV.
-- \(Q_w(\bar{x}^{k})\): recourse cost at the trial point for subproblem \(w\) in iteration \(k\), equal to minus the operational NPV returned by the worker.
+- \(\(L_w\)\): a global lower bound on the recourse cost for subproblem \(w\), calculated as the negative of the worker's LP-relaxation upper bound on operating NPV.
+- \(\(Q_w\)(\bar{x}^{k})\): recourse cost at the trial point for subproblem \(w\) in iteration \(k\), equal to minus the operational NPV returned by the worker.
 - \(\bar{x}^{k}\), \(\bar{x}_i^{k}\): the trial values of the linking variables sent to the worker in iteration \(k\), and the value of component \(i\), respectively.
 - \(I_w^{k}\): the indices of the linking-variable components included in the cut for subproblem \(w\) at iteration \(k\).
 - \(\lambda_{w,i}^{k}\): optimality-cut coefficient for linking variable \(i\); it is the corresponding sensitivity of recourse cost, obtained from the duals of the linking equalities.
@@ -143,17 +143,17 @@ The following Pyomo `ConstraintList` components are populated as the algorithm g
 - `BendersOptimalityCuts`: continuous recourse optimality cuts and, in the current implementation, feasibility cuts.
 - `BendersFeasibilityCuts`: reserved feasibility-cut container (not the destination used by the shared cut routine described in section 5).
 - `BendersDiscreteOptimalityCuts`: state-conditioned optimality cuts for discrete master states.
-- `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq L_w/S\).
+- `ThetaLowerBound`: lower-bound constraints \(\vartheta_w\geq \(L_w\)/S\).
 
-**Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` U\_w, an upper bound on its operational NPV. Because Q\_w = −NPV, the master receives
+**Lower bound on ϑ.** Each worker solves the LP relaxation of its operational model before it reports READY and returns `recourse_upper_bound` \(\(U_w\)\), an upper bound on its operational NPV. Because \(\(Q_w\)\) = −NPV, the master receives
 
 $$
-L_w = -U_w, \qquad \vartheta_w \ge L_w / S \quad (\text{replaces } \vartheta_w \ge 0)
+\(L_w\) = -\(U_w\), \qquad \vartheta_w \ge \(L_w\) / S \quad (\text{replaces } \vartheta_w \ge 0)
 $$
 
-The LP that produces U\_w is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
+The LP that produces \(\(U_w\)\) is solved over the whole operational model with the linking variables free, so it needs finite bounds on those variables; see "Linking-variable bounds in the recourse LP" in section 8.
 
-`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on ϑ: the maximisation pushes ϑ down, and the cuts and L\_w stop it.
+`set_recourse_cost_lower_bounds` (`planning.py:216-223`) clears and rebuilds these constraints. The bound is valid for every x but loose, and it can be negative. It matters again for the discrete cuts in section 6, where it sets the big-M. There is no upper bound on ϑ: the maximisation pushes ϑ down, and the cuts and \(\(L_w\)\) stop it.
 
 **Solving.** `solve_planning_problem` (`planning.py:39-125`):
 
@@ -180,10 +180,10 @@ The variables are constrained rather than fixed, so the solver returns a dual fo
 **Recourse value and dual scaling.** The LP is solved with the objective divided by `BENDERS_RECOURSE_OBJECTIVE_SCALE = 1e6` (restored afterwards), so every dual is multiplied back by that scale:
 
 $$
-Q_w(\bar x) = -\mathrm{OP\_NPV}^{*}, \qquad \lambda_i = -\pi_i \cdot 10^{6} = \partial Q_w / \partial \bar x_i
+\(Q_w\)(\bar x) = -\mathrm{OP\_NPV}^{*}, \qquad \lambda_i = -\pi_i \cdot 10^{6} = \partial \(Q_w\) / \partial \bar x_i
 $$
 
-Here π\_i is the solver's dual on row i (`process_subproblem_solution`, `subproblems.py:1458`). The sign flip converts a maximised NPV sensitivity into a cost sensitivity. Before a solution is accepted, `primal_violations` checks rows, bounds, linking equalities and integrality at 1e-7. On a violation `solve_original` retries with primal simplex, then interior point, on row-scaled clones.
+Here \(\pi_i\) is the solver's dual on row i (`process_subproblem_solution`, `subproblems.py:1458`). The sign flip converts a maximised NPV sensitivity into a cost sensitivity. Before a solution is accepted, `primal_violations` checks rows, bounds, linking equalities and integrality at 1e-7. On a violation `solve_original` retries with primal simplex, then interior point, on row-scaled clones.
 
 **Which duals are used.** In the Pecci–Jenkins relaxed phase (section 6) all present linking variables are active. Afterwards only the *continuous* linking variables are, and binary or integer ones are handled by state-conditioned cuts.
 
@@ -192,40 +192,40 @@ Here π\_i is the solver's dual on row i (`process_subproblem_solution`, `subpro
 | Key | Meaning |
 | --- | --- |
 | `feasible` | True if the LP solved to optimality (or the restoration retry showed feasibility) |
-| `op_cost` | Q\_w(x̄) in dollars |
+| `op_cost` | \(\(Q_w\)\)(\(\bar{x}\)) in dollars |
 | `benders_lambda`, `continuous_lambda` | λ for the active linking variables (identical as written) |
-| `continuous_point` | x̄ for those variables |
-| `theta_coeff` | 1.0 for an optimality cut, 0.0 for a feasibility cut |
+| `continuous_point` | \(\bar{x}\) for those variables |
+| ``theta_coeff`` | 1.0 for an optimality cut, 0.0 for a feasibility cut |
 | `master_discrete_state` | Master binary and integer values, in the discrete phases only |
 | `operational_discrete_state` | Operational integer values z\*, with `fixed_z` only |
 | `is_mip`, `operational_mip_variables` | Whether non-linking discrete variables existed, and their names |
 
-**Infeasible subproblems and restoration.** If the LP is not optimal, `restoration.restore` solves a Phase-I problem on a clone. `add_slacks_to_subproblem` (`subproblems.py:151-292`) relaxes every active row with a finite bound, except the linking equalities, by a multiple of one shared variable s\_max ≥ 0, and moves variable bounds into rows so they can be relaxed too. Each row's multiple is its own scale `_constraint_scale`, so a unit of s\_max is comparable across rows:
+**Infeasible subproblems and restoration.** If the LP is not optimal, `restoration.restore` solves a Phase-I problem on a clone. `add_slacks_to_subproblem` (`subproblems.py:151-292`) relaxes every active row with a finite bound, except the linking equalities, by a multiple of one shared variable \(s_{\max}\) ≥ 0, and moves variable bounds into rows so they can be relaxed too. Each row's multiple is its own scale `_constraint_scale`, so a unit of \(s_{\max}\) is comparable across rows:
 
 $$
 \min 10^{6} s_{\max}
 \quad \text{s.t.}\quad g_r(z) \le b_r + \sigma_r s_{\max} \forall r,\qquad x_L = \bar x, s_{\max} \ge 0
 $$
 
-where σ\_r is the row scale. The solver runs primal simplex, then interior point if that fails, and `_certificate` recomputes the dual objective and checks primal residuals, dual signs, stationarity and complementarity at 1e-8. If both algorithms fail the certificate, a `RuntimeError` is raised. The result is `feasible = False` with `theta_coeff = 0`; section 5 gives the cut. If the minimum slack is at most `ZERO_SLACK_TOLERANCE = 1e-9`, the original LP is re-solved and, if that succeeds, treated as feasible after all.
+where  \(\sigma_r\) is the row scale. The solver runs primal simplex, then interior point if that fails, and `_certificate` recomputes the dual objective and checks primal residuals, dual signs, stationarity and complementarity at 1e-8. If both algorithms fail the certificate, a `RuntimeError` is raised. The result is `feasible = False` with ``theta_coeff` = 0`; section 5 gives the cut. If the minimum slack is at most `ZERO_SLACK_TOLERANCE = 1e-9`, the original LP is re-solved and, if that succeeds, treated as feasible after all.
 
 Restoration raises `NotImplementedError` if a non-linking integer variable is still unfixed, because LP duals would then give an invalid feasibility cut.
 
 ## 5. Cuts
 
-All cuts are lower bounds on ϑ\_w, written in units of S. They share one routine, `add_relaxed_benders_cut` (`algorithms.py:1788-1860`), which appends the cut to the global `BendersOptimalityCuts` list; the subproblem key enters only through `vTHETA[w]`.
+All cuts are lower bounds on \(\vartheta_w\), written in units of S. They share one routine, `add_relaxed_benders_cut` (`algorithms.py:1788-1860`), which appends the cut to the global `BendersOptimalityCuts` list; the subproblem key enters only through `vTHETA[w]`.
 
-**Optimality cut.** Q\_w is convex in x\_L, so its supporting hyperplane at x̄ under-estimates it everywhere:
+**Optimality cut.** \(\(Q_w\)\) is convex in \(x_L\), so its supporting hyperplane at \(\bar{x}\) under-estimates it everywhere:
 
 $$
-Q_w(x) \ge Q_w(\bar x) + \lambda_w^{\top}(x_L - \bar x)
+\(Q_w\)(x) \ge \(Q_w\)(\bar x) + \lambda_w^{\top}(x_L - \bar x)
 \Longrightarrow
-\vartheta_w \ge \frac{Q_w(\bar x)}{S} + \sum_i \frac{\lambda_{w,i}}{S}(x_i - \bar x_i)
+\vartheta_w \ge \frac{\(Q_w\)(\bar x)}{S} + \sum_i \frac{\lambda_{w,i}}{S}(x_i - \bar x_i)
 $$
 
-The code adds `κ·ϑ_w − op_cost/S − Σ(λ_i/S)(x_i − x̄_i) ≥ 0` with κ = `theta_coeff`. The intercept is the solved `op_cost`, not a recomputed constant. Cuts with κ = 1 are added for every feasible result, in the relaxed phase and in the all-continuous case.
+The code adds `κ·ϑ_w − op_cost/S − Σ(λ_i/S)(x_i − \(\bar{x}\)_i) ≥ 0` with κ = ``theta_coeff``. The intercept is the solved `op_cost`, not a recomputed constant. Cuts with κ = 1 are added for every feasible result, in the relaxed phase and in the all-continuous case.
 
-**Feasibility cut.** Let s̄ be the optimal Phase-I slack at x̄ and μ the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = 1e6`. The minimum slack s(x) is convex and zero exactly when the subproblem is feasible, so
+**Feasibility cut.** Let s̄ be the optimal Phase-I slack at \(\bar{x}\) and μ the duals of the linking rows, each divided by its row scale and by `RESTORATION_OBJECTIVE_SCALE = 1e6`. The minimum slack s(x) is convex and zero exactly when the subproblem is feasible, so
 
 $$
 s(x) \ge \bar s + \mu^{\top}(x_L - \bar x)
@@ -233,17 +233,17 @@ s(x) \ge \bar s + \mu^{\top}(x_L - \bar x)
 \bar s + \mu^{\top}(x_L - \bar x) \le 0 \quad \text{is necessary for feasibility}
 $$
 
-The worker multiplies the intercept and duals by c = max(1, 1/s̄) so a small violation is not ignored, and returns `theta_coeff = 0`. With κ = 0 the routine uses a scale of 1 and writes `c·s̄ + Σ λ_i (x_i − x̄_i) ≤ 0` with no ϑ term. It goes into the same `BendersOptimalityCuts` list. In the relaxed phase, `benders()` also checks that a new restoration cut does not exclude an earlier LP-feasible sample and raises `RuntimeError` if it does.
+The worker multiplies the intercept and duals by c = max(1, 1/s̄) so a small violation is not ignored, and returns ``theta_coeff` = 0`. With κ = 0 the routine uses a scale of 1 and writes `c·s̄ + Σ λ_i (x_i − \(\bar{x}\)_i) ≤ 0` with no ϑ term. It goes into the same `BendersOptimalityCuts` list. In the relaxed phase, `benders()` also checks that a new restoration cut does not exclude an earlier LP-feasible sample and raises `RuntimeError` if it does.
 
-**State-conditioned cuts for discrete linking variables.** Once the master's binary or integer variables are restored to their true domains, a dual cut computed at one integer pattern d is valid only at that pattern. `register_benders_state` stores per subproblem and iteration: `op_cost`, `theta_coeff`, `continuous_lambda`, `continuous_point`, `master_discrete_state` and the recourse lower bound. `add_state_recourse_cut` (`algorithms.py:2017-2404`) then adds the cut only when the master's discrete variables equal d, using a binary z that is 0 exactly on a match:
+**State-conditioned cuts for discrete linking variables.** Once the master's binary or integer variables are restored to their true domains, a dual cut computed at one integer pattern d is valid only at that pattern. `register_benders_state` stores per subproblem and iteration: `op_cost`, ``theta_coeff``, `continuous_lambda`, `continuous_point`, `master_discrete_state` and the recourse lower bound. `add_state_recourse_cut` (`algorithms.py:2017-2404`) then adds the cut only when the master's discrete variables equal d, using a binary z that is 0 exactly on a match:
 
 $$
-\vartheta_w \ge \frac{Q_w(\bar x) + \lambda^{\top}(x_{cont} - \bar x_{cont}) - Mz}{S},
+\vartheta_w \ge \frac{\(Q_w\)(\bar x) + \lambda^{\top}(x_{cont} - \bar x_{cont}) - Mz}{S},
 \qquad
-M = \max\bigl(0, Q_w(\bar x) + \max_{x \in [lb,ub]} \lambda^{\top}(x - \bar x) - L_w\bigr)
+M = \max\bigl(0, \(Q_w\)(\bar x) + \max_{x \in [lb,ub]} \lambda^{\top}(x - \bar x) - \(L_w\)\bigr)
 $$
 
-When z = 1 the right-hand side is at most L\_w/S, so the cut is slack there. Variable bounds for M come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
+When z = 1 the right-hand side is at most \(\(L_w\)\)/S, so the cut is slack there. Variable bounds for M come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
 
 - **Binary** x\_j with stored value d\_j: m\_j = 1 − x\_j if d\_j = 1, else m\_j = x\_j. Then z ≥ m\_j for every j and z ≤ Σ m\_j, so z = 0 only if every variable matches.
 - **Integer** x\_j with stored value t: two binaries `below` and `above` with big-M constraints, and a mismatch variable bounded by their sum.
@@ -294,7 +294,7 @@ The `pj_relax` label is the code's own; the document uses it without claiming th
 
 `use_native_djc` is true when the requested method is not `linearized` and the solver is native MOSEK. It sends states to `mosek_benders.add_benders_djc` instead of building big-M blocks.
 
-**DJC seeding.** Cuts are valid only in the state where they are generated, so an unvisited state is bounded only by the loose L\_w. With `DjcSeedStates` true and 2^n ≤ `DjcSeedMaxStates` (default 1024) binary linking variables, `benders()` builds one seed per joint binary state, with continuous linking variables set to zero, and evaluates each before the first master solve. Seeding is off by default and has no CLI flag; set it through `GRIDPATH_BENDERS_SETUP`.
+**DJC seeding.** Cuts are valid only in the state where they are generated, so an unvisited state is bounded only by the loose \(\(L_w\)\). With `DjcSeedStates` true and 2^n ≤ `DjcSeedMaxStates` (default 1024) binary linking variables, `benders()` builds one seed per joint binary state, with continuous linking variables set to zero, and evaluates each before the first master solve. Seeding is off by default and has no CLI flag; set it through `GRIDPATH_BENDERS_SETUP`.
 
 ### Operational discrete methods
 
@@ -306,7 +306,7 @@ The `pj_relax` label is the code's own; the document uses it without claiming th
 During the master's relaxed phase the worker overrides the method to `pj_relax` (`subproblems.py:851-855`), because only the LP relaxation gives a globally valid cut there.
 
 $$
-\text{fixed\_z cut:}\quad Q_w(x) \ge Q_w(\bar x \mid z^{*}) + \lambda^{\top}(x_L - \bar x) \quad \text{valid only for fixed } z^{*}
+\text{fixed\_z cut:}\quad \(Q_w\)(x) \ge \(Q_w\)(\bar x \mid z^{*}) + \lambda^{\top}(x_L - \bar x) \quad \text{valid only for fixed } z^{*}
 $$
 
 Inferred from the formulas, not stated in the code: at other x the MIP may choose a different z with lower cost, so a fixed-z cut can overestimate the true MIP cost. The resulting UB should then be treated as heuristic for subproblems that contain operational integers, while `pj_relax` keeps UB valid at the price of a looser bound.
@@ -328,10 +328,10 @@ A small γ keeps the level near UB (tight); a large γ moves it toward LB (loose
 | `--benders_stabilization_method` | Φ(x) | Notes |
 | --- | --- | --- |
 | `none` | MasterObjective itself, minimised over the level set | Drives the point to the level boundary. If MOSEK fails, retries once with dual simplex |
-| `l1` | Σ w\_i (p\_i + n\_i) with x\_i − x̄\_i = p\_i − n\_i, p, n ≥ 0 | Linear. Auxiliary variables and rows are built once and only right-hand sides change |
-| `l2` | Σ w\_i (x\_i − x̄\_i)² | Quadratic; with MOSEK (or `djc`) a rotated quadratic cone on an epigraph variable t is used |
+| `l1` | Σ w\_i (p\_i + n\_i) with x\_i − \(\bar{x}\)\_i = p\_i − n\_i, p, n ≥ 0 | Linear. Auxiliary variables and rows are built once and only right-hand sides change |
+| `l2` | Σ w\_i (x\_i − \(\bar{x}\)\_i)² | Quadratic; with MOSEK (or `djc`) a rotated quadratic cone on an epigraph variable t is used |
 
-**Centre and weights.** The centre x̄ is the point the workers *just evaluated*, not the new master optimum (centring on the optimum would make the penalty zero there). Weights are all 1 in practice (`stabilization_weights=None`).
+**Centre and weights.** The centre \(\bar{x}\) is the point the workers *just evaluated*, not the new master optimum (centring on the optimum would make the penalty zero there). Weights are all 1 in practice (`stabilization_weights=None`).
 
 **What is penalised.** Only the *continuous* linking variables. Binary and integer variables are free in the level-set problem, so after integrality is restored the level-set problem is a MIP. If there are no continuous linking variables, Φ is zero and the solve only finds a feasible point.
 
@@ -357,21 +357,21 @@ The update applies only when ap ≥ 0 and pp ≥ 0. The meaning of tight and loo
 
 ## 8. Bounds, big-M and numerical scaling
 
-Bounds matter in three places: the lower bound L\_w on each subproblem value (which keeps the first master solves bounded), the big-M in state-conditioned cuts (section 6), and variable bounds used by the level-set problem and the cut generators.
+Bounds matter in three places: the lower bound \(\(L_w\)\) on each subproblem value (which keeps the first master solves bounded), the big-M in state-conditioned cuts (section 6), and variable bounds used by the level-set problem and the cut generators.
 
 **Scaling constants.**
 
 | Constant | Value | Where it acts |
 | --- | --- | --- |
-| `BENDERS_THETA_SCALE` (S) | 1e9 | Master carries ϑ\_w = (value)/S, so ϑ is O(1) |
+| `BENDERS_THETA_SCALE` (S) | 1e9 | Master carries \(\vartheta_w\) = (value)/S, so ϑ is O(1) |
 | `BENDERS_RECOURSE_OBJECTIVE_SCALE` | 1e6 | Operational objective is divided by this; duals are multiplied back by it (λ = −dual · scale) |
-| Phase-I elastic weight | 1e6 | Objective min 1e6 · s\_max in the restoration LP |
+| Phase-I elastic weight | 1e6 | Objective min 1e6 · \(s_{\max}\) in the restoration LP |
 | Certificate tolerance | 1e-8 | Dual-ray entries below it are treated as zero in feasibility cuts |
 | Variable-bound cap | 1e8 | Last-resort bound for an otherwise unbounded continuous linking variable; when it is used it is also enforced in the master and applied in each worker's recourse LP |
 
-**Subproblem lower bound L\_w.** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `−recourse_upper_bound`, is L\_w. The master then imposes ϑ\_w ≥ L\_w/S, which is valid because every real operational NPV is at most the relaxation's. The linking variables in that LP are bounded using the master-derived bounds described next.
+**Subproblem lower bound \(\(L_w\)\).** At worker startup the LP relaxation of the operational model is solved for an upper bound on the operational NPV; its negation, `−recourse_upper_bound`, is \(\(L_w\)\). The master then imposes \(\vartheta_w\) ≥ \(\(L_w\)\)/S, which is valid because every real operational NPV is at most the relaxation's. The linking variables in that LP are bounded using the master-derived bounds described next.
 
-**Linking-variable bounds in the recourse LP.** The worker's recourse LP is a clone of the operational model taken before the `x = x̄` linking constraints exist. The master's constraints that are shared by name are deactivated in it (section 4), and it has no investment cost. A linking variable with no explicit upper bound can therefore grow without limit, and because `OP_NPV` is maximised and includes revenue terms (for example sold carbon credits) the LP can be unbounded. In a failing run every linking variable reported `lb = 0, ub = None`: `GenNewLin_Build_MW`, `StorNewLin_Build_MW` and `_MWh`, `TxNewLin_Build_MW`, `BENDERS_CARBON_CREDIT_GENERATED_TOTAL` and `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`. MOSEK reported the LP as unbounded and the worker raised `RuntimeError`. Which family drives the ray was not isolated; the carbon-credit variables are the most likely cause because they map directly to revenue.
+**Linking-variable bounds in the recourse LP.** The worker's recourse LP is a clone of the operational model taken before the `x = \(\bar{x}\)` linking constraints exist. The master's constraints that are shared by name are deactivated in it (section 4), and it has no investment cost. A linking variable with no explicit upper bound can therefore grow without limit, and because `OP_NPV` is maximised and includes revenue terms (for example sold carbon credits) the LP can be unbounded. In a failing run every linking variable reported `lb = 0, ub = None`: `GenNewLin_Build_MW`, `StorNewLin_Build_MW` and `_MWh`, `TxNewLin_Build_MW`, `BENDERS_CARBON_CREDIT_GENERATED_TOTAL` and `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION`. MOSEK reported the LP as unbounded and the worker raised `RuntimeError`. Which family drives the ray was not isolated; the carbon-credit variables are the most likely cause because they map directly to revenue.
 
 The fix takes the bounds from the master and applies them to the recourse LP only:
 
@@ -381,11 +381,11 @@ The fix takes the bounds from the master and applies them to the recourse LP onl
 4. `calculate_recourse_upper_bound(instance, optimiser, linking_var_names, linking_var_bounds)` clones the model, relaxes operational integrality, and calls `apply_linking_variable_bounds`. That function sets a lower or upper bound on the clone only where the variable has none, so an existing explicit bound is never loosened. It returns the names that still lack a bound.
 5. If any variable still lacks a bound, a warning lists the count and the first ten names. If the LP is then not optimal, the `RuntimeError` message also gives the count and the first ten names.
 
-The original operational instance is not changed, so the `x = x̄` solves in the worker loop are unaffected.
+The original operational instance is not changed, so the `x = \(\bar{x}\)` solves in the worker loop are unaffected.
 
 Setup key `RecourseBoundOBBT` (default `True`) controls whether step 3 of the bound sources (OBBT on the master) is tried before falling back to the 1e8 cap. OBBT costs one master solve per linking variable that has neither an explicit bound nor a capacity-constraint bound. Set it to `False` to skip those solves; those variables then take the 1e8 cap directly.
 
-Consequences to keep in mind. A variable on the 1e8 cap gives a valid but very loose bound, so U\_w is large, L\_w is very negative, and M\_w in the big-M formula below grows with it. The log line `Using assumed Benders upper bound ... for <name>` marks each such variable, and the INFO line `Linking-variable bounds: N variables bounded (M with an assumed cap ...)` summarises them. Giving those variables real upper bounds in the master tightens everything downstream.
+Consequences to keep in mind. A variable on the 1e8 cap gives a valid but very loose bound, so \(\(U_w\)\) is large, \(\(L_w\)\) is very negative, and M\_w in the big-M formula below grows with it. The log line `Using assumed Benders upper bound ... for <name>` marks each such variable, and the INFO line `Linking-variable bounds: N variables bounded (M with an assumed cap ...)` summarises them. Giving those variables real upper bounds in the master tightens everything downstream.
 
 **Variable bounds** (`get_continuous_variable_bounds`). For a continuous linking variable the bound is taken from the first source that gives one:
 
@@ -396,15 +396,15 @@ Consequences to keep in mind. A variable on the 1e8 cap gives a valid but very l
 
 The exact capacity-bound formula is not reproduced here; read `find_gridpath_capacity_upper_bound` in the code for it.
 
-**Dual-term bound.** `continuous_dual_term_upper_bound` bounds λᵀ(x − x̄) over the box of variable bounds, i.e. Σ\_i max(λ\_i(l\_i − x̄\_i), λ\_i(u\_i − x̄\_i)). This is the term that enters the big-M below.
+**Dual-term bound.** `continuous_dual_term_upper_bound` bounds λᵀ(x − \(\bar{x}\)) over the box of variable bounds, i.e. Σ\_i max(λ\_i(l\_i − \(\bar{x}\)\_i), λ\_i(u\_i − \(\bar{x}\)\_i)). This is the term that enters the big-M below.
 
 **Big-M for state-conditioned cuts.**
 
 $$
-M_w = \max\Bigl(0, \mathrm{op\_cost}_w + \max_{x}\lambda^{\top}(x-\bar x) - L_w\Bigr)
+M_w = \max\Bigl(0, \mathrm{op\_cost}_w + \max_{x}\lambda^{\top}(x-\bar x) - \(L_w\)\Bigr)
 $$
 
-where op\_cost\_w = −OP\_NPV at x̄. M\_w is the largest amount by which the cut's right-hand side can exceed the global lower bound, so deactivating the cut (z = 0) leaves ϑ\_w ≥ L\_w/S effective. A loose L\_w or loose variable bounds inflate M\_w and weaken the LP relaxation of the master.
+where op\_cost\_w = −OP\_NPV at \(\bar{x}\). M\_w is the largest amount by which the cut's right-hand side can exceed the global lower bound, so deactivating the cut (z = 0) leaves \(\vartheta_w\) ≥ \(\(L_w\)\)/S effective. A loose \(\(L_w\)\) or loose variable bounds inflate M\_w and weaken the LP relaxation of the master.
 
 **Numerical notes (inferred).** Dividing by S and 1e6 keeps coefficients near O(1) for MOSEK/Gurobi, but a cut whose λ entries are all below tolerance can look numerically empty; the feasibility cut rescaling c = max(1, 1/s̄) guards the analogous case there.
 
@@ -414,12 +414,12 @@ where op\_cost\_w = −OP\_NPV at x̄. M\_w is the largest amount by which the c
 
 $$
 \begin{aligned}
-&\textbf{Init: } UB=+\infty, LB=-\infty, \gamma=\gamma_0, \text{derive linking-variable bounds from the master, start one worker per scenario key, collect } L_w \\
+&\textbf{Init: } UB=+\infty, LB=-\infty, \gamma=\gamma_0, \text{derive linking-variable bounds from the master, start one worker per scenario key, collect } \(L_w\) \\
 &\textbf{Solve master once} \to \bar x^{0} \\
 &\textbf{for } k = 0,1,\dots,\mathrm{MaxIter}: \\
 &\quad 1.\ \text{send } \bar x^{k} \text{ to all workers (sliding window)} \\
-&\quad 2.\ \text{collect } (Q_w, \lambda_w) \text{ or feasibility certificates} \\
-&\quad 3.\ \text{true objective } f(\bar x^k) = NPV_{plan}(\bar x^k) - \textstyle\sum_w Q_w \\
+&\quad 2.\ \text{collect } (\(Q_w\), \lambda_w) \text{ or feasibility certificates} \\
+&\quad 3.\ \text{true objective } f(\bar x^k) = NPV_{plan}(\bar x^k) - \textstyle\sum_w \(Q_w\) \\
 &\quad 4.\ \text{if all feasible and } f(\bar x^k) > LB:\ LB \leftarrow f(\bar x^k),\ \text{incumbent} \leftarrow \bar x^k \\
 &\quad 5.\ \text{add optimality / feasibility cuts to master} \\
 &\quad 6.\ \text{re-solve master} \to UB,\ x^{*} \\
@@ -462,9 +462,9 @@ $$
 
 | Message | Direction | Effect |
 | --- | --- | --- |
-| READY | worker → driver | Model built; carries L\_w (the LP-relaxation bound) |
+| READY | worker → driver | Model built; carries \(\(L_w\)\) (the LP-relaxation bound) |
 | solve request | driver → worker | Contains the light planning solution (`_light_planning_sol`, only linking-variable values) |
-| result | worker → driver | Q\_w, λ, or feasibility data |
+| result | worker → driver | \(\(Q_w\)\), λ, or feasibility data |
 | EXPORT\_FINAL | driver → worker | Writes the worker's results for the incumbent (`_export_final_subproblem`) |
 | STOP | driver → worker | Worker exits |
 
