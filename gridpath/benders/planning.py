@@ -36,7 +36,12 @@ class PlanningSolution:
 BENDERS_MASTER_VARIABLE_CAP = 1e8
 
 
-def solve_planning_problem(instance, planning_variables, optimiser):
+def solve_planning_problem(
+    instance,
+    planning_variables,
+    optimiser,
+    required_variables=None,
+):
     """
     Solve the planning/master problem.
 
@@ -46,6 +51,8 @@ def solve_planning_problem(instance, planning_variables, optimiser):
         Instantiated Pyomo master model.
     planning_variables : list[str]
         Names of linking/planning variables.
+    required_variables : list[str], optional
+        Names of planning variables that must be included in the solution.
     optimiser : SolverFactory
         Solver selected by the Benders algorithm.
 
@@ -117,6 +124,7 @@ def solve_planning_problem(instance, planning_variables, optimiser):
     planning_sol = process_planning_sol(
         instance,
         planning_variables,
+        required_variables=required_variables,
     )
 
     # Evaluate the objective directly from the solved model.
@@ -222,14 +230,26 @@ def set_recourse_cost_lower_bounds(instance, recourse_cost_lower_bounds):
             / BENDERS_THETA_SCALE
         )
 
-def process_planning_sol(instance, planning_variables):
+
+def process_planning_sol(
+    instance,
+    planning_variables,
+    required_variables=None,
+):
     """
     Create a PlanningSolution from the current master solution.
 
-    Values are returned without integer/binary rounding. This is
-    important because the P&J relaxed phase intentionally permits
-    fractional values for originally discrete linking variables.
+    All initialized planning-variable values are retained. Variables
+    without values are tolerated only when they are not required by
+    any operational subproblem.
+
+    Values are returned without integer/binary rounding.
     """
+
+    if required_variables is None:
+        required_variables = set(planning_variables)
+    else:
+        required_variables = set(required_variables)
 
     var_lookup = {
         var.name: var
@@ -244,23 +264,43 @@ def process_planning_sol(instance, planning_variables):
     for name in planning_variables:
 
         if name not in var_lookup:
-            raise KeyError(
-                f"Planning variable '{name}' was not found in the "
-                f"active master variables."
-            )
+            if name in required_variables:
+                raise KeyError(
+                    f"Required linking variable '{name}' was not found "
+                    f"in the active master variables."
+                )
+            continue
 
-        val = value(var_lookup[name], exception=True)
+        val = value(var_lookup[name], exception=False)
 
         if val is None:
-            raise ValueError(
-                f"Planning variable '{name}' has no value after "
-                f"the master solve."
-            )
+            if name in required_variables:
+                raise ValueError(
+                    f"Required linking variable '{name}' has no value "
+                    f"after the master solve."
+                )
 
-        # Preserve fractional values. Do not round here.
+            logger.debug(
+                "Master variable '%s' has no solution value and is not "
+                "required by any operational subproblem; skipping it.",
+                name,
+            )
+            continue
+
         planning_values[name] = float(val)
 
-    planning_cost = float(value(instance.ePlanningNPV))
+    planning_cost_value = value(
+        instance.ePlanningNPV,
+        exception=False,
+    )
+
+    if planning_cost_value is None:
+        raise ValueError(
+            "The planning objective ePlanningNPV has no solution value "
+            "after the master solve."
+        )
+
+    planning_cost = float(planning_cost_value)
 
     return PlanningSolution(
         planning_cost=planning_cost,

@@ -523,6 +523,7 @@ def benders(
     # builds its model and solves its LP upper bound (the only license use
     # before READY), so at most `worker_batch_size` do this at once.
     for key in worker_keys:
+        
         result = _get_from_worker(output_queues[key], workers[key], key)
 
         if result["status"] != "READY":
@@ -562,6 +563,33 @@ def benders(
                 continuous_linking_variable_names.append(name)
                 seen_continuous.add(name)
 
+    # Only variables actually used by operational subproblems
+    # must have values in the master solution.
+    # ---------------------------------------------------------
+    # Identify all master variables required by operational workers
+    # ---------------------------------------------------------
+
+    required_planning_variable_names = {
+        name
+        for names in linking_variables_sub.values()
+        for name in names
+    }
+
+    logger.info(
+        "Benders master has %d total variables and %d required "
+        "linking variables.",
+        len(planning_variable_names),
+        len(required_planning_variable_names),
+    )
+
+    target_variable = "PRM_Shortage_MW[PRM_AB,2030]"
+
+    logger.info(
+        "%s is a required linking variable: %s",
+        target_variable,
+        target_variable in required_planning_variable_names,
+    )
+    
     # A maximized operational NPV has an LP-relaxation upper bound. Its
     # negative is a valid lower bound for the net-operating-cost theta.
     if not use_pj_initialization:
@@ -596,7 +624,8 @@ def benders(
     planning_sol, master_obj, planning_results = solve_planning_problem(
         planning_problem,
         planning_variable_names,
-        optimiser
+        optimiser,
+        required_variables=required_planning_variable_names,
     )
 
     # The planning-only objective is NOT a valid Benders upper bound.
@@ -612,7 +641,10 @@ def benders(
     subop_sol_best = None
 
     planning_sol_hist = [
-        [planning_sol.values[name] for name in planning_variable_names]
+        [
+            planning_sol.values.get(name, math.nan)
+            for name in planning_variable_names
+        ]
     ]
 
     stabilization_variables = [
@@ -1085,7 +1117,8 @@ def benders(
         unst_planning_sol, UB_new, planning_results = solve_planning_problem(
             planning_problem,
             planning_variable_names,
-            optimiser
+            optimiser,
+            required_variables=required_planning_variable_names,
         )
 
         # Only the full Benders master objective provides a valid upper bound.
@@ -1199,12 +1232,11 @@ def benders(
                 ):
                     planning_problem._benders_variable_bounds.clear()
 
-                planning_sol, UB, planning_results = (
-                    solve_planning_problem(
-                        planning_problem,
-                        planning_variable_names,
-                        optimiser,
-                    )
+                planning_sol, UB, planning_results = solve_planning_problem(
+                    planning_problem,
+                    planning_variable_names,
+                    optimiser,
+                    required_variables=required_planning_variable_names,
                 )
 
                 master_integrality_restored = True
@@ -1281,14 +1313,15 @@ def benders(
                     stabilization_weights=None,
                     master_discrete_method=master_discrete_method,
                     fallback_planning_sol=unst_planning_sol,
+                    required_variables=required_planning_variable_names,
                 )
 
             else:
                 planning_sol = deepcopy(unst_planning_sol)
 
         planning_sol_hist.append(
-            [
-                planning_sol.values[name]
+            [   
+                planning_sol.values.get(name, math.nan)
                 for name in planning_variable_names
             ]
         )
