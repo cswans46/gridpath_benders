@@ -705,6 +705,21 @@ def _benders_subproblem_worker_impl(
     # ================================================================
     # Recourse lower bound.
     # ================================================================
+    
+    for name in present_linking_vars:
+        var = instance.find_component(name)
+
+        if var is None:
+            continue
+
+        unbounded_lb = var.lb is None
+        unbounded_ub = var.ub is None
+
+        if unbounded_lb or unbounded_ub:
+            print(
+                f"Unbounded linking variable: {name}; "
+                f"lower bound={var.lb}; upper bound={var.ub}"
+            )
 
     recourse_ub = calculate_recourse_upper_bound(
         instance,

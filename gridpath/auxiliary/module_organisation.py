@@ -18,7 +18,6 @@ def define_benders_modules(modules_to_use):
         "objective.system.policy.aggregate_performance_standard_violation_penalties",
         "objective.system.policy.aggregate_fuel_burn_limit_violation_penalties",
         "objective.system.policy.aggregate_policy_target_violation_penalties",
-        "objective.system.policy.aggregate_subsidies",
         "objective.system.policy.aggregate_carbon_credit_sales_and_purchases",
         "system.policy.carbon_cap.aggregate_project_carbon_emissions",
         "system.policy.carbon_cap.aggregate_project_carbon_credits",
@@ -227,6 +226,7 @@ def define_benders_modules(modules_to_use):
 # Only define superperiods in the planning problem (only used in the subsidies module which is only in the planning problem)
         "temporal.investment.superperiods",
         "system.policy.subsidies",
+        "objective.system.policy.aggregate_subsidies",
         "system.policy.benders_policy_constraint",
         "transmission",
         "project.summary_results",

@@ -86,7 +86,8 @@ def add_model_components(
         "Total_Energy_Costs",
         "Total_Fixed_Costs",
         "Total_Tx_Capacity_Costs",
-        "Total_Tx_Fixed_Costs"
+        "Total_Tx_Fixed_Costs",
+        "Total_Subsidies"
     ]
 
     # ensure that this is in cost_components.
