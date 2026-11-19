@@ -4,9 +4,9 @@ Nov 17, 2026 · @Carl
 
 ## 1. Overview and scope
 
-This implementation solves GridPath's capacity-expansion (investment) problem by Benders decomposition: a **planning (master) problem** chooses investments, and one **operational subproblem** per weather/hydro/availability/horizon key prices the operating cost of those investments and returns cuts. It is a maximisation of net present value (NPV), so the master objective is an upper bound (UB) and the best complete plan is a lower bound (LB).
+This implementation solves GridPath's capacity-expansion (investment) problem by Benders decomposition: a **planning (master) problem** chooses investments, and one **operational subproblem** per weather/hydro/availability/horizon key prices the operating cost of those investments and returns cuts. When GridPath is linked with NextGrid, we maximise the net present value (NPV) of total system profits, so the master objective is an upper bound (UB) and the best complete plan (the investment problem for which all operational subproblems have been evaluated) is a lower bound (LB).
 
-The document covers the Benders code in `gridpath/benders/`, its entry points in `gridpath/run_scenario.py` and its flags in `gridpath/common_functions.py`. It describes the branch `new_gridpath_w_BD_imp` at commit `c47f119` **plus** the two patches written in this project: restored reporting with a final-solution export, and the efficiency changes (parallel worker startup, sliding-window dispatch, lighter payloads). Statements marked *inferred* come from reading the code and were not run; section 13 lists open questions.
+The document covers the Benders code in `gridpath/benders/`, its entry points in `gridpath/run_scenario.py` and command-line flags passed in `gridpath/common_functions.py`.
 
 | File | Role |
 | --- | --- |
@@ -21,11 +21,9 @@ The document covers the Benders code in `gridpath/benders/`, its entry points in
 | `benders/soc_allocation.py` | State-of-charge allocation for yearly-balanced storage |
 | `benders/{gurobi,mosek,gams}_*.py` | Solver wrappers (MOSEK adds native L2 cones and disjunctive constraints) |
 
-`benders/benders.py` and `benders/subproblems_temp.py` are older near-copies of `algorithms.py` and `subproblems.py`. `run_scenario.py` imports `algorithms`, so they are not used.
-
 ## 2. Problem structure and notation
 
-The full problem maximises planning NPV minus the operating cost of every subproblem. The decomposition replaces each operating cost by a cost function Q\_w(x) of the investment decisions, which is convex and piecewise linear when the subproblem is a linear program.
+The full problem maximises planning NPV minus the operating cost summed across all subproblems. The decomposition replaces each operating cost by a cost function Q\_w(x) of the investment decisions, which is convex and piecewise linear when the subproblem is a linear program.
 
 ```latex
 \max_{x \in X}\; \mathrm{NPV}_{\mathrm{plan}}(x) \;-\; \sum_{w \in W} Q_w(x_L),
