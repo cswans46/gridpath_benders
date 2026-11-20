@@ -87,12 +87,14 @@ def write_pyomo_mosek_task(model, solver, task_path, linking_constraint_map, obj
 
 class MosekTaskRuntime:
     """Index-based native Task wrapper with no Pyomo component references."""
-    def __init__(self, task, metadata, mosek_module=None):
+    def __init__(self, task, metadata, mosek_module=None, env=None, solution_type=None):
         if mosek_module is None:
             import mosek as mosek_module
         self.mosek = mosek_module
         self.task = task
+        self.env = env
         self.metadata = metadata
+        self.solution_type = solution_type or self.mosek.soltype.bas
         self.linking_rows = dict(metadata["linking_rows"])
         self.variable_columns = dict(metadata["variable_columns"])
         self.objective_scale = float(metadata["objective_scale"])
@@ -111,7 +113,7 @@ class MosekTaskRuntime:
         task.readdata(str(task_path))
         if task.getnumvar() != metadata["num_variables"] or task.getnumcon() != metadata["num_constraints"]:
             raise RuntimeError("Loaded MOSEK task dimensions do not match metadata.")
-        return cls(task, metadata, mosek_module=mosek_module)
+        return cls(task, metadata, mosek_module=mosek_module, env=env)
 
     def set_linking_values(self, values):
         missing = set(self.linking_rows).difference(values)
@@ -123,20 +125,20 @@ class MosekTaskRuntime:
 
     def optimize(self):
         self.task.optimize()
-        return self.task.getsolsta(self.mosek.soltype.bas)
+        return self.task.getsolsta(self.solution_type)
 
     def primal_values(self, names=None):
         names = list(self.variable_columns) if names is None else list(names)
         columns = [self.variable_columns[name] for name in names]
         values = [0.0] * self.task.getnumvar()
         if columns:
-            self.task.getxx(self.mosek.soltype.bas, values)
+            self.task.getxx(self.solution_type, values)
         return {name: float(values[column]) for name, column in zip(names, columns)}
 
     def linking_duals(self):
         values = [0.0] * self.task.getnumcon()
-        self.task.gety(self.mosek.soltype.bas, values)
+        self.task.gety(self.solution_type, values)
         return {name: -float(values[row]) * self.objective_scale for name, row in self.linking_rows.items()}
 
     def objective_value(self):
-        return float(self.task.getprimalobj(self.mosek.soltype.bas)) * self.objective_scale
+        return float(self.task.getprimalobj(self.solution_type)) * self.objective_scale
