@@ -621,9 +621,9 @@ def benders_subproblem_worker(
     if safety_factor < 1:
         raise ValueError('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR must be at least 1.')
     try:
+        guard.acquire()
         if memory_coordinator is not None:
             memory_coordinator.set_reservation(worker_index, persistent=initial_persistent, temporary=initial_temporary)
-        guard.acquire()
         _benders_subproblem_worker_impl(
             key,
             planning_constraint_names,
@@ -772,8 +772,12 @@ def _benders_subproblem_worker_impl(
     # Reconcile the startup estimate with the resident model footprint.
     if memory_coordinator is not None:
         resident_bytes = max(0, process_memory_rss() - baseline_rss)
+        # Release the startup temporary allowance before increasing the
+        # persistent reservation; this avoids workers waiting on one another
+        # while all still hold their startup peak allowances.
+        memory_coordinator.set_reservation(worker_index, temporary=0)
         memory_coordinator.set_reservation(
-            worker_index, persistent=int(resident_bytes * safety_factor), temporary=0
+            worker_index, persistent=int(resident_bytes * safety_factor)
         )
 
     # Tell the parent process that this worker is ready.
@@ -1303,8 +1307,11 @@ def _benders_subproblem_worker_impl(
             minimum_operation_temp, int(transient_peak * safety_factor)
         )
         if memory_coordinator is not None:
+            # Release the temporary reservation first so a larger persistent
+            # footprint can be admitted without a circular wait between workers.
+            memory_coordinator.set_reservation(worker_index, temporary=0)
             memory_coordinator.set_reservation(
-                worker_index, persistent=persistent_reservation, temporary=0
+                worker_index, persistent=persistent_reservation
             )
 
         # Send result back only after the updated reservations are admitted.
