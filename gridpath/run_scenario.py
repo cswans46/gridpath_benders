@@ -1565,19 +1565,13 @@ def run_scenario(
                         _scenario_directory,
                         weather_iteration,
                         hydro_iteration,
+                        availability_iteration,
                         subproblem,
                         stage_directories,
-                    ) in (
-                        (
-                            item[0],
-                            item[1],
-                            item[2],
-                            item[3],
-                            item[4],
-                            item[5],
-                        )
-                        for item in pool_data
-                    )
+                        _stage_flag,
+                        _parsed_arguments,
+                        _objective_values,
+                    ) in pool_data
                 }
                 pool_data = {
                     "scenario_directory": scenario_directory,
