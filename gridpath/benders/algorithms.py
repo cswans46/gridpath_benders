@@ -39,7 +39,7 @@ class BendersMemoryCoordinator:
     """Atomic, shared admission control for persistent and temporary worker memory.
 
     Reservations are cooperative planning limits, not OS-enforced process limits.
-    The synchronized arrays and condition are shared by the parent and spawned
+    The shared arrays and condition are passed to the parent and spawned
     workers. A worker may change its reservation whenever its memory phase changes.
     """
 
@@ -130,7 +130,11 @@ def _memory_budget_from_system():
     if minimum_reserve_gb < 0:
         raise ValueError("GRIDPATH_BENDERS_MINIMUM_RESERVE_GB must be non-negative.")
     reserve = max(reserve_fraction * total, minimum_reserve_gb * 1024**3)
-    return int(min(fraction * total, max(0, total - reserve)))
+    system_budget = int(min(fraction * total, max(0, total - reserve)))
+    # The parent retains the planning master and is not one of the workers;
+    # account for its current RSS before allocating the worker-pool budget.
+    master_rss = psutil.Process(os.getpid()).memory_info().rss
+    return max(0, system_budget - master_rss)
 
 
 
