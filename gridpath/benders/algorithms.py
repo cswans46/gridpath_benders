@@ -24,6 +24,9 @@ from gridpath.benders.regularization import *
 from gridpath.benders.subproblems import (
     benders_subproblem_worker,
 )
+from gridpath.benders.mosek_task_worker import (
+    benders_subproblem_worker as mosek_task_benders_subproblem_worker,
+)
 from gridpath.benders.gurobi_benders import (
     create_gurobi_benders_solver,
 )
@@ -570,6 +573,23 @@ def benders(
 
     print("Building subproblems for Benders decomposition...")
 
+    worker_backend = os.getenv("GRIDPATH_BENDERS_WORKER_BACKEND", "pyomo").strip().lower()
+    if worker_backend not in {"pyomo", "mosek_task"}:
+        raise ValueError(
+            "GRIDPATH_BENDERS_WORKER_BACKEND must be 'pyomo' or 'mosek_task', "
+            f"not {worker_backend!r}."
+        )
+    worker_target = (
+        mosek_task_benders_subproblem_worker
+        if worker_backend == "mosek_task"
+        else benders_subproblem_worker
+    )
+    if worker_backend == "mosek_task" and str(parsed_arguments.solver).lower() == "gams":
+        logger.warning(
+            "Native task workers use the direct MOSEK interface; GAMS solver "
+            "options are not passed through except MOSEK-native options."
+        )
+
     ctx = mp.get_context("spawn")
 
     workers = {}
@@ -619,7 +639,7 @@ def benders(
         output_queue = ctx.Queue()
 
         process = ctx.Process(
-            target=benders_subproblem_worker,
+            target=worker_target,
             args=(
                 key,
                 planning_constraint_names,
