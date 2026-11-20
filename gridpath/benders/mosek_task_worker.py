@@ -126,7 +126,11 @@ def _mosek_bound(mosek, lb, ub):
 
 
 class _TaskWorkerState:
-    def __init__(self, task, metadata, mosek):
+    def __init__(self, task, metadata, mosek, task_solver=None):
+        # Retain the Pyomo direct-solver wrapper as the owner of its MOSEK
+        # environment. The Pyomo model and interface maps are released by the
+        # compiler helper, but the environment must outlive the Task.
+        self.task_solver = task_solver
         self.task = task
         self.metadata = metadata
         self.mosek = mosek
@@ -238,18 +242,22 @@ class _TaskWorkerState:
 def _restore_with_pyomo(
     key, planning_sol, active_linking_vars, present_linking_vars,
     planning_constraint_names, scenario_directory, multi_stage,
-    parsed_arguments, subproblem_key,
+    parsed_arguments, subproblem_key, solver_options=None,
 ):
     instance, _ = _build_pyomo_instance(
         key, planning_constraint_names, scenario_directory, multi_stage,
         parsed_arguments,
     )
-    from gridpath.benders.subproblems import fix_linking_variables
+    from gridpath.benders.subproblems import (
+        fix_linking_variables, _set_feasibility_restoration_mode,
+    )
+    if hasattr(instance, "slack_max"):
+        _set_feasibility_restoration_mode(instance, active=False)
     fix_linking_variables(instance, planning_sol, present_linking_vars)
     results = SolverResults()
     results.solver.status = SolverStatus.warning
     results.solver.termination_condition = TerminationCondition.infeasible
-    solver = _make_pyomo_solver(parsed_arguments)
+    solver = _make_pyomo_solver(parsed_arguments, solver_options)
     linking_types = classify_linking_vars(instance, present_linking_vars)
     return process_subproblem_solution(
         instance, results, planning_sol, linking_types, solver,
@@ -320,8 +328,8 @@ def benders_subproblem_worker(
         finally:
             instance.OP_NPV.set_value(original_objective)
 
-        state = _TaskWorkerState(task, metadata, mosek)
-        del instance, optimiser, task_solver, dynamic_components
+        state = _TaskWorkerState(task, metadata, mosek, task_solver=task_solver)
+        del instance, optimiser, dynamic_components
         gc.collect()
 
         if memory_coordinator is not None:
@@ -435,7 +443,7 @@ def benders_subproblem_worker(
                 result = _restore_with_pyomo(
                     key, planning_sol, active_linking, present_linking_vars,
                     planning_constraint_names, scenario_directory, multi_stage,
-                    parsed_arguments, key,
+                    parsed_arguments, key, solver_options=solver_options,
                 )
                 result["operational_discrete_state"] = None
                 result["master_discrete_state"] = None
