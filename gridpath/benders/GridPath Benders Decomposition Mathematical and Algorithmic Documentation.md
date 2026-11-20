@@ -755,12 +755,12 @@ The defaults can be changed with `GRIDPATH_BENDERS_MEMORY_FRACTION`, `GRIDPATH_B
 
 ### 15.2 Coordinator and worker lifecycle
 
-`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its shared reservation arrays, protected by a condition lock make each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
+`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its shared reservation arrays, protected by a condition lock, making each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
 
 The worker integration in `benders/subproblems.py` follows this lifecycle:
 
 1. **Startup reservation.** Before building its operational model, each worker reserves initial persistent and temporary memory estimates. The existing startup semaphore continues to limit simultaneous model construction and initial recourse-bound solves.
-2. **Persistent model reservation.** After model construction and the initial recourse-bound calculation, the worker measures its resident-set size (RSS) and reconciles its reservation to the measured increase over its process-start baseline, multiplied by a safety factor. The startup temporary reservation is released before the worker reports `READY`. The worker first releases that temporary allowance and then reconciles its persistent reservation, avoiding a circular wait when multiple workers need to increase their resident estimates.
+2. **Persistent model reservation.** After model construction and the initial recourse-bound calculation, the worker measures its resident-set size (RSS) and reconciles its reservation to the measured increase over its process-start baseline, multiplied by a safety factor. The startup temporary reservation is released before the worker reports `READY`. The worker first releases that temporary allowance and then reconciles its persistent reservation, avoiding a circular wait when multiple workers need to increase their resident estimates. After each recourse solve, it repeats this process: release the temporary reservation, update persistent memory to current RSS, and retain an estimate of the transient peak for its next operation.
 3. **Temporary operation reservation.** Before each recourse solve or final export, the worker requests a temporary reservation. It releases that reservation after returning the result. The persistent reservation remains held for as long as the worker retains its model.
 4. **Worker shutdown.** The worker releases both reservations in its `finally` block, including when initialization or processing raises an exception.
 
@@ -775,7 +775,8 @@ The worker integration in `benders/subproblems.py` follows this lifecycle:
 | `GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB` | `4` | Initial per-worker temporary startup reservation |
 | `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Initial temporary reservation used before the first recourse operation |
 | `GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB` | `0.5` | Minimum temporary reservation retained after RSS-based adaptation |
-| `GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR` | `1.25` | Multiplier applied when reconciling measured resident and transient memory |\n| `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Maximum seconds a worker waits for a reservation before raising `MemoryError` |
+| `GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR` | `1.25` | Multiplier applied when reconciling measured resident and transient memory |
+| `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Maximum seconds a worker waits for a reservation before raising `MemoryError` |
 
 ### 15.4 Interpretation and limitations
 
