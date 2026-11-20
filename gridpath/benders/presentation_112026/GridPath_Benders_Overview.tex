@@ -179,15 +179,17 @@ This excludes trial points certified infeasible by the restoration problem.
 \node[process,right=of feas] (opt) {Optimality cuts\\from duals};
 \node[process,below=of feas,yshift=-3mm] (inc) {Evaluate complete plan\\update $LB$ and incumbent};
 \node[process,below=of inc] (bound) {Update $UB$, gap,\\stabilization};
-\node[decision,below=of bound] (stop) {Converged or\\limit reached?};
-\node[process,left=of stop,xshift=-7mm] (done) {Return results};
+\node[decision,below=of bound] (stop) {Converged or\\stopping limit reached?};
+\node[process,left=of stop,xshift=-7mm] (done) {Return results\\(status and bounds)};
 \draw[arrow](master)--(send);\draw[arrow](send)--(solve);\draw[arrow](solve)--(feas);
 \draw[arrow](feas)--node[above,font=\scriptsize]{No}(rest);
 \draw[arrow](feas)--node[above,font=\scriptsize]{Yes}(opt);
 \draw[arrow](rest)|-(inc);\draw[arrow](opt)|-(inc);
 \draw[arrow](inc)--(bound);\draw[arrow](bound)--(stop);
 \draw[arrow](stop)--node[above,font=\scriptsize]{Yes}(done);
-\draw[arrow](stop.east)--++(10mm,0)|-(master.east);
+% If not converged and no stopping limit has been reached, start the next iteration.
+\draw[arrow] (stop.east) -- node[above,font=\scriptsize]{No: next iteration} ++(13mm,0)
+  |- ([yshift=4mm]master.north) -- (master.north);
 \end{tikzpicture}
 \end{frame}
 
