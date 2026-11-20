@@ -38,7 +38,7 @@ $$
 | \(x_L \subseteq x\) | **Linking variables**: the planning variables that appear in subproblems (section below) |
 | \(w \in W\) | A subproblem key `ScenarioKey(weather, hydro, availability, subproblem, stage)` |
 | \(\bar{x}\) | Trial point: the master values of \(x_L\) sent to the workers (`continuous_point`) |
-| \(Q_w(\bar{x})\) | Recourse cost, `op_cost = −OP_NPV` in dollars |
+| \(Q_w(\bar{x})\) | Recourse cost, `op_cost = -OP_NPV` in dollars |
 | \(\vartheta_w\) | `vTHETA[w]`, the master's approximation of \(Q_w\), in units of \(S=10^9\) dollars |
 | \(S\) | `BENDERS_THETA_SCALE = 1e9` (`planning.py:19`) |
 | \(\lambda_w\) | Sensitivity of \(Q_w\) to \(x_L\), from the dual of the linking equalities |
@@ -264,7 +264,7 @@ $$
 
 When \(z=1\) the right-hand side is at most \(L_w\)/S, so the cut is slack there. Variable bounds for \(M\) come from `get_continuous_variable_bounds` (section 8). Mismatch indicators are built per variable:
 
-- **Binary** \(x_j\) with stored value \(d_j\): \(m_j\) = 1 − \(x_j\) if \(d_j\) = 1, else \(m_j\) = \(x_j\). Then z ≥ \(m_j\) for every j and z ≤ Σ \(m_j\), so z = 0 only if every variable matches.
+- **Binary** \(x_j\) with stored value \(d_j\): \(m_j = 1 - x_j\) if \(d_j = 1\), else \(m_j = x_j\). Then \(z \geq m_j\) for every \(j\) and \(z \leq \sum_j m_j\), so \(z = 0\) only if every variable matches.
 - **Integer** \(x_j\) with stored value t: two binaries `below` and `above` with big-M constraints, and a mismatch variable bounded by their sum.
 
 Each cut lives in a Pyomo `Block` named `BendersDiscretePattern_{key}_{id}`.
@@ -304,7 +304,7 @@ Two kinds of integer variable exist, and the code treats them separately: **mast
 
 | Method | Behaviour |
 | --- | --- |
-| `pj_relax` | **Two phases.** (1) Relax integers to the reals and binaries to $[0, 1]$ (`algorithms.py:342-351`), run ordinary Benders until the gap closes. (2) Restore the domains, reset LB to −∞, clear the incumbent, re-solve the master as a MIP, and continue with state-conditioned cuts (section 5). If the relaxed optimum is already integral the run stops as optimal. |
+| `pj_relax` | **Two phases.** (1) Relax integers to the reals and binaries to $[0, 1]$ (`algorithms.py:342-351`), run ordinary Benders until the gap closes. (2) Restore the domains, reset \(LB = -\infty\), clear the incumbent, re-solve the master as a MIP, and continue with state-conditioned cuts (section 5). If the relaxed optimum is already integral the run stops as optimal. |
 | `linearized` | Rewritten to `pj_relax` at `algorithms.py:280`, with `use_native_djc = False`, so state cuts use big-M rows. The separate `linearized_phase` code path is therefore never reached (inferred). |
 | `djc` | The master is a MIP from the first iteration and state cuts are native disjunctions. Requires native MOSEK; any other solver raises `ValueError` (`algorithms.py:429-434`). Optional seeding below. |
 | `none` | Plain Benders for continuous linking variables only. If discrete linking variables exist the code warns and falls back to `pj_relax`. |
@@ -313,7 +313,7 @@ The `pj_relax` label is the code's own; the document uses it without claiming th
 
 `use_native_djc` is true when the requested method is not `linearized` and the solver is native MOSEK. It sends states to `mosek_benders.add_benders_djc` instead of building big-M blocks.
 
-**DJC seeding.** Cuts are valid only in the state where they are generated, so an unvisited state is bounded only by the loose \(L_w\). With `DjcSeedStates` true and \(2^n\) ≤ `DjcSeedMaxStates` (default 1024) binary linking variables, `benders()` builds one seed per joint binary state, with continuous linking variables set to zero, and evaluates each before the first master solve. Seeding is off by default and has no CLI flag; set it through `GRIDPATH_BENDERS_SETUP`.
+**DJC seeding.** Cuts are valid only in the state where they are generated, so an unvisited state is bounded only by the loose \(L_w\). With `DjcSeedStates` true and \(2^n \leq \texttt{DjcSeedMaxStates}\) (default 1024) binary linking variables, `benders()` builds one seed per joint binary state, with continuous linking variables set to zero, and evaluates each before the first master solve. Seeding is off by default and has no CLI flag; set it through `GRIDPATH_BENDERS_SETUP`.
 
 ### Operational discrete methods
 
@@ -355,9 +355,9 @@ A small \(\gamma\) keeps the level near \(UB\) (tight); a large \(\gamma\) moves
 
 **What is penalised.** Only the *continuous* linking variables. Binary and integer variables are free in the level-set problem, so after integrality is restored the level-set problem is a MIP. If there are no continuous linking variables, Φ is zero and the solve only finds a feasible point.
 
-**Fallbacks.** A failed level-set solve prints a warning and returns the plain master optimum, the unstabilised point. The stabilisation is also skipped on alternate iterations when the run is near the noise floor: `len(gap_hist) > 6`, `gap < \(10^{-3}\)`, `gap_hist[-1] > 0.5·gap_hist[-6]` and an even history length (`algorithms.py:1120-1123`).
+**Fallbacks.** A failed level-set solve prints a warning and returns the plain master optimum, the unstabilised point. The stabilisation is also skipped on alternate iterations when the run is near the noise floor: `len(gap_hist) > 6`, `gap < \(10^{-3}\)`, `gap_hist[-1] > 0.5 * gap_hist[-6]` and an even history length (`algorithms.py:1120-1123`).
 
-**Dynamic γ.** With `--benders_stab_dynamic` true (default) and k ≥ 1, `update_stab_param` (`algorithms.py:2968-2983`) compares the actual drop in UB with the drop the previous level predicted:
+**Dynamic γ.** With `--benders_stab_dynamic` true (default) and \(k \geq 1\), `update_stab_param` (`algorithms.py:2968-2983`) compares the actual drop in UB with the drop the previous level predicted:
 
 $$
 ap = UB_{old} - UB, \qquad
@@ -373,7 +373,7 @@ $$
 \end{cases}
 $$
 
-The update applies only when ap ≥ 0 and pp ≥ 0. The meaning of tight and loose is inferred from the level formula. Two sharp edges are listed in section 13: r is computed before the guard, so pp = 0 raises `ZeroDivisionError`, and γ is not clipped.
+The update applies only when \(a_p \geq 0\) and \(p_p \geq 0\). The meaning of tight and loose is inferred from the level formula. Two sharp edges are listed in section 13: \(r\) is computed before the guard, so \(p_p = 0\) raises `ZeroDivisionError`, and \(\gamma\) is not clipped.
 
 ## 8. Bounds, big-M and numerical scaling
 
@@ -385,7 +385,7 @@ Bounds matter in three places: the lower bound \(L_w\) on each subproblem value 
 | --- | --- | --- |
 | `BENDERS_THETA_SCALE` (\(S\)) | \(10^9\) | Master carries \(\vartheta_w=\text{value}/S\), so \(\vartheta_w\) is typically order one |
 | `BENDERS_RECOURSE_OBJECTIVE_SCALE` | \(10^6\) | Operational objective is divided by this; duals are multiplied back by it (\(\lambda=-10^6\times\text{dual}\)) |
-| Phase-I elastic weight | \(10^6\) | Objective min \(10^6\) · \(s_{\max}\) in the restoration LP |
+| Phase-I elastic weight | \(10^6\) | Objective \(\min 10^6 s_{\max}\) in the restoration LP |
 | Certificate tolerance | \(10^{-8}\) | Dual-ray entries below it are treated as zero in feasibility cuts |
 | Variable-bound cap | `1e8` | Last-resort bound for an otherwise unbounded continuous linking variable; when it is used it is also enforced in the master and applied in each worker's recourse LP |
 
