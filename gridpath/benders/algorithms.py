@@ -600,7 +600,14 @@ def benders(
 
     startup_semaphore = ctx.Semaphore(worker_batch_size)
     memory_budget_bytes = _memory_budget_from_system()
-    memory_coordinator = BendersMemoryCoordinator(\n        ctx,\n        len(worker_keys),\n        memory_budget_bytes,\n        wait_timeout=float(os.getenv('GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT', '600')),\n    )
+    memory_coordinator = BendersMemoryCoordinator(
+        ctx,
+        len(worker_keys),
+        memory_budget_bytes,
+        wait_timeout=float(
+            os.getenv("GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT", "600")
+        ),
+    )
     logger.info(
         'Benders dynamic memory budget: %.1f GiB (physical RAM %.1f GiB).',
         memory_budget_bytes / 1024**3,
