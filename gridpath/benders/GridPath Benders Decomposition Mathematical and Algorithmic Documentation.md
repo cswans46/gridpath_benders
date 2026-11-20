@@ -773,14 +773,14 @@ The worker integration in `benders/subproblems.py` follows this lifecycle:
 | `GRIDPATH_BENDERS_MINIMUM_RESERVE_GB` | `32` | Minimum absolute system-memory reserve in GiB |
 | `GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB` | `4` | Initial per-worker persistent reservation during model construction |
 | `GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB` | `4` | Initial per-worker temporary startup reservation |
-| `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Temporary reservation requested before each solve or final export |
+| `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Initial temporary reservation used before the first recourse operation |\n| `GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB` | `0.5` | Minimum temporary reservation retained after RSS-based adaptation |
 | `GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR` | `1.25` | Multiplier applied when reconciling measured resident memory |
 
 ### 15.4 Interpretation and limitations
 
 This is **cooperative admission control**, not an operating-system memory limit. Pyomo, solver interfaces and native solver libraries can allocate memory without consulting the coordinator. The coordinator therefore enforces the sum of *reservations*, not a mathematical guarantee that actual RSS can never exceed the budget. The initial and temporary estimates must be chosen conservatively for the model and solver in use. RSS is a process-level diagnostic and can include shared pages; it is not identical to private committed memory.
 
-The initial implementation uses configurable temporary reservations rather than attempting to interrupt an allocation already in progress. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
+For recourse operations, each worker samples its RSS at 100 ms intervals. The observed increase over the operation's starting RSS, multiplied by the safety factor, becomes that worker's temporary reservation estimate for its next operation (subject to a configurable minimum). This lets workers develop different temporary-memory estimates from their own observed workloads. The estimate is updated between operations; it does not retroactively prevent an allocation that exceeds the current reservation, and very short-lived peaks may fall between samples. The first operation uses the configured initial temporary estimate. Final export uses the current estimate once. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
 
 ## 16. References
 
