@@ -6,9 +6,8 @@
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{footline}[frame number]
-\title[GridPath Benders]{GridPath Benders Decomposition}
-\subtitle{Mathematical formulation, software architecture, and algorithm flow}
-\author{GridPath Benders implementation overview}
+\title[GridPath Benders]{GridPath and NextGrid Benders Decomposition}
+\author{Carl Swanson}
 \date{\today}
 \tikzset{process/.style={draw,rounded corners,align=center,minimum height=8mm,text width=30mm,fill=blue!7},file/.style={draw,rounded corners,align=center,minimum height=7mm,text width=33mm,fill=green!8,font=\small},decision/.style={draw,diamond,aspect=2,align=center,fill=orange!12,text width=22mm,inner sep=1pt},arrow/.style={-{Stealth[length=2mm]},thick}}
 \begin{document}
@@ -204,7 +203,6 @@ This excludes trial points certified infeasible by the restoration problem.
 \begin{frame}{Implementation cautions}
 \begin{itemize}
 \item The $10^8$ cap can loosen $U_w$, make $L_w$ more negative, and inflate big-$M$ values.
-\item A fixed-operational-integer dual cut is conditional on that operational integer state.
 \item Feasibility restoration relies on an LP dual certificate; unfixed non-linking integer variables are unsupported for that certificate.
 \item A newly constructed Pyomo solver interface is a wrapper retry, not proof of a clean external solver process.
 \item The code re-solves the updated Pyomo model after adding cuts; internal warm-start or process reuse is solver-interface dependent.
