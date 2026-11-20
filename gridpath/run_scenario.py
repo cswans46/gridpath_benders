@@ -1549,11 +1549,41 @@ def run_scenario(
                                     ]
                                 )
 
-            if not parsed_arguments.benders:
+            if parsed_arguments.benders:
+                # Benders needs one aggregate dictionary: it creates one
+                # planning problem and dispatches all operational subproblems
+                # to its persistent workers. Keep the list representation for
+                # the conventional non-Benders multiprocessing path.
+                all_subproblem_data = {
+                    (
+                        weather_iteration,
+                        hydro_iteration,
+                        availability_iteration,
+                        subproblem,
+                    ): stage_directories
+                    for (
+                        _scenario_directory,
+                        weather_iteration,
+                        hydro_iteration,
+                        availability_iteration,
+                        subproblem,
+                        stage_directories,
+                        _stage_flag,
+                        _parsed_arguments,
+                        _objective_values,
+                    ) in pool_data
+                }
+                pool_data = {
+                    "scenario_directory": scenario_directory,
+                    "all_subproblem_data": all_subproblem_data,
+                    "stage_flag": scenario_structure.STAGE_FLAG,
+                    "parsed_arguments": parsed_arguments,
+                    "objective_values": objective_values,
+                }
+                n_tasks = len(all_subproblem_data)
+            else:
                 pool_data = tuple(pool_data)
                 n_tasks = len(pool_data)
-            else:
-                n_tasks = len(pool_data["all_subproblem_data"])
 
             # Adjust pool size based on actual number of tasks
             # (may be less than total subproblems if using --incomplete_only)
@@ -1576,22 +1606,19 @@ def run_scenario(
                 n_parallel_subproblems = n_tasks
 
             if parsed_arguments.benders:
-                # For benders, we want the pooling to happen later in the processing routine. For now, we need to have
-                # all subproblems in the pool_data dictionary.
-                # The reason why we can't pool here is because the pool.map function applies the function to each of the individual
-                # subproblems (hence creating a separate planning problem for each operational subproblem and running the benders
-                # function separately for each subproblem.
-                # Now, we run the run_optimisation_for_subproblem_pool function without the pool.map. We move the pool.map to be applied
-                # to a function within the benders function.
+                # Run the Benders planning problem once. Its own dispatcher
+                # parallelizes operational subproblems; mapping this function
+                # over the subproblems would create separate planning problems.
                 run_optimization_for_subproblem_pool(pool_data)
-
             else:
-                # Pool must use spawn to work properly on Linux
-                pool = get_context("spawn").Pool(n_parallel_subproblems)
+                # Don't create more processes than tasks.
+                n_parallel_subproblems = min(n_parallel_subproblems, n_tasks)
 
-            pool.map(run_optimization_for_subproblem_pool, pool_data)
-            pool.close()
-            pool.join()
+                # Pool must use spawn to work properly on Linux.
+                pool = get_context("spawn").Pool(n_parallel_subproblems)
+                pool.map(run_optimization_for_subproblem_pool, pool_data)
+                pool.close()
+                pool.join()
 
             # objective_values is backed by the manager; copy it into a plain
             # dict before shutting the manager down so the returned data
