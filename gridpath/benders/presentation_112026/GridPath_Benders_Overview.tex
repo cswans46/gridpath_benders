@@ -17,7 +17,16 @@
 \begin{document}
 \begin{frame}\titlepage\end{frame}
 
-\begin{frame}{High}
+\begin{frame}{Purpose and High-level overview}
+\textbf{Purpose}
+\begin{itemize}
+\item The purpose of Benders decomposition is to efficiently solve large-scale planning problems 
+by separating investment and policy-allocation decisions from operational evaluations. This allows the 
+concurrent solve of temporal and/or stochastic subproblems instead of solving the monolithic model.
+\item The primary use case will be to enable hydro modelling. Other benefits include modelling integer 
+investment and operational decisions.
+\end{itemize}
+\textbf{High-level overview}
 \begin{itemize}
 \item The planning model chooses investment and policy-allocation decisions.
 \item Operational subproblems evaluate operating value conditional on those decisions.
