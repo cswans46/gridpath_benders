@@ -59,7 +59,9 @@ def write_pyomo_mosek_task(model, solver, task_path, linking_constraint_map, obj
         variable_columns[variable.name] = column
         variable_metadata[variable.name] = {
             "column": column, "lb": _finite_value(variable.lb), "ub": _finite_value(variable.ub),
-            "fixed": bool(variable.fixed), "binary": bool(variable.is_binary()),
+            "fixed": bool(variable.fixed),
+            "fixed_value": _finite_value(variable.value) if variable.fixed else None,
+            "binary": bool(variable.is_binary()),
             "integer": bool(variable.is_integer()),
         }
     task.writedata(str(task_path))
