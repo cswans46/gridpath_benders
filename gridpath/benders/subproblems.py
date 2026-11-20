@@ -614,7 +614,6 @@ def benders_subproblem_worker(
     """
     guard = _StartupGuard(startup_semaphore)
     process = psutil.Process(os.getpid())
-    baseline_rss = process.memory_info().rss
     initial_persistent = int(float(os.getenv('GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB', '4')) * 1024**3)
     initial_temporary = int(float(os.getenv('GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB', '4')) * 1024**3)
     safety_factor = float(os.getenv('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR', '1.25'))
@@ -639,7 +638,6 @@ def benders_subproblem_worker(
             calculate_global_recourse_bound=calculate_global_recourse_bound,
             memory_coordinator=memory_coordinator,
             worker_index=worker_index,
-            baseline_rss=baseline_rss,
             safety_factor=safety_factor,
         )
     finally:
@@ -663,7 +661,6 @@ def _benders_subproblem_worker_impl(
     calculate_global_recourse_bound=True,
     memory_coordinator=None,
     worker_index=None,
-    baseline_rss=0,
     safety_factor=1.25,
 ):
     """Build and serve one persistent operational Benders subproblem.
@@ -771,7 +768,7 @@ def _benders_subproblem_worker_impl(
     # ================================================================
     # Reconcile the startup estimate with the resident model footprint.
     if memory_coordinator is not None:
-        resident_bytes = max(0, process_memory_rss() - baseline_rss)
+        resident_bytes = process_memory_rss()
         # Release the startup temporary allowance before increasing the
         # persistent reservation; this avoids workers waiting on one another
         # while all still hold their startup peak allowances.
@@ -1301,7 +1298,7 @@ def _benders_subproblem_worker_impl(
         monitor_stop.set()
         memory_monitor.join()
         current_rss = process_memory_rss()
-        persistent_reservation = max(0, int((current_rss - baseline_rss) * safety_factor))
+        persistent_reservation = int(current_rss * safety_factor)
         transient_peak = max(0, observed_peak_rss[0] - current_rss)
         operation_temp_reservation = max(
             minimum_operation_temp, int(transient_peak * safety_factor)
