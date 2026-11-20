@@ -2,7 +2,6 @@
 \usetheme{Madrid}
 \usecolortheme{default}
 \usepackage[T1]{fontenc}
-\usepackage{enumitem}
 \usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz,etoolbox}
 % Add a little breathing room between list entries while keeping slides compact.
 \AtBeginEnvironment{itemize}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
@@ -284,7 +283,8 @@ This excludes trial points certified infeasible by the restoration problem.
 \end{frame}
 
 \begin{frame}{Implementation cautions}
-\begin{itemize}[itemsep=8pt]
+\begin{itemize}
+\setlength{\itemsep}{8pt}
 \item The $10^8$ cap can loosen $U_w$, make $L_w$ more negative, and inflate big-$M$ values.
 \item Feasibility restoration relies on an LP dual certificate; unfixed non-linking integer variables are unsupported for that certificate.
 \item A newly constructed Pyomo solver interface is a wrapper retry, not proof of a clean external solver process.
