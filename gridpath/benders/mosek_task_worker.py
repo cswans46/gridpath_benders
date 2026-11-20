@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pyomo.environ as pyo
 from pyomo.opt import SolverFactory, SolverStatus, TerminationCondition
-from pyomo.opt.results import SolverResults
+from pyomo.opt import SolverResults
 
 from gridpath.auxiliary.dynamic_components import DynamicComponents
 from gridpath.benders.gams_benders_solver import create_gams_solver
@@ -172,6 +172,11 @@ class _TaskWorkerState:
             raise KeyError(f"Missing task linking values: {sorted(missing)}")
         for name, row in self.linking_rows.items():
             rhs = float(values[name])
+            info = self.variables[name]
+            if info["lb"] is not None:
+                rhs = max(rhs, float(info["lb"]))
+            if info["ub"] is not None:
+                rhs = min(rhs, float(info["ub"]))
             self.task.putconbound(
                 int(row), self.mosek.boundkey.fx, rhs, rhs
             )
