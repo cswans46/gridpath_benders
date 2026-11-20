@@ -18,7 +18,8 @@ The document covers the Benders code in `gridpath/benders/`, its entry points in
 | `benders/restoration.py` | Phase-I feasibility restoration with a dual certificate |
 | `benders/regularization.py` | Level-set (stabilisation) problem, L1 and L2 |
 | `benders/operational_model_creation.py` | Operational model and linking-variable identification |
-| `benders/soc_allocation.py` | Shared SOC allocation targets and variables used by master and operational subproblems |\n| `system/policy/benders_policy_constraint.py` | Master-side policy allocation constraints, including cyclic storage SOC chaining and capacity limits |
+| `benders/soc_allocation.py` | Shared SOC allocation targets and variables used by master and operational subproblems |
+| `system/policy/benders_policy_constraint.py` | Master-side policy allocation constraints, including cyclic storage SOC chaining and capacity limits |
 | `benders/{gurobi,mosek,gams}_*.py` | Solver wrappers (MOSEK adds native L2 cones and disjunctive constraints) |
 
 ## 2. Problem structure and notation
