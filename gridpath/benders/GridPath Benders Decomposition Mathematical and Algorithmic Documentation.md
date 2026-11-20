@@ -755,7 +755,7 @@ The defaults can be changed with `GRIDPATH_BENDERS_MEMORY_FRACTION`, `GRIDPATH_B
 
 ### 15.2 Coordinator and worker lifecycle
 
-`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its synchronized reservation arrays and condition lock make each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
+`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its shared reservation arrays, protected by a condition lock make each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
 
 The worker integration in `benders/subproblems.py` follows this lifecycle:
 
@@ -773,7 +773,8 @@ The worker integration in `benders/subproblems.py` follows this lifecycle:
 | `GRIDPATH_BENDERS_MINIMUM_RESERVE_GB` | `32` | Minimum absolute system-memory reserve in GiB |
 | `GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB` | `4` | Initial per-worker persistent reservation during model construction |
 | `GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB` | `4` | Initial per-worker temporary startup reservation |
-| `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Initial temporary reservation used before the first recourse operation |\n| `GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB` | `0.5` | Minimum temporary reservation retained after RSS-based adaptation |
+| `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Initial temporary reservation used before the first recourse operation |
+| `GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB` | `0.5` | Minimum temporary reservation retained after RSS-based adaptation |
 | `GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR` | `1.25` | Multiplier applied when reconciling measured resident memory |
 
 ### 15.4 Interpretation and limitations
