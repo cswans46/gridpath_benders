@@ -26,6 +26,7 @@ from gridpath.benders.operational_model_creation import (
 )
 import os
 import logging
+import psutil
 class BendersState(NamedTuple):
     values: tuple
 
@@ -582,6 +583,10 @@ class _StartupGuard:
             self.held = False
 
 
+def process_memory_rss():
+    return psutil.Process(os.getpid()).memory_info().rss
+
+
 def benders_subproblem_worker(
     key,
     planning_constraint_names,
@@ -595,6 +600,8 @@ def benders_subproblem_worker(
     startup_semaphore=None,
     linking_var_bounds=None,
     calculate_global_recourse_bound=True,
+    memory_coordinator=None,
+    worker_index=None,
 ):
     """
     Entry point of a persistent Benders worker process.
@@ -605,6 +612,15 @@ def benders_subproblem_worker(
     bounding how many build/solve at the same time.
     """
     guard = _StartupGuard(startup_semaphore)
+    process = psutil.Process(os.getpid())
+    baseline_rss = process.memory_info().rss
+    initial_persistent = int(float(os.getenv('GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB', '4')) * 1024**3)
+    initial_temporary = int(float(os.getenv('GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB', '4')) * 1024**3)
+    safety_factor = float(os.getenv('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR', '1.25'))
+    if safety_factor < 1:
+        raise ValueError('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR must be at least 1.')
+    if memory_coordinator is not None:
+        memory_coordinator.set_reservation(worker_index, persistent=initial_persistent, temporary=initial_temporary)
     guard.acquire()
     try:
         _benders_subproblem_worker_impl(
@@ -620,9 +636,15 @@ def benders_subproblem_worker(
             startup_guard=guard,
             linking_var_bounds=linking_var_bounds,
             calculate_global_recourse_bound=calculate_global_recourse_bound,
+            memory_coordinator=memory_coordinator,
+            worker_index=worker_index,
+            baseline_rss=baseline_rss,
+            safety_factor=safety_factor,
         )
     finally:
         guard.release()
+        if memory_coordinator is not None:
+            memory_coordinator.release(worker_index)
 
 
 def _benders_subproblem_worker_impl(
@@ -638,6 +660,10 @@ def _benders_subproblem_worker_impl(
     startup_guard=None,
     linking_var_bounds=None,
     calculate_global_recourse_bound=True,
+    memory_coordinator=None,
+    worker_index=None,
+    baseline_rss=0,
+    safety_factor=1.25,
 ):
     """Build and serve one persistent operational Benders subproblem.
 
@@ -740,6 +766,13 @@ def _benders_subproblem_worker_impl(
     instance.BendersLinkingConstraintMap = {}
 
     # ================================================================
+    # Reconcile the startup estimate with the resident model footprint.
+    if memory_coordinator is not None:
+        resident_bytes = max(0, process_memory_rss() - baseline_rss)
+        memory_coordinator.set_reservation(
+            worker_index, persistent=int(resident_bytes * safety_factor), temporary=0
+        )
+
     # Tell the parent process that this worker is ready.
     # ================================================================
 
@@ -772,6 +805,8 @@ def _benders_subproblem_worker_impl(
         # results in the standard GridPath directory layout. The master sends
         # this once, after convergence, instead of a trial point.
         if isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3))
             output_queue.put(
                 (
                     key,
@@ -788,7 +823,12 @@ def _benders_subproblem_worker_impl(
                     ),
                 )
             )
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=0)
             continue
+
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(worker_index, temporary=int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3))
 
         if hasattr(instance, "slack_max"):
             _set_feasibility_restoration_mode(
@@ -1247,6 +1287,8 @@ def _benders_subproblem_worker_impl(
                 subop_sol,
             )
         )
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(worker_index, temporary=0)
 
 def relax_discrete_linking_variables(
     instance,
