@@ -366,10 +366,9 @@ def benders_subproblem_worker(
                     key, planning_constraint_names, scenario_directory,
                     multi_stage, parsed_arguments,
                 )
-                from gridpath.benders.subproblems import fix_linking_variables
-                fix_linking_variables(
-                    export_instance, message["planning_sol"], present_linking_vars
-                )
+                # _export_final_subproblem applies the incumbent linking
+                # equalities itself, using the same clamping and row lifecycle
+                # as the original Pyomo worker.
                 export_solver = _make_pyomo_solver(parsed_arguments, solver_options)
                 export_result = _export_final_subproblem(
                     instance=export_instance,
