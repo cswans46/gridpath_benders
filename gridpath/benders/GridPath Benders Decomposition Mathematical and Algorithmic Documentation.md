@@ -586,7 +586,165 @@ Everything below comes from reading the code. **None of it was run**, and items 
 - This text describes the code at HEAD of `new_gridpath_w_BD_imp` plus my reporting and efficiency patches where stated.
 
 
-## 14. References
+
+
+## 14. Quickstart: running GridPath with Benders decomposition
+
+This guide documents the command-line interface exposed by the installed `gridpath_run` console command in this branch. The Benders-specific options are defined in `get_benders_flag_parser()` in `gridpath/common_functions.py`; the command also accepts the standard scenario-running options listed below. Run `gridpath_run --help` against your installed checkout to see the parser's live help text.
+
+### 14.1. Before running
+
+1. Install the repository in the Python environment in which you intend to run GridPath (an editable install is convenient when developing this fork).
+2. Make sure the required optimization solver and its license are available in that environment.
+3. Generate the scenario input directory before solving it. By default, GridPath looks for the scenario under `../scenarios/<scenario-name>`, relative to the current working directory.
+4. Activate the intended environment and run commands from a working directory for which the scenario path is correct.
+
+The command-line entry point is registered in `pyproject.toml`:
+
+```bash
+gridpath_run
+```
+
+The minimum Benders invocation is:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1
+```
+
+`--scenario` is required. `--benders` is also required by the parser and is an integer flag: a nonzero value enters the Benders path; `0` follows the ordinary non-Benders scenario path. Use `1` to enable Benders.
+
+To use a scenario stored somewhere other than the default location:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --scenario_location /path/to/scenarios --benders 1
+```
+
+The path supplied to `--scenario_location` is the parent directory; GridPath appends the scenario name to it.
+
+### 14.2. Benders-specific command-line options
+
+All options below are accepted by `gridpath_run`. Defaults are those declared by the parser in this branch.
+
+| Option | Default / accepted values | Purpose |
+| --- | --- | --- |
+| `--benders` | Required integer; use `1` to enable, `0` to disable | Selects the Benders or ordinary scenario-solving path. The implementation tests this value for truth, so any nonzero integer enables Benders. |
+| `--max_benders_iter` | `200` | Maximum number of Benders iterations. |
+| `--benders_conv_tol` | `1e-10` | Relative Benders convergence tolerance. |
+| `--benders_abs_gap_tol` | `1e-4` | Absolute objective-gap tolerance, in the model's objective units (NPV dollars in this implementation). |
+| `--max_benders_cpu_time` | `3600` seconds | CPU-time limit passed to the Benders subproblem solve configuration. |
+| `--benders_skip_final_export` | Off; flag takes no value | Skips the final worker-side export in which each operational subproblem is solved at the best incumbent plan and its final per-subproblem results are written. Planning-level results and Benders convergence outputs are still written. |
+| `--benders_stab_dynamic` | `True`; accepts `true/false`, `t/f`, `yes/no`, `y/n`, `1/0` (case-insensitive) | Enables dynamic updating of the level-set parameter during the algorithm. Set to `false` to keep the supplied stabilization parameter fixed. |
+| `--benders_stab_param` | `0.025` | Level-set parameter \(\gamma\). It controls the level between the current lower and upper bounds. The L1/L2 stabilization methods require a nonzero value. |
+| `--benders_master_discrete_method` | Parser help advertises `pj_relax` or `djc`; implementation accepts `none`, `pj_relax`, `linearized`, or `djc` | Controls treatment of discrete investment/linking decisions in the master. `pj_relax` relaxes integrality in the initial phase and later handles discrete states; `linearized` uses the relaxed phase with activation/big-M cuts; `djc` selects the native MOSEK disjunctive-constraint path; `none` is intended for continuous linking variables. If discrete linking variables are present with `none`, the code warns and falls back to `pj_relax`. |
+| `--benders_operational_discrete_method` | `fixed_z`; accepted: `fixed_z`, `pj_relax` | Controls treatment of discrete operational variables that are not linking variables. `fixed_z` fixes the operational integer state for the dual-based solve; `pj_relax` relaxes operational integrality. |
+| `--benders_stabilization_method` | `none`; accepted: `none`, `l1`, `l2` | Chooses the secondary trial-point selection method. `none` with the nonzero default `StabParam` retains the Pecci–Jenkins level-set regularization without an L1/L2 distance objective; `l1` and `l2` add weighted distance objectives over continuous linking variables. |
+| `--benders_use_pj_initialization` | `True`; accepts the boolean spellings described for `--benders_stab_dynamic` | Enables Pecci–Jenkins-style initialization when there are no discrete linking variables. If discrete linking variables are present, the code warns and retains the global recourse-bound initialization instead. |
+| `--benders_operational_solver` | `automatic`; accepted: `automatic`, `interior_point`, `primal_simplex` | Selects the MOSEK or Gurobi LP algorithm for `pj_relax` operational subproblems. `automatic` leaves the algorithm choice to the solver. |
+
+**Important distinction about the parser and implementation values.** The help string for `--benders_master_discrete_method` currently mentions only `djc` and `pj_relax`, but the algorithm also accepts `none` and `linearized`. Those values are valid in the implementation even though they are not listed in that option's parser help text.
+
+### 14.3. Recommended starting commands
+
+Run with the implementation defaults:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1
+```
+
+Set an explicit iteration limit and a looser relative tolerance:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
+  --max_benders_iter 300 \\
+  --benders_conv_tol 1e-6
+```
+
+Select L1 stabilization:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
+  --benders_stabilization_method l1 \\
+  --benders_stab_param 0.025
+```
+
+Select L2 stabilization and disable dynamic parameter updates:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
+  --benders_stabilization_method l2 \\
+  --benders_stab_param 0.025 \\
+  --benders_stab_dynamic false
+```
+
+Use the native MOSEK disjunctive-constraint path for discrete master linking variables:
+
+```bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
+  --solver mosek \\
+  --benders_master_discrete_method djc
+```
+
+The `djc` method requires the compatible native MOSEK integration; it is not a solver-independent option. Confirm the selected solver and its license before launching a large run.
+
+### 14.4. Standard scenario-running options also accepted by this command
+
+These are not Benders algorithm parameters. They are inherited from `get_required_e2e_arguments_parser()` and `get_run_scenario_parser()` and affect scenario location, logging, solver execution, or result handling.
+
+| Option | Default / type | Purpose |
+| --- | --- | --- |
+| `--scenario` | Required string | Name of the scenario directory to solve. |
+| `--scenario_location` | `../scenarios` | Parent directory containing the scenario directory. Relative paths are resolved from the current working directory. |
+| `--quiet` | Off; flag | Suppresses ordinary run output. |
+| `--verbose` | Off; flag | Prints additional information, such as current module information. |
+| `--log` | Off; flag | Writes run output to a file in the scenario's `logs` directory as well as to the terminal. |
+| `--quick_write_and_solve` | Off; flag | Loads the solution from a pickle file and solves. Use only when the corresponding prepared pickle exists and is appropriate for the scenario. |
+| `--create_lp_problem_file_only` | Off; flag | Writes the optimization problem file without solving. `--symbolic` can be used to give variables and constraints readable Pyomo component names. |
+| `--create_lp_problem_file` | Off; flag | Solves normally and also produces an LP problem file. |
+| `--load_instance` | Off; flag | Loads a pre-built model instance instead of building the instance in the usual way. |
+| `--load_solution` | Off; flag | Skips optimization and loads a previous solution file. |
+| `--load_cplex_solution` | Off; flag | Skips optimization and loads a CPLEX solution file. |
+| `--load_gurobi_solution` | Off; flag | Skips optimization and loads a Gurobi solution file. |
+| `--load_highs_solution` | Off; flag | Skips optimization and loads a HiGHS solution file. |
+| `--skip_duals` | Off; flag | Does not import or save constraint duals. Dual-based results files, including shadow-price outputs, are not written. |
+| `--solver` | Unspecified | Selects the Pyomo solver interface. If omitted and the scenario has no `solver_options.csv`, GridPath defaults to HiGHS. |
+| `--solver_executable` | Unspecified path | Explicit path to the solver executable. It must correspond to the solver selected with `--solver`; otherwise Pyomo searches the system `PATH`. |
+| `--mute_solver_output` | Off; flag | Suppresses solver output. |
+| `--write_solver_files_to_logs_dir` | Off; flag | Writes file-based solver input/output files to the scenario's `logs` directory instead of a temporary directory. It does not make in-memory persistent interfaces write solver files. |
+| `--keepfiles` | Off; flag | Keeps temporary files for Pyomo legacy solver interfaces that otherwise delete them after solving. |
+| `--symbolic` | Off; flag | Uses Pyomo component names in solver files and in the LP file produced by `--create_lp_problem_file_only`, where supported. |
+| `--report_timing` | Off; flag | Enables timing reporting. |
+| `--testing` | Off; flag | Enables behavior intended for the test suite; not normally used for production runs. |
+| `--n_parallel_solve` | `1` | Number of subproblems to solve in parallel. Increase only after considering solver licensing, memory, and CPU availability. |
+| `--incomplete_only` | Off; flag | Skips subproblems with a results-export-complete marker already present. Incomplete or interrupted exports are solved again. |
+| `--results_export_rule` | Unspecified | Name of the rule used to decide whether to export detailed results. |
+| `--results_export_summary_rule` | Unspecified | Name of the rule used to decide whether to export summary results. |
+| `--skip_quick_summary` | Off; flag | Skips writing the quick-summary text file. |
+| `--ignore_cleanup_marker` | Off; flag | Allows a run from a scenario directory marked as cleaned. Intended for deliberately re-materialized subsets; do not use when the directory is expected to contain the complete scenario tree. |
+| `--version` | Flag | Prints the installed GridPath version and exits. |
+| `-h`, `--help` | Flag | Prints the command's argument help and exits. |
+
+`gridpath_run` uses `parse_known_args`, so it parses the options above while tolerating additional arguments passed by higher-level workflows. The table describes the options explicitly registered by this command in this branch; it is not a catalogue of options for every other GridPath executable.
+
+### 14.5. Parallelism, time limits, and exports
+
+- `--n_parallel_solve` controls the number of concurrently solved subproblems. It is distinct from `--max_benders_cpu_time`, which is the CPU-time limit supplied to the Benders subproblem configuration.
+- The Benders workers are long-lived across iterations. Parallelism therefore affects the number of operational worker solves competing for CPU, memory, and solver licenses.
+- `--benders_skip_final_export` skips the final worker-side solve/export at the best incumbent. Use it only when those final per-subproblem result files are not required. It does not mean that intermediate Benders convergence information or planning-level results are suppressed.
+- `--incomplete_only` is a scenario-run option based on the presence of each subproblem's `results_export_complete.txt` marker. It is separate from the Benders algorithm's final export switch.
+
+### 14.6. Advanced setup override
+
+For controlled experiments, `run_scenario.py` also reads the `GRIDPATH_BENDERS_SETUP` environment variable as a JSON object and merges it over the setup created from the command-line options. For example, in a POSIX shell:
+
+```bash
+export GRIDPATH_BENDERS_SETUP='{"StabilizationMethod": "l1"}'
+gridpath_run --scenario YOUR_SCENARIO --benders 1
+```
+
+The setup keys currently assembled by `run_scenario.py` are `MaxIter`, `ConvTol`, `AbsGapTol`, `MaxCpuTime`, `StabDynamic`, `StabParam`, `MasterDiscreteMethod`, `OperationalDiscreteMethod`, `StabilizationMethod`, and `UsePjInitialization`. The environment override is an advanced developer/testing mechanism; prefer the documented command-line options for ordinary runs. The operational LP algorithm selector `--benders_operational_solver` is passed separately through the parsed arguments and is not one of those setup-dictionary keys.
+
+
+## 15. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.
 
