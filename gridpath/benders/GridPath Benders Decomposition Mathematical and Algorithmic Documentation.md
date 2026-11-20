@@ -786,70 +786,62 @@ This is **cooperative admission control**, not an operating-system memory limit.
 
 For recourse operations, each worker samples its RSS at 100 ms intervals. The observed increase over the operation's starting RSS, multiplied by the safety factor, becomes that worker's temporary reservation estimate for its next operation (subject to a configurable minimum). This lets workers develop different temporary-memory estimates from their own observed workloads. The estimate is updated between operations; it does not retroactively prevent an allocation that exceeds the current reservation, and very short-lived peaks may fall between samples. The first operation uses the configured initial temporary estimate. Final export uses the current estimate once. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
 
-## 15.5. Native MOSEK task offload (prototype)
+## 15.5. Native MOSEK task offload (experimental worker backend)
 
-### Purpose
+### Purpose and activation
 
-The `mosek_task.py` module introduces the first infrastructure for moving an operational subproblem from Pyomo's in-memory object representation to a serialized native MOSEK task. The motivation is to reduce the persistent Python/Pyomo object graph retained by each worker. A `.task` file is a serialization of the solver-native optimization model; it is not a smaller mathematical model and does not, by itself, eliminate the memory required for the constraint matrix, variables, or MOSEK presolve/optimization state.
+The experimental mosek_task.py and mosek_task_worker.py modules add an opt-in worker backend that compiles an instantiated operational Pyomo model into a native MOSEK Task. The existing Pyomo worker remains the default. Activate the experimental backend by setting:
 
-The intended lifecycle preserves the existing **vertical worker architecture**: each operational worker owns its model construction, iterative Benders solves, and final result export. The master process, master stabilization, cut construction, and discrete master methods remain separate and are not moved into the operational workers.
+GRIDPATH_BENDERS_WORKER_BACKEND=mosek_task
 
-### Compilation and persisted metadata
+The default is GRIDPATH_BENDERS_WORKER_BACKEND=pyomo. The native worker uses Pyomo's direct MOSEK interface for compilation; it does not use the GAMS shell adapter for the native task.
 
-`write_pyomo_mosek_task` is the compilation boundary. It is intended to be called only after the worker has instantiated and initialized its complete Pyomo operational model and created the linking equality constraints. It calls Pyomo's direct MOSEK interface to compile that concrete model into a native MOSEK `Task`, writes the task using MOSEK's task serialization, and writes a JSON sidecar.
+The design preserves the vertical worker architecture: each worker builds its operational model, owns its persistent recourse representation, performs its Benders iterations, and handles final export. The master, cut-generation logic, stabilization, and master discrete methods are not moved into the worker.
 
-The sidecar currently records:
+### Worker lifecycle
 
-- the native task dimensions and metadata format version;
-- the MOSEK row index associated with each named Benders linking equality;
-- the MOSEK column index and original bounds/domain indicators for each compiled Pyomo variable;
-- the objective scale used when the task was compiled.
+The native worker currently follows this sequence:
 
-`MosekTaskRuntime` provides an index-based wrapper for loading the task, updating the right-hand side of linking equality rows, optimizing, and retrieving primal values, linking-row duals, and the objective value. It does not need to retain Pyomo component objects or Pyomo-to-MOSEK maps. The worker must keep the MOSEK environment alive for at least as long as the loaded task.
+1. Build the instantiated GridPath operational model using create_operational_problem_benders.
+2. Classify linking variables and calculate the existing global recourse bound using the configured solver path, before adding the Benders linking rows.
+3. Add one equality row per present linking variable and compile the resulting concrete model through SolverFactory("mosek", solver_io="direct").
+4. Scale the operational NPV objective by BENDERS_RECOURSE_OBJECTIVE_SCALE before compilation. The JSON sidecar records the inverse conversion factor used to report objective values and linking-row duals in the existing GridPath units.
+5. Persist the native task and metadata, release Pyomo's conversion maps, and drop the original Pyomo instance. The worker retains the native task and its direct-solver/environment owner.
+6. Update the RHS of the existing linking equality rows for each trial point and solve the native task.
+7. Reconstruct a Pyomo operational model only when the native solve requires the existing Phase-I restoration implementation or when final GridPath result export is requested.
+8. Release the temporary reconstructed model after restoration/export.
 
-### Intended worker lifecycle
+The .task file is a serialization of the solver-native optimization model. It does not remove the mathematical constraint matrix or MOSEK's own optimization workspace. The expected memory benefit is the removal of the long-lived Pyomo model graph and its conversion maps after compilation, not a reduction in the initial model-instantiation or conversion peak.
 
-Once the native-task path is integrated into `subproblems.py`, the intended sequence is:
+### Native recourse solve paths
 
-1. The worker constructs and initializes its Pyomo operational model using the existing GridPath model-building path.
-2. The worker compiles the instantiated model through Pyomo's direct MOSEK interface and persists the native task and metadata.
-3. After validating that the task and metadata have been written successfully, the worker releases Pyomo's conversion maps and its Pyomo model reference, then drops the original Pyomo model and solver wrapper where they are no longer needed.
-4. The same worker retains the native task as its operational representation and updates linking-row bounds for each Benders trial point.
-5. The same worker performs the required operational solve, dual/primal extraction, and final export. If an existing export or diagnostic operation genuinely requires Pyomo, the worker may reconstruct the Pyomo model on demand rather than retaining it throughout the entire Benders run.
+The worker implements the following native-task paths:
 
-This is a design target, not a description of a completed worker conversion. In the current prototype, `mosek_task.py` supplies the compilation, serialization, metadata, and runtime helpers; the existing worker loop has not yet been switched from Pyomo to the native task. The Pyomo worker remains the active path until the integration and equivalence tests are complete.
+- **Continuous / pj_relax:** relax the integer variable types in the task, solve the LP, and extract linking-row duals. The dual sign and objective scaling follow the existing Pyomo worker convention.
+- **fixed_z:** solve the native operational MIP, retrieve the integer incumbent, fix the non-linking operational integer variables at that state through their variable bounds, convert the task to an LP, and solve the fixed-state LP for linking-row duals. The original bounds and variable types are restored before the next trial point.
+- **Discrete linking variables:** their linking equalities remain active. They are integer in the MIP solve where appropriate and are relaxed for the LP dual solve, consistent with the existing worker's fixed-state LP workflow.
+- **Recourse upper bound:** calculated during startup through the existing Pyomo implementation and returned through the unchanged READY protocol.
 
-### Solver semantics that must be preserved
+A MIP solution is not used directly for dual extraction. The duals are obtained from the subsequent fixed-state LP.
 
-The native-task integration must preserve the existing operational methods and their Benders meaning:
+### Restoration and final export
 
-- **`pj_relax`:** solve the continuous operational relaxation and obtain the linking-row duals used for the optimality cut.
-- **`fixed_z`:** preserve the existing operational MIP/fixed-integer-state workflow. The MIP primal solution determines the discrete state; the corresponding fixed-state LP is then solved to obtain dual sensitivities. A MIP solution itself does not supply the LP dual certificate required for the cut.
-- **Feasibility restoration:** retain the existing Phase-I restoration objective, row scaling, slack normalization, and dual-certificate sign convention. A task for the original operational problem is not automatically a Phase-I restoration task; restoration must be implemented explicitly and validated.
-- **Recourse bound:** preserve the initial LP-relaxation upper bound on operating NPV and its conversion to the recourse-cost lower bound used by the master.
-- **Objective and dual scaling:** account for any objective scaling applied before compilation when converting the native task objective and linking-row duals back to GridPath's dollar and cut conventions.
-- **Final export:** continue to produce the same GridPath subproblem result files and status information at the incumbent.
+The original Phase-I restoration formulation is retained rather than approximated with a different native formulation. If the task solve is not optimal, the worker reconstructs the Pyomo model, reapplies the current linking values, and calls the existing process_subproblem_solution / restoration.restore path. This deliberately trades temporary memory and model-build time for preservation of the existing restoration objective, elastic row and bound treatment, normalization, certificate checks, and cut conventions.
 
-The native task must also preserve the existing solver options, termination-status handling, and primal-feasibility checks. In particular, a returned solution status must be checked before reading primal values or duals; duals should only be requested for a solution type and problem class for which MOSEK provides them.
+Final export is also routed through the existing GridPath machinery. On EXPORT_FINAL, the worker rebuilds the operational Pyomo instance and its DynamicComponents, applies the incumbent linking values, and calls _export_final_subproblem / save_results. This is the first implementation to test whether the existing export path can be cleanly separated from the persistent worker model. It should produce the same GridPath result directory structure, but this requires runtime verification against an actual scenario.
 
-### Persistent task versus reload-per-solve
+### Important validation status and limitations
 
-The initial design is to load the task once and retain it in the worker, updating only linking-row bounds between iterations. This avoids repeated disk I/O and may retain useful solver state between solves. If measurements show that the native task itself consumes too much idle memory, an alternative is to reload it for each solve and release it before the worker waits for another request. That trades memory for task I/O and potentially loses useful solver state. The choice should be based on measured worker private bytes/RSS and solve time, not assumed savings.
+This is an experimental implementation, not yet a validated production replacement. In particular:
 
-### Validation and current limitations
+- the direct MOSEK interface, task serialization/reload behavior, and MOSEK solution-type handling have not been exercised in the user's Windows/MOSEK environment;
+- native-task primal solutions are not yet passed through the full Pyomo primal_violations checker on every optimal iteration; this is a remaining equivalence/robustness item;
+- Phase-I restoration and final export rebuild Pyomo models, so those exceptional operations still incur their normal construction peak and runtime;
+- the native worker's handling of all configured MOSEK options is narrower than the existing GAMS/Pyomo solver configuration: only MOSEK-native options and the worker thread cap are passed to the direct interface;
+- no numerical equivalence, final-export comparison, or memory benchmark has been completed.
 
-The first integration test should use one continuous operational subproblem and the same linking-variable trial point in both implementations. Compare the Pyomo and native-task objective values, relevant primal values, and every linking-row dual within explicit numerical tolerances. Only after this equivalence check should the native path be extended to all workers and to `fixed_z`, feasibility restoration, and final export.
+Before production use, compare both backends on the same scenario and trial points. Check objective values, primal feasibility, operational discrete states, every active linking-row dual, Phase-I feasibility cuts, and final exported files. Measure conversion peak RSS separately from steady-state worker RSS. The task backend should remain opt-in until these checks pass.
 
-The task file is not expected to reduce the peak memory needed to instantiate the Pyomo model or compile it into MOSEK: during that conversion, both representations may coexist. The expected benefit is the reduction in memory retained **after** compilation, by discarding the Pyomo model graph and interface maps while keeping the native task. Compilation peak memory and steady-state memory therefore need to be measured separately.
-
-At this prototype stage:
-
-- no worker configuration switch has yet been added;
-- the existing Pyomo worker path remains active;
-- `pj_relax`, `fixed_z`, Phase-I restoration, recourse-bound calculation, and final export have not yet been migrated to the native-task runtime;
-- no runtime equivalence or memory benchmark has yet been completed.
-
-The native-task path should not be treated as production-ready until those items are implemented and tested.
 
 ## 16. References
 
