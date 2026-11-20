@@ -85,7 +85,7 @@ def _solve_with_lp_optimizer(
     solver_threads = os.getenv("GRIDPATH_BENDERS_SOLVER_THREADS")
     if solver_threads:
         if solver_name.startswith("mosek"):
-            scoped_options["MSK_IPAR_NUM_THREADS"] = int(solver_threads)
+            scoped_options["MSK_IPAR_NUM_THREADS"] = str(int(solver_threads))
         elif solver_name.startswith("gurobi"):
             scoped_options["Threads"] = int(solver_threads)
     scoped_options.update(extra_options or {})
