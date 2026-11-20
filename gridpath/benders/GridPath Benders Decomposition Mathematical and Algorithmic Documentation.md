@@ -589,161 +589,142 @@ Everything below comes from reading the code. **None of it was run**, and items 
 
 
 
-## 14. Quickstart: running GridPath with Benders decomposition
+## 14. Quick start and essential information
 
-This guide documents the command-line interface exposed by the installed `gridpath_run` console command in this branch. The Benders-specific options are defined in `get_benders_flag_parser()` in `gridpath/common_functions.py`; the command also accepts the standard scenario-running options listed below. Run `gridpath_run --help` against your installed checkout to see the parser's live help text.
+This section documents the Benders-specific command-line interface in this branch. The Benders flags are defined in \`get_benders_flag_parser()\` in \`gridpath/common_functions.py\`; their values are assembled into the setup dictionary in \`gridpath/run_scenario.py\` and consumed by \`gridpath/benders/algorithms.py\`.
 
-### 14.1. Before running
+### 14.1. Minimum requirements and command
 
-1. Install the repository in the Python environment in which you intend to run GridPath (an editable install is convenient when developing this fork).
-2. Make sure the required optimization solver and its license are available in that environment.
-3. Generate the scenario input directory before solving it. By default, GridPath looks for the scenario under `../scenarios/<scenario-name>`, relative to the current working directory.
-4. Activate the intended environment and run commands from a working directory for which the scenario path is correct.
+Before running:
 
-The command-line entry point is registered in `pyproject.toml`:
+1. Install this repository in the Python environment you intend to use (an editable install is useful during development).
+2. Activate that environment and ensure the selected solver integration and licence are available.
+3. Generate the scenario input directory.
+4. Run from a working directory where the scenario path resolves correctly.
 
-```bash
-gridpath_run
-```
+The minimum command is:
 
-The minimum Benders invocation is:
-
-```bash
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1
-```
+\`\`\`
 
-`--scenario` is required. `--benders` is also required by the parser and is an integer flag: a nonzero value enters the Benders path; `0` follows the ordinary non-Benders scenario path. Use `1` to enable Benders.
+- \`--scenario\` identifies the scenario directory.
+- \`--benders\` is a required integer flag. Use \`1\` to enable Benders; \`0\` selects the ordinary solve path. Any nonzero integer is treated as true.
+- By default, GridPath looks for the scenario at \`../scenarios/YOUR_SCENARIO\`, relative to the current working directory.
+- To use a different parent directory, add \`--scenario_location /path/to/scenarios\`. GridPath appends the scenario name to this parent path.
 
-To use a scenario stored somewhere other than the default location:
+For example:
 
-```bash
-gridpath_run --scenario YOUR_SCENARIO --scenario_location /path/to/scenarios --benders 1
-```
+\`\`\`bash
+gridpath_run --scenario YOUR_SCENARIO \\
+  --scenario_location /path/to/scenarios \\
+  --benders 1
+\`\`\`
 
-The path supplied to `--scenario_location` is the parent directory; GridPath appends the scenario name to it.
+Use \`gridpath_run --help\` to inspect the arguments exposed by the installed checkout. The command-line options documented below are the Benders controls plus the scenario, solver, and parallel-execution arguments needed to run them.
 
-### 14.2. Benders-specific command-line options
+### 14.2. Essential Benders options
 
-All options below are accepted by `gridpath_run`. Defaults are those declared by the parser in this branch.
+The defaults below are those declared by the parser in this branch. Boolean options parsed with \`str2bool\` accept \`true/false\`, \`t/f\`, \`yes/no\`, \`y/n\`, and \`1/0\` (case-insensitive).
 
-| Option | Default / accepted values | Purpose |
+| Option | Default / accepted values | Detailed explanation |
 | --- | --- | --- |
-| `--benders` | Required integer; use `1` to enable, `0` to disable | Selects the Benders or ordinary scenario-solving path. The implementation tests this value for truth, so any nonzero integer enables Benders. |
-| `--max_benders_iter` | `200` | Maximum number of Benders iterations. |
-| `--benders_conv_tol` | `1e-10` | Relative Benders convergence tolerance. |
-| `--benders_abs_gap_tol` | `1e-4` | Absolute objective-gap tolerance, in the model's objective units (NPV dollars in this implementation). |
-| `--max_benders_cpu_time` | `3600` seconds | CPU-time limit passed to the Benders subproblem solve configuration. |
-| `--benders_skip_final_export` | Off; flag takes no value | Skips the final worker-side export in which each operational subproblem is solved at the best incumbent plan and its final per-subproblem results are written. Planning-level results and Benders convergence outputs are still written. |
-| `--benders_stab_dynamic` | `True`; accepts `true/false`, `t/f`, `yes/no`, `y/n`, `1/0` (case-insensitive) | Enables dynamic updating of the level-set parameter during the algorithm. Set to `false` to keep the supplied stabilization parameter fixed. |
-| `--benders_stab_param` | `0.025` | Level-set parameter \(\gamma\). It controls the level between the current lower and upper bounds. The L1/L2 stabilization methods require a nonzero value. |
-| `--benders_master_discrete_method` | Parser help advertises `pj_relax` or `djc`; implementation accepts `none`, `pj_relax`, `linearized`, or `djc` | Controls treatment of discrete investment/linking decisions in the master. `pj_relax` relaxes integrality in the initial phase and later handles discrete states; `linearized` uses the relaxed phase with activation/big-M cuts; `djc` selects the native MOSEK disjunctive-constraint path; `none` is intended for continuous linking variables. If discrete linking variables are present with `none`, the code warns and falls back to `pj_relax`. |
-| `--benders_operational_discrete_method` | `fixed_z`; accepted: `fixed_z`, `pj_relax` | Controls treatment of discrete operational variables that are not linking variables. `fixed_z` fixes the operational integer state for the dual-based solve; `pj_relax` relaxes operational integrality. |
-| `--benders_stabilization_method` | `none`; accepted: `none`, `l1`, `l2` | Chooses the secondary trial-point selection method. `none` with the nonzero default `StabParam` retains the Pecci–Jenkins level-set regularization without an L1/L2 distance objective; `l1` and `l2` add weighted distance objectives over continuous linking variables. |
-| `--benders_use_pj_initialization` | `True`; accepts the boolean spellings described for `--benders_stab_dynamic` | Enables Pecci–Jenkins-style initialization when there are no discrete linking variables. If discrete linking variables are present, the code warns and retains the global recourse-bound initialization instead. |
-| `--benders_operational_solver` | `automatic`; accepted: `automatic`, `interior_point`, `primal_simplex` | Selects the MOSEK or Gurobi LP algorithm for `pj_relax` operational subproblems. `automatic` leaves the algorithm choice to the solver. |
+| \`--benders\` | Required integer; use \`1\` | Selects the Benders decomposition path. This argument is required even when its value is zero. A nonzero value invokes the Benders driver; zero follows the standard scenario-solving path. |
+| \`--max_benders_iter\` | \`200\` | Maximum number of Benders iterations. Each iteration solves the master, evaluates the resulting linking-variable point in the operational workers, and adds optimality or feasibility information. Reaching this limit terminates the algorithm without implying convergence. |
+| \`--benders_conv_tol\` | \`1e-10\` | Relative convergence tolerance for the master upper bound and best complete-plan lower bound. A smaller tolerance asks for a tighter relative optimality gap and can require more iterations. |
+| \`--benders_abs_gap_tol\` | \`1e-4\` | Absolute optimality-gap tolerance in the objective's units (NPV dollars in this implementation). It complements the relative tolerance, particularly when objective values are close to zero or the relative gap is numerically uninformative. |
+| \`--max_benders_cpu_time\` | \`3600\` seconds | Time limit passed into the operational subproblem solve configuration. It is not the overall wall-clock limit for the entire Benders run; total run time also includes master solves, worker coordination, and other overhead. |
+| \`--benders_master_discrete_method\` | \`pj_relax\`; implementation accepts \`none\`, \`pj_relax\`, \`linearized\`, \`djc\` | Selects how discrete master/linking decisions are handled. \`pj_relax\` begins with a relaxed master phase and later handles discrete states using state-conditioned cuts. \`linearized\` uses the relaxed phase and linearized activation/mismatch constraints for state-conditioned cuts. \`djc\` represents the state-conditioned logic with native MOSEK disjunctive constraints and therefore requires the native MOSEK integration. \`none\` is intended for a master with continuous linking variables; if discrete linking variables are present, the implementation warns and falls back to \`pj_relax\`. |
+| \`--benders_operational_discrete_method\` | \`fixed_z\`; \`fixed_z\` or \`pj_relax\` | Controls non-linking integer variables in the operational subproblems. \`fixed_z\` fixes the operational integer state for the LP solve from which dual sensitivities are obtained. Those cuts are conditional on that fixed state. \`pj_relax\` relaxes operational integrality for the recourse LP instead. This setting does not select the treatment of master linking binaries; use \`--benders_master_discrete_method\` for those. |
+| \`--benders_use_pj_initialization\` | \`true\` | Enables Pecci--Jenkins-style initialization when the master has no discrete linking variables. It avoids the usual initial global recourse-bound calculation and uses the P\&J initialization sequence. If discrete linking variables are present, the implementation warns and retains the alternative initialization. |
+| \`--benders_stabilization_method\` | \`none\`; \`none\`, \`l1\`, \`l2\` | Selects the secondary objective used to choose the next trial point. \`none\` adds no L1/L2 distance objective; with the default nonzero level parameter, the level-set restriction still provides P\&J-style regularization. \`l1\` selects a point by minimizing a weighted sum of absolute deviations from the current centre. \`l2\` minimizes a weighted squared distance and uses the corresponding quadratic/conic representation. The distance penalties apply to the continuous linking variables selected by the implementation. |
+| \`--benders_stab_param\` | \`0.025\` | Sets the level-set parameter \(\gamma\). The level is formed from the current bounds as \(\ell=UB-\gamma(UB-LB)\). A smaller \(\gamma\) places the level closer to the upper bound; a larger value moves it toward the lower bound. L1 and L2 stabilization require a nonzero parameter. |
+| \`--benders_stab_dynamic\` | \`true\` | Enables iteration-by-iteration adjustment of \(\gamma\) based on the observed progress in the upper bound relative to the previous level prediction. Set it to false to retain the supplied \`--benders_stab_param\` throughout the run. |
+| \`--benders_operational_solver\` | \`automatic\`; \`automatic\`, \`interior_point\`, \`primal_simplex\` | Selects the LP algorithm for MOSEK or Gurobi operational relaxations in the \`pj_relax\` path. \`automatic\` leaves the choice to the solver; the other values request the corresponding interior-point or primal-simplex algorithm. It does not choose the solver interface itself; use \`--solver\` for that. |
+| \`--benders_skip_final_export\` | Off; flag takes no value | Skips the final worker-side operational solves and per-subproblem result exports at the best incumbent. The planning-level results and Benders convergence files are still produced. Use this only when final operational result files are not required. |
 
-**Important distinction about the parser and implementation values.** The help string for `--benders_master_discrete_method` currently mentions only `djc` and `pj_relax`, but the algorithm also accepts `none` and `linearized`. Those values are valid in the implementation even though they are not listed in that option's parser help text.
+**Parser-help caveat.** The help string for \`--benders_master_discrete_method\` currently advertises only \`pj_relax\` and \`djc\`, but the algorithm implementation also accepts \`none\` and \`linearized\`. The accepted values described in the table reflect the implementation, not just the abbreviated help string.
 
-### 14.3. Recommended starting commands
+### 14.3. Solver and parallel-worker arguments
 
-Run with the implementation defaults:
+These are not algorithmic Benders parameters, but they are directly relevant to configuring a Benders run.
 
-```bash
+| Option | Default / accepted values | Detailed explanation |
+| --- | --- | --- |
+| \`--solver\` | If unspecified, HiGHS is selected unless the scenario's \`solver_options.csv\` selects an interface | Selects the Pyomo solver interface used by the run. The choice must be compatible with the requested master method and installed solver integration. In particular, \`--benders_master_discrete_method djc\` requires native MOSEK; specifying GAMS with MOSEK as its backend is not the same as the native MOSEK interface for DJCs. The solver name in \`solver_options.csv\`, when that file is used, must agree with a solver supplied on the command line. |
+| \`--solver_executable\` | Unspecified | Supplies an explicit executable path for the selected solver interface. It does not change which solver is selected. |
+| \`--n_parallel_solve\` | \`1\` | Number of operational subproblems solved concurrently. The master remains in the driver process, while operational workers solve in parallel. Raising this value can reduce elapsed time when enough independent subproblems exist, but increases concurrent memory use, CPU demand, and solver-licence demand. Set it with the size of the operational LPs and available resources in mind. |
+
+### 14.4. Recommended command patterns
+
+**Default Benders run**
+
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1
-```
+\`\`\`
 
-Set an explicit iteration limit and a looser relative tolerance:
+**Set iteration and convergence limits**
 
-```bash
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
   --max_benders_iter 300 \\
-  --benders_conv_tol 1e-6
-```
+  --benders_conv_tol 1e-6 \\
+  --benders_abs_gap_tol 1e-3
+\`\`\`
 
-Select L1 stabilization:
+**Use L1 stabilization**
 
-```bash
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
   --benders_stabilization_method l1 \\
   --benders_stab_param 0.025
-```
+\`\`\`
 
-Select L2 stabilization and disable dynamic parameter updates:
+**Use L2 stabilization with a fixed level parameter**
 
-```bash
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
   --benders_stabilization_method l2 \\
   --benders_stab_param 0.025 \\
   --benders_stab_dynamic false
-```
+\`\`\`
 
-Use the native MOSEK disjunctive-constraint path for discrete master linking variables:
+**Use native MOSEK disjunctive constraints for discrete master linking variables**
 
-```bash
+\`\`\`bash
 gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
   --solver mosek \\
   --benders_master_discrete_method djc
-```
+\`\`\`
 
-The `djc` method requires the compatible native MOSEK integration; it is not a solver-independent option. Confirm the selected solver and its license before launching a large run.
+**Run multiple operational workers concurrently**
 
-### 14.4. Standard scenario-running options also accepted by this command
+\`\`\`bash
+gridpath_run --scenario YOUR_SCENARIO --benders 1 \\
+  --n_parallel_solve 4
+\`\`\`
 
-These are not Benders algorithm parameters. They are inherited from `get_required_e2e_arguments_parser()` and `get_run_scenario_parser()` and affect scenario location, logging, solver execution, or result handling.
+The examples are templates: confirm the scenario path, solver option file, solver installation, licence availability, and available memory before starting a large run.
 
-| Option | Default / type | Purpose |
-| --- | --- | --- |
-| `--scenario` | Required string | Name of the scenario directory to solve. |
-| `--scenario_location` | `../scenarios` | Parent directory containing the scenario directory. Relative paths are resolved from the current working directory. |
-| `--quiet` | Off; flag | Suppresses ordinary run output. |
-| `--verbose` | Off; flag | Prints additional information, such as current module information. |
-| `--log` | Off; flag | Writes run output to a file in the scenario's `logs` directory as well as to the terminal. |
-| `--quick_write_and_solve` | Off; flag | Loads the solution from a pickle file and solves. Use only when the corresponding prepared pickle exists and is appropriate for the scenario. |
-| `--create_lp_problem_file_only` | Off; flag | Writes the optimization problem file without solving. `--symbolic` can be used to give variables and constraints readable Pyomo component names. |
-| `--create_lp_problem_file` | Off; flag | Solves normally and also produces an LP problem file. |
-| `--load_instance` | Off; flag | Loads a pre-built model instance instead of building the instance in the usual way. |
-| `--load_solution` | Off; flag | Skips optimization and loads a previous solution file. |
-| `--load_cplex_solution` | Off; flag | Skips optimization and loads a CPLEX solution file. |
-| `--load_gurobi_solution` | Off; flag | Skips optimization and loads a Gurobi solution file. |
-| `--load_highs_solution` | Off; flag | Skips optimization and loads a HiGHS solution file. |
-| `--skip_duals` | Off; flag | Does not import or save constraint duals. Dual-based results files, including shadow-price outputs, are not written. |
-| `--solver` | Unspecified | Selects the Pyomo solver interface. If omitted and the scenario has no `solver_options.csv`, GridPath defaults to HiGHS. |
-| `--solver_executable` | Unspecified path | Explicit path to the solver executable. It must correspond to the solver selected with `--solver`; otherwise Pyomo searches the system `PATH`. |
-| `--mute_solver_output` | Off; flag | Suppresses solver output. |
-| `--write_solver_files_to_logs_dir` | Off; flag | Writes file-based solver input/output files to the scenario's `logs` directory instead of a temporary directory. It does not make in-memory persistent interfaces write solver files. |
-| `--keepfiles` | Off; flag | Keeps temporary files for Pyomo legacy solver interfaces that otherwise delete them after solving. |
-| `--symbolic` | Off; flag | Uses Pyomo component names in solver files and in the LP file produced by `--create_lp_problem_file_only`, where supported. |
-| `--report_timing` | Off; flag | Enables timing reporting. |
-| `--testing` | Off; flag | Enables behavior intended for the test suite; not normally used for production runs. |
-| `--n_parallel_solve` | `1` | Number of subproblems to solve in parallel. Increase only after considering solver licensing, memory, and CPU availability. |
-| `--incomplete_only` | Off; flag | Skips subproblems with a results-export-complete marker already present. Incomplete or interrupted exports are solved again. |
-| `--results_export_rule` | Unspecified | Name of the rule used to decide whether to export detailed results. |
-| `--results_export_summary_rule` | Unspecified | Name of the rule used to decide whether to export summary results. |
-| `--skip_quick_summary` | Off; flag | Skips writing the quick-summary text file. |
-| `--ignore_cleanup_marker` | Off; flag | Allows a run from a scenario directory marked as cleaned. Intended for deliberately re-materialized subsets; do not use when the directory is expected to contain the complete scenario tree. |
-| `--version` | Flag | Prints the installed GridPath version and exits. |
-| `-h`, `--help` | Flag | Prints the command's argument help and exits. |
+### 14.5. Outputs and interpretation
 
-`gridpath_run` uses `parse_known_args`, so it parses the options above while tolerating additional arguments passed by higher-level workflows. The table describes the options explicitly registered by this command in this branch; it is not a catalogue of options for every other GridPath executable.
+The Benders driver writes the planning-level results and, unless \`--benders_skip_final_export\` is set, requests a final operational solve/export at the best incumbent. It also writes:
 
-### 14.5. Parallelism, time limits, and exports
+- \`results/benders_convergence.csv\`: iteration-level lower-bound, upper-bound, gap, and elapsed-time history.
+- \`results/benders_summary.json\`: final termination status, iteration count, final bounds and gap, elapsed time, and available incumbent/export information.
 
-- `--n_parallel_solve` controls the number of concurrently solved subproblems. It is distinct from `--max_benders_cpu_time`, which is the CPU-time limit supplied to the Benders subproblem configuration.
-- The Benders workers are long-lived across iterations. Parallelism therefore affects the number of operational worker solves competing for CPU, memory, and solver licenses.
-- `--benders_skip_final_export` skips the final worker-side solve/export at the best incumbent. Use it only when those final per-subproblem result files are not required. It does not mean that intermediate Benders convergence information or planning-level results are suppressed.
-- `--incomplete_only` is a scenario-run option based on the presence of each subproblem's `results_export_complete.txt` marker. It is separate from the Benders algorithm's final export switch.
+The master upper bound and the best evaluated complete-plan lower bound are the quantities used to assess convergence. A run that stops because it reaches \`--max_benders_iter\` or a time limit is not necessarily converged; inspect the final status and reported gap in \`benders_summary.json\`.
 
 ### 14.6. Advanced setup override
 
-For controlled experiments, `run_scenario.py` also reads the `GRIDPATH_BENDERS_SETUP` environment variable as a JSON object and merges it over the setup created from the command-line options. For example, in a POSIX shell:
+For controlled experiments, \`run_scenario.py\` also reads the \`GRIDPATH_BENDERS_SETUP\` environment variable as a JSON object and merges it over the setup dictionary constructed from the command-line options. For example, in a POSIX shell:
 
-```bash
+\`\`\`bash
 export GRIDPATH_BENDERS_SETUP='{"StabilizationMethod": "l1"}'
 gridpath_run --scenario YOUR_SCENARIO --benders 1
-```
+\`\`\`
 
-The setup keys currently assembled by `run_scenario.py` are `MaxIter`, `ConvTol`, `AbsGapTol`, `MaxCpuTime`, `StabDynamic`, `StabParam`, `MasterDiscreteMethod`, `OperationalDiscreteMethod`, `StabilizationMethod`, and `UsePjInitialization`. The environment override is an advanced developer/testing mechanism; prefer the documented command-line options for ordinary runs. The operational LP algorithm selector `--benders_operational_solver` is passed separately through the parsed arguments and is not one of those setup-dictionary keys.
-
+The setup keys assembled from the CLI are \`MaxIter\`, \`ConvTol\`, \`AbsGapTol\`, \`MaxCpuTime\`, \`StabDynamic\`, \`StabParam\`, \`MasterDiscreteMethod\`, \`OperationalDiscreteMethod\`, \`StabilizationMethod\`, and \`UsePjInitialization\`. The environment override is an advanced developer/testing mechanism; prefer the documented CLI options for ordinary runs. The operational LP algorithm selector \`--benders_operational_solver\` and the worker count \`--n_parallel_solve\` are passed separately rather than being keys in this setup dictionary.
 
 ## 15. References
 

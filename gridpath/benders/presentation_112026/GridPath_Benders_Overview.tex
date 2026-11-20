@@ -2,7 +2,11 @@
 \usetheme{Madrid}
 \usecolortheme{default}
 \usepackage[T1]{fontenc}
-\usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz}
+\usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz,etoolbox}
+% Add a little breathing room between list entries while keeping slides compact.
+\AtBeginEnvironment{itemize}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
+\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
+\AtBeginEnvironment{description}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{footline}[frame number]
@@ -143,17 +147,6 @@ c_w^k\bar{s}_w^k+
 This excludes trial points certified infeasible by the restoration problem.
 \end{frame}
 
-\begin{frame}{Discrete master decisions}
-\begin{columns}[T]
-\column{0.49\textwidth}\textbf{Linearized/big-$M$ cuts}
-\begin{itemize}\item Generate a cut at a discrete state.\item Add mismatch indicators.\item Use calculated $M$ to deactivate the cut away from that state.\item No-good cuts exclude infeasible discrete patterns.\end{itemize}
-\column{0.49\textwidth}\textbf{Native DJCs}
-\begin{itemize}\item MOSEK disjunction: state matches and cut holds, OR state differs.\item Avoids explicit big-$M$ coefficients for that disjunction.\item Requires native MOSEK path.\end{itemize}
-\end{columns}
-\vspace{2mm}
-\textbf{Pecci--Jenkins relaxation:} relax master integer/binary domains first; after the continuous phase, restore integrality and continue with state-conditioned cuts.
-\end{frame}
-
 \begin{frame}{Stabilization: level set, L1, and L2}
 \[
 \ell=UB-\gamma(UB-LB),\qquad
@@ -178,15 +171,17 @@ This excludes trial points certified infeasible by the restoration problem.
 \node[process,right=of feas] (opt) {Optimality cuts\\from duals};
 \node[process,below=of feas,yshift=-3mm] (inc) {Evaluate complete plan\\update $LB$ and incumbent};
 \node[process,below=of inc] (bound) {Update $UB$, gap,\\stabilization};
-\node[decision,below=of bound] (stop) {Converged or\\limit reached?};
-\node[process,left=of stop,xshift=-7mm] (done) {Return results};
+\node[decision,below=of bound] (stop) {Converged or\\stopping limit reached?};
+\node[process,left=of stop,xshift=-7mm] (done) {Return results\\(status and bounds)};
 \draw[arrow](master)--(send);\draw[arrow](send)--(solve);\draw[arrow](solve)--(feas);
 \draw[arrow](feas)--node[above,font=\scriptsize]{No}(rest);
 \draw[arrow](feas)--node[above,font=\scriptsize]{Yes}(opt);
 \draw[arrow](rest)|-(inc);\draw[arrow](opt)|-(inc);
 \draw[arrow](inc)--(bound);\draw[arrow](bound)--(stop);
 \draw[arrow](stop)--node[above,font=\scriptsize]{Yes}(done);
-\draw[arrow](stop.east)--++(10mm,0)|-(master.east);
+% If not converged and no stopping limit has been reached, start the next iteration.
+\draw[arrow] (stop.east) -- node[above,font=\scriptsize]{No: next iteration} ++(13mm,0)
+  |- ([yshift=4mm]master.north) -- (master.north);
 \end{tikzpicture}
 \end{frame}
 
@@ -228,81 +223,178 @@ This excludes trial points certified infeasible by the restoration problem.
 \end{frame}
 
 
-\begin{frame}{Quickstart: run a Benders scenario}
+
+\section{Quick start and essential information}
+
+\begin{frame}{Quick start and essential information}
 \small
-\begin{block}{Minimum command}
+\begin{block}{Minimum Benders command}
 \texttt{gridpath\_run --scenario YOUR\_SCENARIO --benders 1}
 \end{block}
 \begin{itemize}
-\item \texttt{gridpath\_run} is the installed console command.
-\item \texttt{--scenario} is required; \texttt{--benders} is a required integer flag (nonzero enables Benders, zero uses the ordinary solve path).
-\item Scenario directory: \texttt{<scenario\_location>/<scenario>}; default parent is \texttt{../scenarios}, relative to the working directory.
-\item Example with a custom location: \texttt{gridpath\_run --scenario CASE --scenario\_location /path/to/scenarios --benders 1}.
-\item Check the live interface with \texttt{gridpath\_run --help}; print the installed version with \texttt{--version}.
+\item Run from the intended Python environment after installing this GridPath checkout and preparing the scenario inputs.
+\item \texttt{--scenario} names the scenario directory. By default it is found under \texttt{../scenarios}; use \texttt{--scenario\_location} to set a different parent directory.
+\item \texttt{--benders 1} selects Benders decomposition. The flag is required; \texttt{0} selects the ordinary solve path.
+\item Select the solver with \texttt{--solver}; ensure its executable and licence are available. The scenario's \texttt{solver\_options.csv} may also configure the solver.
+\item \texttt{--n\_parallel\_solve} controls concurrent operational workers. Increase it only with sufficient memory, CPU capacity, and solver licences.
+\item Check the installed command and option spellings with \texttt{gridpath\_run --help}.
 \end{itemize}
 \end{frame}
 
-\begin{frame}{CLI options: convergence and run limits}
+\begin{frame}{Essential Benders CLI options: algorithm controls}
 \scriptsize
-\begin{tabular}{@{}p{0.43\textwidth}p{0.48\textwidth}@{}}
-\toprule Option (default) & Meaning \\
+\begin{tabular}{@{}p{0.43\textwidth}p{0.49\textwidth}@{}}
+\toprule Option (default) & What it controls \\
 \midrule
-\texttt{--max\_benders\_iter} (200) & Maximum Benders iterations.\\
-\texttt{--benders\_conv\_tol} ($10^{-10}$) & Relative convergence tolerance.\\
-\texttt{--benders\_abs\_gap\_tol} ($10^{-4}$) & Absolute objective-gap tolerance (NPV dollars here).\\
-\texttt{--max\_benders\_cpu\_time} (3600) & CPU-time limit supplied for each Benders subproblem.\\
-\texttt{--benders\_skip\_final\_export} (off) & Skip final worker solve/export at the best incumbent; planning and convergence outputs remain.\\
-\texttt{--benders\_use\_pj\_initialization} (true) & Use P\&J initialization when no discrete linking variables are present.\\
+\texttt{--max\_benders\_iter} (200) & Maximum number of master--worker iterations. \\
+\texttt{--benders\_conv\_tol} ($10^{-10}$) & Relative UB--LB convergence tolerance. \\
+\texttt{--benders\_abs\_gap\_tol} ($10^{-4}$) & Absolute UB--LB gap tolerance, in objective units. \\
+\texttt{--max\_benders\_cpu\_time} (3600) & CPU-time limit passed to each operational subproblem solve configuration, in seconds. \\
+\texttt{--benders\_master\_discrete\_method} (\texttt{pj\_relax}) & Master integer handling: \texttt{pj\_relax}, \texttt{linearized}, \texttt{djc}, or \texttt{none}. DJC requires native MOSEK. \\
+\texttt{--benders\_operational\_discrete\_method} (\texttt{fixed\_z}) & Treatment of non-linking operational integers: fix the integer state for dual cuts (\texttt{fixed\_z}) or relax integrality (\texttt{pj\_relax}). \\
+\texttt{--benders\_use\_pj\_initialization} (true) & Use Pecci--Jenkins initialization when there are no discrete linking variables. \\
 \bottomrule
 \end{tabular}
 \end{frame}
 
-\begin{frame}{CLI options: discrete decisions and stabilization}
+\begin{frame}{Essential Benders CLI options: stabilization and execution}
 \scriptsize
-\begin{tabular}{@{}p{0.43\textwidth}p{0.48\textwidth}@{}}
-\toprule Option (default) & Meaning \\
+\begin{tabular}{@{}p{0.43\textwidth}p{0.49\textwidth}@{}}
+\toprule Option (default) & What it controls \\
 \midrule
-\texttt{--benders\_master\_discrete\_method} (\texttt{pj\_relax}) & Master discrete handling: \texttt{none}, \texttt{pj\_relax}, \texttt{linearized}, or \texttt{djc}. DJC requires native MOSEK support.\\
-\texttt{--benders\_operational\_discrete\_method} (\texttt{fixed\_z}) & Operational non-linking integer handling: \texttt{fixed\_z} or \texttt{pj\_relax}.\\
-\texttt{--benders\_stabilization\_method} (\texttt{none}) & \texttt{none}, \texttt{l1}, or \texttt{l2}; none retains P\&J level-set regularization.\\
-\texttt{--benders\_stab\_param} (0.025) & Level-set parameter $\gamma$; L1/L2 require nonzero value.\\
-\texttt{--benders\_stab\_dynamic} (true) & Dynamically update $\gamma$; false keeps it fixed.\\
+\texttt{--benders\_stabilization\_method} (\texttt{none}) & Trial-point selection: no L1/L2 distance objective, weighted L1 distance, or weighted L2 distance. With the default nonzero level parameter, \texttt{none} still uses Pecci--Jenkins level-set regularization. \\
+\texttt{--benders\_stab\_param} (0.025) & Level-set parameter $\gamma$; controls how tightly the trial point is restricted relative to the current UB--LB gap. L1/L2 require a nonzero value. \\
+\texttt{--benders\_stab\_dynamic} (true) & Adapt $\gamma$ during iterations; set false to keep it fixed. \\
+\texttt{--benders\_operational\_solver} (\texttt{automatic}) & LP algorithm for MOSEK/Gurobi operational relaxations: \texttt{automatic}, \texttt{interior\_point}, or \texttt{primal\_simplex}. \\
+\texttt{--benders\_skip\_final\_export} (off) & Skip the final worker solves and per-subproblem exports at the best incumbent. Planning and convergence outputs are still written. \\
+\texttt{--n\_parallel\_solve} (1) & Number of operational subproblems solved concurrently. \\
+\texttt{--solver} (HiGHS if otherwise unspecified) & Pyomo solver interface for the master and selected Benders backend. Match the solver to the requested discrete method and installed integration. \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
 \begin{itemize}
-\item Boolean values accept true/false, t/f, yes/no, y/n, and 1/0.
-\item Parser help currently lists only \texttt{pj\_relax}/\texttt{djc} for the master method; the implementation also accepts \texttt{none}/\texttt{linearized}.
+\item Boolean options accept true/false, t/f, yes/no, y/n, and 1/0.
+\item The implementation accepts \texttt{none} and \texttt{linearized} for the master discrete method even though the parser help text currently advertises only \texttt{pj\_relax} and \texttt{djc}.
 \end{itemize}
 \end{frame}
 
-\begin{frame}{CLI options: operational solver and standard run controls}
-\scriptsize
+\appendix
+\section{Appendix: discrete decisions and conic stabilization}
+
+\begin{frame}{Appendix: master discrete-variable methods}
+\small
+The master may contain discrete linking variables. A worker cut generated at one discrete state is generally valid only at that state, so the master must enforce the appropriate state condition.
+
 \begin{itemize}
-\item \texttt{--benders\_operational\_solver} (\texttt{automatic}): MOSEK/Gurobi LP algorithm for \texttt{pj\_relax} operational LPs; choices \texttt{automatic}, \texttt{interior\_point}, \texttt{primal\_simplex}.
-\item \texttt{--n\_parallel\_solve} (1): number of subproblems solved concurrently.
-\item \texttt{--solver}, \texttt{--solver\_executable}: solver interface and optional executable path; HiGHS is the default if neither a solver nor scenario \texttt{solver\_options.csv} selects another.
-\item \texttt{--scenario\_location} (\texttt{../scenarios}), \texttt{--quiet}, \texttt{--verbose}: scenario path and console output.
-\item \texttt{--log}: duplicate run output to the scenario logs directory.
-\item \texttt{--mute\_solver\_output}: suppress solver log output.
-\item \texttt{--report\_timing}, \texttt{--testing}: timing report and test-suite behavior.
-\item \texttt{--ignore\_cleanup\_marker}: allow deliberate runs from cleaned/re-materialized scenario subsets.
+\item \textbf{\texttt{pj\_relax}:} begin with a master in which integer/binary domains are relaxed. After the continuous phase, restore integrality and continue using state-conditioned cuts. This is the Pecci--Jenkins strategy.
+\item \textbf{\texttt{linearized}:} use the relaxed phase, then activate each generated cut only when the discrete linking variables match the state at which its worker subproblem was solved. The activation is represented with mismatch indicators and a calculated Big-$M$.
+\item \textbf{\texttt{djc}:} use a native MOSEK disjunctive constraint to express the same state-conditioned logic without an explicit Big-$M$ in that disjunction.
+\item \textbf{\texttt{none}:} intended for a master with continuous linking variables only. If discrete linking variables are present, the implementation falls back to \texttt{pj\_relax}.
 \end{itemize}
+\vspace{1mm}
+\textbf{Important distinction:} \texttt{--benders\_master\_discrete\_method} controls discrete linking variables in the master. It is separate from \texttt{--benders\_operational\_discrete\_method}, which controls non-linking integer variables inside operational subproblems.
 \end{frame}
 
-\begin{frame}{CLI options: problem files, loading, and results}
-\scriptsize
+\begin{frame}{Appendix: state-conditioned cuts with mismatch indicators}
+\small
+Let $\hat d$ denote the discrete state at which a worker cut was generated, and let $d$ be the master state. For each binary linking variable, define a mismatch indicator:
+\[
+m_i =
+\begin{cases}
+1-d_i, & \hat d_i=1,\\
+d_i, & \hat d_i=0.
+\end{cases}
+\]
+For general integer linking variables, the implementation uses below/above mismatch indicators relative to the recorded integer value. An aggregate binary indicator $\delta$ is constrained by
+\[
+\delta\geq m_i\quad\forall i,\qquad
+\delta\leq\sum_i m_i.
+\]
+Thus $\delta=0$ exactly when every discrete variable matches the recorded state; otherwise $\delta=1$.
+
+Write the state-specific Benders inequality as
+\[
+C(d,x,\vartheta)\geq0.
+\]
+The linearized activation is
+\[
+C(d,x,\vartheta)+M\delta\geq0.
+\]
+When the state matches, $\delta=0$ and the original cut is enforced. When it differs, $\delta=1$ and the calculated $M$ relaxes the cut. The implementation calculates $M$ using the recourse lower bound and bounds on the continuous linking variables; it does not use an arbitrary user-selected constant.
+\end{frame}
+
+\begin{frame}{Appendix: native DJCs and operational integer treatment}
+\small
+\textbf{Native MOSEK disjunctive constraints (DJC)}
+\[
+\left[
+\begin{array}{c}
+d=\hat d\\
+C(d,x,\vartheta)\geq0
+\end{array}
+\right]
+\quad\lor\quad
+[d\neq\hat d].
+\]
+This is the logical meaning of the state-conditioned cut: enforce the cut at its generating state, or allow a different discrete state. The current native implementation supports binary discrete linking states only and requires the direct native MOSEK interface. It does not support general-integer states through this DJC path.
+
+\medskip
+\textbf{Operational non-linking integer variables}
 \begin{itemize}
-\item \texttt{--create\_lp\_problem\_file\_only}: write the problem file without solving; \texttt{--create\_lp\_problem\_file}: solve and also write an LP file.
-\item \texttt{--symbolic}: readable Pyomo component names in supported solver/problem files.
-\item \texttt{--write\_solver\_files\_to\_logs\_dir}, \texttt{--keepfiles}: solver-file location and retention (interface-dependent).
-\item \texttt{--load\_instance}: load a pre-built instance.
-\item \texttt{--load\_solution}, \texttt{--load\_cplex\_solution}, \texttt{--load\_gurobi\_solution}, \texttt{--load\_highs\_solution}: skip optimization and load the named solution format.
-\item \texttt{--quick\_write\_and\_solve}: load a prepared pickle and solve.
-\item \texttt{--skip\_duals}: do not import/save duals or dual-based result files.
-\item \texttt{--incomplete\_only}: skip cells with a results-export-complete marker.
-\item \texttt{--results\_export\_rule}, \texttt{--results\_export\_summary\_rule}: select detailed and summary export rules.
-\item \texttt{--skip\_quick\_summary}: omit the quick-summary text file. \texttt{-h/--help} prints help; \texttt{--version} prints the installed version.
+\item \texttt{fixed\_z}: fix the operational integer state for the LP solve used to obtain dual sensitivities. The resulting cut is conditional on that fixed state.
+\item \texttt{pj\_relax}: relax operational integrality and obtain duals from the resulting LP relaxation.
+\end{itemize}
+These operational choices are independent of the master discrete method. Phase-I feasibility restoration also requires an LP dual certificate; unfixed non-linking integer variables are not supported in that restoration certificate.
+\end{frame}
+
+\begin{frame}{Appendix: L2 stabilization as a rotated-cone program}
+\small
+For continuous linking variables $x_i$, centre $\bar x_i$, and nonnegative weights $w_i$, the L2 trial-point objective is
+\[
+\min_x\quad \sum_{i\in I_{\mathrm{stab}}}w_i(x_i-\bar x_i)^2.
+\]
+Introduce an epigraph variable $t\geq0$. The equivalent epigraph problem is
+\[
+\min_{x,t}\quad t
+\qquad\text{s.t.}\qquad
+t\geq\sum_{i\in I_{\mathrm{stab}}}w_i(x_i-\bar x_i)^2.
+\]
+Define the rotated quadratic cone
+\[
+\mathcal Q_r^{n+2}
+=
+\left\{(u,v,z):
+u\geq0,\ v\geq0,\ 2uv\geq\|z\|_2^2
+\right\}.
+\]
+Set
+\[
+u=t,\qquad v=\frac12,\qquad
+z_i=\sqrt{w_i}(x_i-\bar x_i).
+\]
+Then the epigraph constraint is exactly
+\[
+\boxed{\left(t,\frac12,
+\left[\sqrt{w_i}(x_i-\bar x_i)\right]_{i\in I_{\mathrm{stab}}}
+\right)\in\mathcal Q_r^{n+2}.}
+\]
+Indeed, $2t(1/2)\geq\sum_iw_i(x_i-\bar x_i)^2$ is precisely the required inequality. Minimizing $t$ therefore reproduces the weighted L2 objective exactly.
+\end{frame}
+
+\begin{frame}{Appendix: implementation of the L2 cone}
+\small
+The Pyomo model creates a nonnegative epigraph variable $t$ and records the stabilization variables, weights, and centre values. The custom MOSEK interface then creates affine expressions
+\[
+y_0=t,\qquad y_1=\frac12,\qquad
+y_{i+2}=\sqrt{w_i}\,x_i-\sqrt{w_i}\,\bar x_i,
+\]
+and places the vector $(y_0,y_1,y_2,\ldots,y_{n+1})$ in a rotated quadratic cone.
+
+\begin{itemize}
+\item The cone is an exact representation, not a relaxation or approximation.
+\item Nonnegative weights are required; zero weights simply contribute zero.
+\item The centre $\bar x$ is the last evaluated planning point, and only the continuous linking variables supplied to the stabilization routine are included.
+\item The quadratic expression is used directly when the conic path is not selected. The custom MOSEK path uses the rotated-cone epigraph to avoid expanding large reference values into a quadratic objective.
 \end{itemize}
 \end{frame}
 
