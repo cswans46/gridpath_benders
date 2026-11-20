@@ -293,6 +293,10 @@ def benders_subproblem_worker(
     safety_factor = float(os.getenv("GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR", "1.25"))
     if safety_factor < 1:
         raise ValueError("GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR must be at least 1.")
+    operation_temp_reservation = initial_temporary
+    minimum_operation_temp = int(float(os.getenv(
+        "GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB", "0.5"
+    )) * 1024**3)
     task_directory = None
     try:
         guard.acquire()
@@ -392,8 +396,25 @@ def benders_subproblem_worker(
 
             if memory_coordinator is not None:
                 memory_coordinator.set_reservation(
-                    worker_index, temporary=initial_temporary
+                    worker_index, temporary=operation_temp_reservation
                 )
+            operation_start_rss = process_rss()
+            observed_peak_rss = [operation_start_rss]
+            monitor_stop = threading.Event()
+
+            def sample_operation_memory():
+                while not monitor_stop.wait(0.1):
+                    try:
+                        observed_peak_rss[0] = max(
+                            observed_peak_rss[0], process_rss()
+                        )
+                    except Exception:
+                        return
+
+            memory_monitor = threading.Thread(
+                target=sample_operation_memory, daemon=True
+            )
+            memory_monitor.start()
             planning_sol = message["planning_sol"]
             master_method = message["master_discrete_method"]
             configured_method = message["operational_discrete_method"]
@@ -457,8 +478,27 @@ def benders_subproblem_worker(
                 result["operational_mip_variables"] = list(state.operational_integer_names)
 
             state.cleanup_iteration()
+            monitor_stop.set()
+            memory_monitor.join()
+            current_rss = process_rss()
+            transient_peak = max(0, observed_peak_rss[0] - current_rss)
+            operation_temp_reservation = max(
+                minimum_operation_temp,
+                int(transient_peak * safety_factor),
+            )
+            if os.getenv("GRIDPATH_BENDERS_MEMLOG", "0") == "1":
+                print(
+                    f"[benders-mem] subproblem={key.subproblem} "
+                    f"rss_start={operation_start_rss / 1024**3:.2f}GiB "
+                    f"rss_peak={observed_peak_rss[0] / 1024**3:.2f}GiB "
+                    f"rss_end={current_rss / 1024**3:.2f}GiB",
+                    flush=True,
+                )
             if memory_coordinator is not None:
                 memory_coordinator.set_reservation(worker_index, temporary=0)
+                memory_coordinator.set_reservation(
+                    worker_index, persistent=int(current_rss * safety_factor)
+                )
             output_queue.put((key, result))
     finally:
         guard.release()
