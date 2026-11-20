@@ -21,6 +21,8 @@
 \tableofcontents[hideallsubsections]
 \end{frame}
 
+\section{Overview and setup}
+
 \begin{frame}{High}
 \begin{itemize}
 \item The planning model chooses investment and policy-allocation decisions.
@@ -33,8 +35,6 @@
 \quad Q_w(x_L)=-\max_{z_w\in Z_w(x_L)}\mathrm{OP\_NPV}_w(z_w).
 \]
 \end{frame}
-\section{Quick start and essential information}
-
 \begin{frame}{Quick start and essential information}
 \small
 \begin{block}{Minimum Benders command}
@@ -104,6 +104,8 @@
 \bottomrule
 \end{tabular}
 \end{frame}
+
+\section{Benders algorithm and mathematical formulation}
 
 \begin{frame}{Algorithm flowchart: one Benders iteration}
 \centering
@@ -194,6 +196,8 @@ $UB,LB$ & Master upper bound and best evaluated complete-plan lower bound\\
 \end{columns}
 \end{frame}
 
+\section{Software architecture and worker execution}
+
 \begin{frame}{Software architecture: entry point and driver}
 \centering
 \begin{tikzpicture}[node distance=6mm and 8mm]
@@ -236,6 +240,8 @@ $UB,LB$ & Master upper bound and best evaluated complete-plan lower bound\\
 \item Return $Q_w(\bar{x})$, sensitivities, and state information—or invoke Phase-I restoration.
 \end{enumerate}
 \end{frame}
+
+\section{Cuts, stabilization, and bounds}
 
 \begin{frame}{Optimality and feasibility cuts}
 \small
