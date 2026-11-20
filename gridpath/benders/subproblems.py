@@ -27,6 +27,7 @@ from gridpath.benders.operational_model_creation import (
 import os
 import logging
 import psutil
+import threading
 class BendersState(NamedTuple):
     values: tuple
 
@@ -677,6 +678,8 @@ def _benders_subproblem_worker_impl(
     restoration before the worker returns a feasibility cut.
     """
 
+    operation_temp_reservation = int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3)
+    minimum_operation_temp = int(float(os.getenv('GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB', '0.5')) * 1024**3)
     dynamic_components = DynamicComponents()
 
     # ================================================================
@@ -806,7 +809,7 @@ def _benders_subproblem_worker_impl(
         # this once, after convergence, instead of a trial point.
         if isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
             if memory_coordinator is not None:
-                memory_coordinator.set_reservation(worker_index, temporary=int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3))
+                memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
             output_queue.put(
                 (
                     key,
@@ -828,7 +831,21 @@ def _benders_subproblem_worker_impl(
             continue
 
         if memory_coordinator is not None:
-            memory_coordinator.set_reservation(worker_index, temporary=int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3))
+            memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
+
+        # Sample RSS during the operation. The observed peak informs this
+        # worker's next reservation, so estimates adapt independently.
+        operation_start_rss = process_memory_rss()
+        observed_peak_rss = [operation_start_rss]
+        monitor_stop = threading.Event()
+        def sample_operation_memory():
+            while not monitor_stop.wait(0.1):
+                try:
+                    observed_peak_rss[0] = max(observed_peak_rss[0], process_memory_rss())
+                except psutil.Error:
+                    return
+        memory_monitor = threading.Thread(target=sample_operation_memory, daemon=True)
+        memory_monitor.start()
 
         if hasattr(instance, "slack_max"):
             _set_feasibility_restoration_mode(
@@ -1286,6 +1303,12 @@ def _benders_subproblem_worker_impl(
                 key,
                 subop_sol,
             )
+        )
+        monitor_stop.set()
+        memory_monitor.join()
+        observed_temporary_peak = max(0, observed_peak_rss[0] - operation_start_rss)
+        operation_temp_reservation = max(
+            minimum_operation_temp, int(observed_temporary_peak * safety_factor)
         )
         if memory_coordinator is not None:
             memory_coordinator.set_reservation(worker_index, temporary=0)
