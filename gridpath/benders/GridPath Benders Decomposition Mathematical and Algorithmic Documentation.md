@@ -726,7 +726,63 @@ gridpath_run --scenario YOUR_SCENARIO --benders 1
 
 The setup keys assembled from the CLI are \`MaxIter\`, \`ConvTol\`, \`AbsGapTol\`, \`MaxCpuTime\`, \`StabDynamic\`, \`StabParam\`, \`MasterDiscreteMethod\`, \`OperationalDiscreteMethod\`, \`StabilizationMethod\`, and \`UsePjInitialization\`. The environment override is an advanced developer/testing mechanism; prefer the documented CLI options for ordinary runs. The operational LP algorithm selector \`--benders_operational_solver\` and the worker count \`--n_parallel_solve\` are passed separately rather than being keys in this setup dictionary.
 
-## 15. References
+
+## 15. Dynamic memory management for persistent Benders workers
+
+### 15.1 Motivation and resource constraint
+
+GridPath starts one persistent process for each operational subproblem. Each process retains its Pyomo model between Benders iterations, while its additional memory requirement changes over time (model construction, solver representation, optimization, feasibility restoration and final export). A fixed per-worker memory quota would leave capacity unused whenever a worker is idle or has a small temporary requirement.
+
+The memory coordinator therefore manages a shared, time-varying reservation. At every reservation event, the admission-control condition is
+
+$
+\\sum_{w\\in W} \\left(R_w(t)+T_w(t)\\right) \\leq M_{\\mathrm{budget}}
+\\qquad \\text{for every time }t.
+$
+
+Here, \\(R_w(t)\\) is worker \\(w\\)'s persistent reservation for its resident model and retained process memory, while \\(T_w(t)\\) is its temporary reservation for the operation currently in progress. Reservations are summed across workers at the same time; they are **not** summed across seconds. A worker can increase or decrease its temporary reservation as its phase changes, and unused capacity is available to other workers.
+
+The budget is calculated from physical RAM using the following defaults:
+
+$
+M_{\\mathrm{budget}} = \\min\\left(
+0.75M_{\\mathrm{total}},
+M_{\\mathrm{total}}-\\max(0.10M_{\\mathrm{total}},32\\;\\mathrm{GiB})
+\\right).
+$
+
+The defaults can be changed with `GRIDPATH_BENDERS_MEMORY_FRACTION`, `GRIDPATH_BENDERS_RESERVE_FRACTION`, and `GRIDPATH_BENDERS_MINIMUM_RESERVE_GB`.
+
+### 15.2 Coordinator and worker lifecycle
+
+`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its synchronized reservation arrays and condition lock make each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
+
+The worker integration in `benders/subproblems.py` follows this lifecycle:
+
+1. **Startup reservation.** Before building its operational model, each worker reserves initial persistent and temporary memory estimates. The existing startup semaphore continues to limit simultaneous model construction and initial recourse-bound solves.
+2. **Persistent model reservation.** After model construction and the initial recourse-bound calculation, the worker measures its resident-set size (RSS) and reconciles its reservation to the measured increase over its process-start baseline, multiplied by a safety factor. The startup temporary reservation is released before the worker reports `READY`.
+3. **Temporary operation reservation.** Before each recourse solve or final export, the worker requests a temporary reservation. It releases that reservation after returning the result. The persistent reservation remains held for as long as the worker retains its model.
+4. **Worker shutdown.** The worker releases both reservations in its `finally` block, including when initialization or processing raises an exception.
+
+### 15.3 Configuration
+
+| Environment variable | Default | Purpose |
+| --- | ---: | --- |
+| `GRIDPATH_BENDERS_MEMORY_FRACTION` | `0.75` | Maximum fraction of physical RAM available to Benders before applying the reserve rule |
+| `GRIDPATH_BENDERS_RESERVE_FRACTION` | `0.10` | Proportional system-memory reserve |
+| `GRIDPATH_BENDERS_MINIMUM_RESERVE_GB` | `32` | Minimum absolute system-memory reserve in GiB |
+| `GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB` | `4` | Initial per-worker persistent reservation during model construction |
+| `GRIDPATH_BENDERS_INITIAL_TEMPORARY_GB` | `4` | Initial per-worker temporary startup reservation |
+| `GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB` | `4` | Temporary reservation requested before each solve or final export |
+| `GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR` | `1.25` | Multiplier applied when reconciling measured resident memory |
+
+### 15.4 Interpretation and limitations
+
+This is **cooperative admission control**, not an operating-system memory limit. Pyomo, solver interfaces and native solver libraries can allocate memory without consulting the coordinator. The coordinator therefore enforces the sum of *reservations*, not a mathematical guarantee that actual RSS can never exceed the budget. The initial and temporary estimates must be chosen conservatively for the model and solver in use. RSS is a process-level diagnostic and can include shared pages; it is not identical to private committed memory.
+
+The initial implementation uses configurable temporary reservations rather than attempting to interrupt an allocation already in progress. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
+
+## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.
 
