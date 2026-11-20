@@ -1294,24 +1294,26 @@ def _benders_subproblem_worker_impl(
                 original_linking_domains,
             )
 
-        # ============================================================
-        # Send result back to the Benders master.
-        # ============================================================
+        monitor_stop.set()
+        memory_monitor.join()
+        current_rss = process_memory_rss()
+        persistent_reservation = max(0, int((current_rss - baseline_rss) * safety_factor))
+        transient_peak = max(0, observed_peak_rss[0] - current_rss)
+        operation_temp_reservation = max(
+            minimum_operation_temp, int(transient_peak * safety_factor)
+        )
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(
+                worker_index, persistent=persistent_reservation, temporary=0
+            )
 
+        # Send result back only after the updated reservations are admitted.
         output_queue.put(
             (
                 key,
                 subop_sol,
             )
         )
-        monitor_stop.set()
-        memory_monitor.join()
-        observed_temporary_peak = max(0, observed_peak_rss[0] - operation_start_rss)
-        operation_temp_reservation = max(
-            minimum_operation_temp, int(observed_temporary_peak * safety_factor)
-        )
-        if memory_coordinator is not None:
-            memory_coordinator.set_reservation(worker_index, temporary=0)
 
 def relax_discrete_linking_variables(
     instance,
