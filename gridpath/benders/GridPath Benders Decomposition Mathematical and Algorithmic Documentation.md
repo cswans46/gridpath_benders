@@ -77,7 +77,7 @@ $$
 
   The operational subproblem receives the corresponding allocation variables and uses its own subproblem's budget in place of the system-wide target where the policy module supports this substitution.
 
-For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem. The allocations are expressed in units of 1000 MWh (`STOR_SOC_ALLOCATION_UNIT_MWH = 1000.0`).
+For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem.
 
 The master-side constraints are implemented in `gridpath/system/policy/benders_policy_constraint.py`. For each project, balancing type, period and subproblem, `Stor_SOC_Chain_Constraint` equates the end-SOC allocation of the current subproblem to the start-SOC allocation of the next subproblem (cyclic constraint). Subproblems are sorted numerically, and the final subproblem is connected back to the first, so the sequence is cyclic. `Stor_SOC_Capacity_Constraint` also limits each allocated start SOC, converted to MWh, to the project's energy-storage capacity (storage capacity constraint). These two constraints are added to the master only along with non-negativity constraints; the operational models receive the corresponding allocation variables through `add_stor_soc_allocation_components` in `soc_allocation.py` to provide the starting and ending SOC of each subproblem.
 
@@ -121,7 +121,7 @@ Discounting and period weights are whatever the original GridPath `NPV` expressi
 - \(x_i\): component \(i\) of the planning vector. In the cuts, only the linking-variable components represented in the relevant worker's cut are included.
 - \(\vartheta_w\) (`vTHETA[w]`): one real master variable for each subproblem \(w\), with no upper bound. It approximates the recourse cost in units of \(S\).
 
-**Other symbols appearing in the master formulation**
+**Variable, Parameter and Set list**
 
 - \(S\): the scaling constant `BENDERS_THETA_SCALE = 1e9`; monetary cut values are divided by \(S\) before entering the master.
 - \(W\), \(w\): the set of operational subproblems and one subproblem key, respectively. A key identifies the scenario dimensions and subproblem/stage.
@@ -166,6 +166,7 @@ The LP that produces \(U_w\) is solved over the whole operational model with the
 **How the master upper bound is initialized and updated.** The algorithm's upper bound \(UB\) depends on the initialization path. This is separate from the \(10^8\) variable cap described above: that cap is a fallback applied only after an unbounded solve, whereas \(UB\) is the algorithmic bound used to track the best master relaxation.
 
 - **Ordinary initialization (without Pecci–Jenkins initialization).** Before the first full master solve, the workers provide a global upper bound \(U_w\) on operating NPV for each subproblem \(w\). Since recourse cost is defined as \(Q_w=-\mathrm{OP\_NPV}_w\), the algorithm converts this into a recourse-cost lower bound \(L_w=-U_w\). It imposes \(\vartheta_w\ge L_w/S\) through `ThetaLowerBound`. The first master is solved with the full Benders objective, including the recourse-cost term \(-S\sum_w\vartheta_w\), and its objective value initializes \(UB\). This is a valid upper bound for the maximization problem because the master uses valid lower bounds on recourse cost and therefore relaxes the full problem.
+However, this is expensive and the algorithm defaults to Pecci-Jenkins initialisation.
 
 - **Pecci–Jenkins initialization.** When `UsePjInitialization` is enabled and there are no discrete linking variables, the initialization phase temporarily solves a planning-only master with objective `ePlanningNPV`, omitting the recourse-cost term. The algorithm sets \(UB=+\infty\) during this phase. The planning-only objective is not a valid upper bound on the full planning-plus-recourse objective, so it must not be used as one. The value remains infinite while feasibility-restoration iterations seek a trial plan for which the operational subproblems are feasible and can provide optimality-cut information. Once that phase is complete, the full Benders objective is restored; a subsequent solve of that full master provides a valid objective value for initializing or updating \(UB\).
 

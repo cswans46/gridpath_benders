@@ -71,8 +71,10 @@ def solve_planning_problem(
 
     if status != SolverStatus.ok or termination != TerminationCondition.optimal:
         solver_name = getattr(optimiser, "name", None)
-        if solver_name:
+
+        if solver_name and solver_name != "gams":
             fresh_optimiser = SolverFactory(solver_name)
+
             if fresh_optimiser.available(exception_flag=False):
                 fresh_optimiser.options.update(optimiser.options)
                 results = fresh_optimiser.solve(instance, tee=False)

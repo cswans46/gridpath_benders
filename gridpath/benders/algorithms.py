@@ -415,6 +415,12 @@ def benders(
         )
     elif is_native_mosek:
         optimiser = create_mosek_benders_solver()
+
+        # Apply options from solver_options.csv to the actual
+        # native MOSEK Benders solver.
+        for option_name, option_value in gams_options.items():
+            if option_name not in {"solver", "solver_name"}:
+                optimiser.options[option_name] = option_value
     elif "gurobi" in solver_interface_name:
         optimiser = create_gurobi_benders_solver()
     elif parsed_arguments.solver_executable is not None:
