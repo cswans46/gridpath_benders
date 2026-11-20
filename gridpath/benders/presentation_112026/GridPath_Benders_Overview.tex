@@ -2,7 +2,11 @@
 \usetheme{Madrid}
 \usecolortheme{default}
 \usepackage[T1]{fontenc}
-\usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz}
+\usepackage{lmodern,amsmath,amssymb,mathtools,booktabs,tikz,etoolbox}
+% Add a little breathing room between list entries while keeping slides compact.
+\AtBeginEnvironment{itemize}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
+\AtBeginEnvironment{enumerate}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
+\AtBeginEnvironment{description}{\setlength{\itemsep}{3pt}\setlength{\parskip}{0pt}}
 \usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 \setbeamertemplate{navigation symbols}{}
 \setbeamertemplate{footline}[frame number]
