@@ -216,6 +216,8 @@ def solve_original(model, solver):
 
     failures = []
     for algorithm in ("primal_simplex", "interior_point"):
+        # Release the previous attempt's clone before allocating another.
+        clone = None
         clone = model.clone()
         prepare_lp_for_duals(
             clone,
@@ -253,6 +255,8 @@ def restore(model, solver, active_names, point, subproblem_key):
 
     failures = []
     for algorithm in ("primal_simplex", "interior_point"):
+        # Release the previous attempt's clone before allocating another.
+        clone = None
         clone = model.clone()
         prepare_lp_for_duals(
             clone,

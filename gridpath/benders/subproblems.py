@@ -27,11 +27,23 @@ from gridpath.benders.operational_model_creation import (
 import os
 import logging
 import psutil
+import gc
 import threading
 class BendersState(NamedTuple):
     values: tuple
 
 BENDERS_RECOURSE_OBJECTIVE_SCALE = 1e6
+
+def _use_symbolic_labels(optimiser):
+    """Numeric labels for Pyomo's direct MOSEK/Gurobi interfaces (see
+    _solve_with_lp_optimizer); other solvers, e.g. GAMS, keep symbolic labels.
+    Set GRIDPATH_BENDERS_SYMBOLIC_LABELS=1 to force symbolic labels."""
+    solver_name = str(getattr(optimiser, "name", "")).lower()
+    return not (
+        solver_name.startswith(("mosek", "gurobi"))
+        and os.getenv("GRIDPATH_BENDERS_SYMBOLIC_LABELS", "0") != "1"
+    )
+
 
 def _solve_with_lp_optimizer(
     instance,
@@ -82,10 +94,7 @@ def _solve_with_lp_optimizer(
     # mosek_direct._add_constraints). Duals/solutions are mapped by object, not
     # by label, so numeric labels are safe for these two interfaces. Other
     # solvers (e.g. GAMS) keep symbolic labels.
-    use_symbolic_labels = not (
-        solver_name.startswith(("mosek", "gurobi"))
-        and os.getenv("GRIDPATH_BENDERS_SYMBOLIC_LABELS", "0") != "1"
-    )
+    use_symbolic_labels = _use_symbolic_labels(optimiser)
     previous_options = {
         key: (
             key in optimiser.options,
@@ -785,6 +794,9 @@ def _benders_subproblem_worker_impl(
 
     # ================================================================
     # Reconcile the startup estimate with the resident model footprint.
+    # Free build-time garbage (abstract model, data portal) first so the
+    # measured footprint is not inflated by unreachable objects.
+    gc.collect()
     if memory_coordinator is not None:
         resident_bytes = process_memory_rss()
         # Release the startup temporary allowance before increasing the
@@ -1053,7 +1065,7 @@ def _benders_subproblem_worker_impl(
             mip_results = optimiser.solve(
                 instance,
                 tee=False,
-                symbolic_solver_labels=True,
+                symbolic_solver_labels=_use_symbolic_labels(optimiser),
             )
 
         mip_termination = (
@@ -1312,6 +1324,11 @@ def _benders_subproblem_worker_impl(
                 instance,
                 original_linking_domains,
             )
+
+        # Only the linking-row duals are used (already extracted above);
+        # drop the duals Pyomo imported for every other row.
+        if hasattr(instance, "dual"):
+            instance.dual.clear()
 
         monitor_stop.set()
         memory_monitor.join()
@@ -1657,30 +1674,78 @@ def apply_linking_variable_bounds(lp_instance, linking_var_names, linking_var_bo
 def calculate_recourse_upper_bound(
     instance, optimiser, linking_var_names=None, linking_var_bounds=None,
 ):
-    lp_instance = instance.clone()
-    relax_operational_integrality(lp_instance)
+    """LP-relaxation bound on recourse value.
 
-    still_unbounded = apply_linking_variable_bounds(
-        lp_instance, linking_var_names, linking_var_bounds
-    )
-    if still_unbounded:
-        logging.getLogger(__name__).warning(
-            "Recourse bound LP: %d linking variable(s) still lack a bound, e.g. %s",
-            len(still_unbounded), still_unbounded[:10],
+    Relaxes integrality and applies linking-variable bounds IN PLACE and
+    restores them afterwards, instead of solving on ``instance.clone()``
+    (a full second copy of the model in every worker). Set
+    GRIDPATH_BENDERS_BOUND_VIA_CLONE=1 to use the old clone-based behaviour.
+    """
+    if os.getenv("GRIDPATH_BENDERS_BOUND_VIA_CLONE", "0") == "1":
+        lp_instance = instance.clone()
+        restore_state = None
+    else:
+        lp_instance = instance
+        restore_state = _snapshot_for_bound_lp(instance, linking_var_names)
+
+    try:
+        relax_operational_integrality(lp_instance)
+
+        still_unbounded = apply_linking_variable_bounds(
+            lp_instance, linking_var_names, linking_var_bounds
         )
+        if still_unbounded:
+            logging.getLogger(__name__).warning(
+                "Recourse bound LP: %d linking variable(s) still lack a bound, "
+                "e.g. %s",
+                len(still_unbounded), still_unbounded[:10],
+            )
 
-    results, _ = _solve_scaled_recourse_lp(lp_instance, optimiser)
-    termination = results.solver.termination_condition
+        results, _ = _solve_scaled_recourse_lp(lp_instance, optimiser)
+        termination = results.solver.termination_condition
 
-    if termination != TerminationCondition.optimal:
-        raise RuntimeError(
-            "LP relaxation for recourse lower bound did not solve "
-            f"to optimality. Termination condition: {termination}. "
-            f"{len(still_unbounded)} linking variable(s) lacked a lower "
-            f"or upper bound (first 10: {still_unbounded[:10]})."
-        )
+        if termination != TerminationCondition.optimal:
+            raise RuntimeError(
+                "LP relaxation for recourse lower bound did not solve "
+                f"to optimality. Termination condition: {termination}. "
+                f"{len(still_unbounded)} linking variable(s) lacked a lower "
+                f"or upper bound (first 10: {still_unbounded[:10]})."
+            )
 
-    return value(lp_instance.OP_NPV)
+        bound = value(lp_instance.OP_NPV)
+    finally:
+        if restore_state is not None:
+            _restore_after_bound_lp(restore_state)
+
+    return bound
+
+
+def _snapshot_for_bound_lp(instance, linking_var_names):
+    """Record what relax_operational_integrality / apply_linking_variable_bounds
+    will change so it can be undone."""
+    discrete = []
+    for var in instance.component_data_objects(
+        pyo.Var, active=True, descend_into=True
+    ):
+        if not var.fixed and (var.is_binary() or var.is_integer()):
+            discrete.append((var, var.domain, var.lb, var.ub))
+    linking = []
+    for name in linking_var_names or []:
+        var = instance.find_component(name)
+        if var is not None and not var.fixed:
+            linking.append((var, var.lb, var.ub))
+    return discrete, linking
+
+
+def _restore_after_bound_lp(state):
+    discrete, linking = state
+    for var, domain, lb, ub in discrete:
+        var.domain = domain
+        var.setlb(lb)
+        var.setub(ub)
+    for var, lb, ub in linking:
+        var.setlb(lb)
+        var.setub(ub)
 
 
 def solve_operational_mip_and_fix_z(
@@ -1746,7 +1811,7 @@ def solve_operational_mip_and_fix_z(
     results = solver.solve(
         operational_model,
         tee=False,
-        symbolic_solver_labels=True,
+        symbolic_solver_labels=_use_symbolic_labels(solver),
     )
 
     termination = results.solver.termination_condition
