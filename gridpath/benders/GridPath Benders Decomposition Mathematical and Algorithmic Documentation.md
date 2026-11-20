@@ -325,10 +325,10 @@ The `pj_relax` label is the code's own; the document uses it without claiming th
 
 During the master's relaxed phase the worker overrides the method to `pj_relax` (`subproblems.py:851-855`), because only the LP relaxation gives a globally valid cut there.
 
-$
+$$
 Q_w(x_L\mid z^*)\geq Q_w(\bar{x}_L\mid z^*)+\lambda^{\top}(x_L-\bar{x}_L)
 \qquad\text{(valid only for fixed }z^*\text{)}
-$
+$$
 
 Inferred from the formulas, not stated in the code: at other x the MIP may choose a different z with lower cost, so a fixed-z cut can overestimate the true MIP cost. The resulting UB should then be treated as heuristic for subproblems that contain operational integers, while `pj_relax` keeps UB valid at the price of a looser bound.
 
@@ -735,27 +735,27 @@ GridPath starts one persistent process for each operational subproblem. Each pro
 
 The memory coordinator therefore manages a shared, time-varying reservation. At every reservation event, the admission-control condition is
 
-$
+$$
 \\sum_{w\\in W} \\left(R_w(t)+T_w(t)\\right) \\leq M_{\\mathrm{budget}}
 \\qquad \\text{for every time }t.
-$
+$$
 
 Here, \\(R_w(t)\\) is worker \\(w\\)'s persistent reservation for its resident model and retained process memory, while \\(T_w(t)\\) is its temporary reservation for the operation currently in progress. Reservations are summed across workers at the same time; they are **not** summed across seconds. A worker can increase or decrease its temporary reservation as its phase changes, and unused capacity is available to other workers.
 
 The budget is calculated from physical RAM using the following defaults:
 
-$
+$$
 M_{\\mathrm{budget}} = \\min\\left(
 0.75M_{\\mathrm{total}},
 M_{\\mathrm{total}}-\\max(0.10M_{\\mathrm{total}},32\\;\\mathrm{GiB})
 \\right).
-$
+$$
 
 The defaults can be changed with `GRIDPATH_BENDERS_MEMORY_FRACTION`, `GRIDPATH_BENDERS_RESERVE_FRACTION`, and `GRIDPATH_BENDERS_MINIMUM_RESERVE_GB`.
 
 ### 15.2 Coordinator and worker lifecycle
 
-`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its shared reservation arrays, protected by a condition lock, making each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
+`BendersMemoryCoordinator` in `benders/algorithms.py` is created by the parent process and shared with all spawned workers. Its shared reservation arrays are protected by a condition lock, making each reservation change atomic: the coordinator checks the aggregate reservation and grants the change only when it fits within the budget. Otherwise, the requesting worker waits for another worker to release capacity. A request larger than the entire budget, or one that cannot be admitted within the configured wait timeout, raises a descriptive `MemoryError` rather than silently exceeding the reservation budget.
 
 The worker integration in `benders/subproblems.py` follows this lifecycle:
 
