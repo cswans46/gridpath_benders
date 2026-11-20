@@ -148,17 +148,6 @@ c_w^k\bar{s}_w^k+
 This excludes trial points certified infeasible by the restoration problem.
 \end{frame}
 
-\begin{frame}{Discrete master decisions}
-\begin{columns}[T]
-\column{0.49\textwidth}\textbf{Linearized/big-$M$ cuts}
-\begin{itemize}\item Generate a cut at a discrete state.\item Add mismatch indicators.\item Use calculated $M$ to deactivate the cut away from that state.\item No-good cuts exclude infeasible discrete patterns.\end{itemize}
-\column{0.49\textwidth}\textbf{Native DJCs}
-\begin{itemize}\item MOSEK disjunction: state matches and cut holds, OR state differs.\item Avoids explicit big-$M$ coefficients for that disjunction.\item Requires native MOSEK path.\end{itemize}
-\end{columns}
-\vspace{2mm}
-\textbf{Pecci--Jenkins relaxation:} relax master integer/binary domains first; after the continuous phase, restore integrality and continue with state-conditioned cuts.
-\end{frame}
-
 \begin{frame}{Stabilization: level set, L1, and L2}
 \[
 \ell=UB-\gamma(UB-LB),\qquad
@@ -288,6 +277,126 @@ This excludes trial points certified infeasible by the restoration problem.
 \begin{itemize}
 \item Boolean options accept true/false, t/f, yes/no, y/n, and 1/0.
 \item The implementation accepts \texttt{none} and \texttt{linearized} for the master discrete method even though the parser help text currently advertises only \texttt{pj\_relax} and \texttt{djc}.
+\end{itemize}
+\end{frame}
+
+\appendix
+\section{Appendix: discrete decisions and conic stabilization}
+
+\begin{frame}{Appendix: master discrete-variable methods}
+\small
+The master may contain discrete linking variables. A worker cut generated at one discrete state is generally valid only at that state, so the master must enforce the appropriate state condition.
+
+\begin{itemize}
+\item \textbf{\texttt{pj\_relax}:} begin with a master in which integer/binary domains are relaxed. After the continuous phase, restore integrality and continue using state-conditioned cuts. This is the Pecci--Jenkins strategy.
+\item \textbf{\texttt{linearized}:} use the relaxed phase, then activate each generated cut only when the discrete linking variables match the state at which its worker subproblem was solved. The activation is represented with mismatch indicators and a calculated Big-$M$.
+\item \textbf{\texttt{djc}:} use a native MOSEK disjunctive constraint to express the same state-conditioned logic without an explicit Big-$M$ in that disjunction.
+\item \textbf{\texttt{none}:} intended for a master with continuous linking variables only. If discrete linking variables are present, the implementation falls back to \texttt{pj\_relax}.
+\end{itemize}
+\vspace{1mm}
+\textbf{Important distinction:} \texttt{--benders\_master\_discrete\_method} controls discrete linking variables in the master. It is separate from \texttt{--benders\_operational\_discrete\_method}, which controls non-linking integer variables inside operational subproblems.
+\end{frame}
+
+\begin{frame}{Appendix: state-conditioned cuts with mismatch indicators}
+\small
+Let $\hat d$ denote the discrete state at which a worker cut was generated, and let $d$ be the master state. For each binary linking variable, define a mismatch indicator:
+\[
+m_i =
+\begin{cases}
+1-d_i, & \hat d_i=1,\\
+d_i, & \hat d_i=0.
+\end{cases}
+\]
+For general integer linking variables, the implementation uses below/above mismatch indicators relative to the recorded integer value. An aggregate binary indicator $\delta$ is constrained by
+\[
+\delta\geq m_i\quad\forall i,\qquad
+\delta\leq\sum_i m_i.
+\]
+Thus $\delta=0$ exactly when every discrete variable matches the recorded state; otherwise $\delta=1$.
+
+Write the state-specific Benders inequality as
+\[
+C(d,x,\vartheta)\geq0.
+\]
+The linearized activation is
+\[
+C(d,x,\vartheta)+M\delta\geq0.
+\]
+When the state matches, $\delta=0$ and the original cut is enforced. When it differs, $\delta=1$ and the calculated $M$ relaxes the cut. The implementation calculates $M$ using the recourse lower bound and bounds on the continuous linking variables; it does not use an arbitrary user-selected constant.
+\end{frame}
+
+\begin{frame}{Appendix: native DJCs and operational integer treatment}
+\small
+\textbf{Native MOSEK disjunctive constraints (DJC)}
+\[
+\left[
+\begin{array}{c}
+d=\hat d\\
+C(d,x,\vartheta)\geq0
+\end{array}
+\right]
+\quad\lor\quad
+[d\neq\hat d].
+\]
+This is the logical meaning of the state-conditioned cut: enforce the cut at its generating state, or allow a different discrete state. The current native implementation supports binary discrete linking states only and requires the direct native MOSEK interface. It does not support general-integer states through this DJC path.
+
+\medskip
+\textbf{Operational non-linking integer variables}
+\begin{itemize}
+\item \texttt{fixed\_z}: fix the operational integer state for the LP solve used to obtain dual sensitivities. The resulting cut is conditional on that fixed state.
+\item \texttt{pj\_relax}: relax operational integrality and obtain duals from the resulting LP relaxation.
+\end{itemize}
+These operational choices are independent of the master discrete method. Phase-I feasibility restoration also requires an LP dual certificate; unfixed non-linking integer variables are not supported in that restoration certificate.
+\end{frame}
+
+\begin{frame}{Appendix: L2 stabilization as a rotated-cone program}
+\small
+For continuous linking variables $x_i$, centre $\bar x_i$, and nonnegative weights $w_i$, the L2 trial-point objective is
+\[
+\min_x\quad \sum_{i\in I_{\mathrm{stab}}}w_i(x_i-\bar x_i)^2.
+\]
+Introduce an epigraph variable $t\geq0$. The equivalent epigraph problem is
+\[
+\min_{x,t}\quad t
+\qquad\text{s.t.}\qquad
+t\geq\sum_{i\in I_{\mathrm{stab}}}w_i(x_i-\bar x_i)^2.
+\]
+Define the rotated quadratic cone
+\[
+\mathcal Q_r^{n+2}
+=
+\left\{(u,v,z):
+u\geq0,\ v\geq0,\ 2uv\geq\|z\|_2^2
+\right\}.
+\]
+Set
+\[
+u=t,\qquad v=\frac12,\qquad
+z_i=\sqrt{w_i}(x_i-\bar x_i).
+\]
+Then the epigraph constraint is exactly
+\[
+\boxed{\left(t,\frac12,
+\left[\sqrt{w_i}(x_i-\bar x_i)\right]_{i\in I_{\mathrm{stab}}}
+\right)\in\mathcal Q_r^{n+2}.}
+\]
+Indeed, $2t(1/2)\geq\sum_iw_i(x_i-\bar x_i)^2$ is precisely the required inequality. Minimizing $t$ therefore reproduces the weighted L2 objective exactly.
+\end{frame}
+
+\begin{frame}{Appendix: implementation of the L2 cone}
+\small
+The Pyomo model creates a nonnegative epigraph variable $t$ and records the stabilization variables, weights, and centre values. The custom MOSEK interface then creates affine expressions
+\[
+y_0=t,\qquad y_1=\frac12,\qquad
+y_{i+2}=\sqrt{w_i}\,x_i-\sqrt{w_i}\,\bar x_i,
+\]
+and places the vector $(y_0,y_1,y_2,\ldots,y_{n+1})$ in a rotated quadratic cone.
+
+\begin{itemize}
+\item The cone is an exact representation, not a relaxation or approximation.
+\item Nonnegative weights are required; zero weights simply contribute zero.
+\item The centre $\bar x$ is the last evaluated planning point, and only the continuous linking variables supplied to the stabilization routine are included.
+\item The quadratic expression is used directly when the conic path is not selected. The custom MOSEK path uses the rotated-cone epigraph to avoid expanding large reference values into a quadratic objective.
 \end{itemize}
 \end{frame}
 
