@@ -68,7 +68,24 @@ def _solve_with_lp_optimizer(
             )
         )
     } if optimizer_key is not None else {})
+    # Optional per-worker solver thread cap. With many resident workers the
+    # default (all cores per solve) multiplies solver workspace memory.
+    solver_threads = os.getenv("GRIDPATH_BENDERS_SOLVER_THREADS")
+    if solver_threads:
+        if solver_name.startswith("mosek"):
+            scoped_options["MSK_IPAR_NUM_THREADS"] = int(solver_threads)
+        elif solver_name.startswith("gurobi"):
+            scoped_options["Threads"] = int(solver_threads)
     scoped_options.update(extra_options or {})
+    # Pyomo's direct MOSEK/Gurobi interfaces build one Python label string per
+    # row/column when symbolic labels are on (the MemoryError in
+    # mosek_direct._add_constraints). Duals/solutions are mapped by object, not
+    # by label, so numeric labels are safe for these two interfaces. Other
+    # solvers (e.g. GAMS) keep symbolic labels.
+    use_symbolic_labels = not (
+        solver_name.startswith(("mosek", "gurobi"))
+        and os.getenv("GRIDPATH_BENDERS_SYMBOLIC_LABELS", "0") != "1"
+    )
     previous_options = {
         key: (
             key in optimiser.options,
@@ -82,7 +99,7 @@ def _solve_with_lp_optimizer(
             return optimiser.solve(
                 instance,
                 tee=False,
-                symbolic_solver_labels=True,
+                symbolic_solver_labels=use_symbolic_labels,
             )
         except NoFeasibleSolutionError:
             logging.getLogger(__name__).warning(
@@ -90,7 +107,8 @@ def _solve_with_lp_optimizer(
                 "with solution loading disabled."
             )
             results = optimiser.solve(
-                instance, tee=False, symbolic_solver_labels=True, load_solutions=False,
+                instance, tee=False, symbolic_solver_labels=use_symbolic_labels,
+                load_solutions=False,
             )
             if results.solver.termination_condition == TerminationCondition.optimal:
                 raise RuntimeError(
@@ -1300,6 +1318,14 @@ def _benders_subproblem_worker_impl(
         current_rss = process_memory_rss()
         persistent_reservation = int(current_rss * safety_factor)
         transient_peak = max(0, observed_peak_rss[0] - current_rss)
+        if os.getenv("GRIDPATH_BENDERS_MEMLOG", "0") == "1":
+            print(
+                f"[benders-mem] subproblem={key.subproblem} "
+                f"rss_start={operation_start_rss / 1024**3:.2f}GiB "
+                f"rss_peak={observed_peak_rss[0] / 1024**3:.2f}GiB "
+                f"rss_end={current_rss / 1024**3:.2f}GiB",
+                flush=True,
+            )
         operation_temp_reservation = max(
             minimum_operation_temp, int(transient_peak * safety_factor)
         )
