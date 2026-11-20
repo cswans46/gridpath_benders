@@ -13,6 +13,7 @@ from pyomo.environ import (
 )
 from pyomo.opt import TerminationCondition
 import multiprocessing as mp
+import psutil
 from pyomo.core.expr.visitor import identify_variables
 from pyomo.repn.standard_repn import generate_standard_repn
 # from gridpath.benders.planning import add_approximate_variable_cost, solve_planning_problem
@@ -32,6 +33,111 @@ from gridpath.benders.mosek_benders import (
 from gridpath.benders.gams_benders_solver import create_gams_solver
 
 logger = logging.getLogger(__name__)
+
+
+class BendersMemoryCoordinator:
+    """Atomic, shared admission control for persistent and temporary worker memory.
+
+    Reservations are cooperative planning limits, not OS-enforced process limits.
+    The synchronized arrays and condition are shared by the parent and spawned
+    workers. A worker may change its reservation whenever its memory phase changes.
+    """
+
+    def __init__(self, context, worker_count, budget_bytes, wait_timeout=600):
+        self.budget_bytes = int(budget_bytes)
+        self.wait_timeout = float(wait_timeout)
+        self.persistent = context.Array("q", worker_count, lock=False)
+        self.temporary = context.Array("q", worker_count, lock=False)
+        self.condition = context.Condition(context.RLock())
+
+    def set_reservation(self, worker_index, persistent=None, temporary=None):
+        """Atomically replace one worker's reservation, waiting for capacity."""
+        worker_index = int(worker_index)
+        with self.condition:
+            old_persistent = self.persistent[worker_index]
+            old_temporary = self.temporary[worker_index]
+            new_persistent = old_persistent if persistent is None else max(0, int(persistent))
+            new_temporary = old_temporary if temporary is None else max(0, int(temporary))
+            requested_total = (
+                sum(self.persistent) + sum(self.temporary)
+                - old_persistent - old_temporary
+                + new_persistent + new_temporary
+            )
+            if new_persistent + new_temporary > self.budget_bytes:
+                raise MemoryError(
+                    f"Worker {worker_index} requested "
+                    f"{(new_persistent + new_temporary) / 1024**3:.2f} GiB, "
+                    f"exceeding the total Benders memory budget "
+                    f"({self.budget_bytes / 1024**3:.2f} GiB)."
+                )
+
+            deadline = time.monotonic() + self.wait_timeout
+            while requested_total > self.budget_bytes:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise MemoryError(
+                        f"Worker {worker_index} could not obtain its memory "
+                        f"reservation within {self.wait_timeout:.0f} seconds. "
+                        "The resident worker models may collectively exceed "
+                        "the configured Benders memory budget."
+                    )
+                self.condition.wait(timeout=min(remaining, 1.0))
+                requested_total = (
+                    sum(self.persistent) + sum(self.temporary)
+                    - self.persistent[worker_index] - self.temporary[worker_index]
+                    + new_persistent + new_temporary
+                )
+
+            self.persistent[worker_index] = new_persistent
+            self.temporary[worker_index] = new_temporary
+            self.condition.notify_all()
+
+    def release(self, worker_index):
+        """Release all reservations owned by a worker."""
+        with self.condition:
+            self.persistent[int(worker_index)] = 0
+            self.temporary[int(worker_index)] = 0
+            self.condition.notify_all()
+
+    def snapshot(self):
+        """Return a consistent snapshot of the current reservations."""
+        with self.condition:
+            persistent = list(self.persistent)
+            temporary = list(self.temporary)
+        return {
+            "persistent_bytes": sum(persistent),
+            "temporary_bytes": sum(temporary),
+            "total_reserved_bytes": sum(persistent) + sum(temporary),
+            "budget_bytes": self.budget_bytes,
+            "workers_with_reservations": sum(
+                1 for p, t in zip(persistent, temporary) if p or t
+            ),
+        }
+
+
+def _memory_budget_from_system():
+    """Calculate the soft Benders budget from physical RAM and environment settings."""
+    total = psutil.virtual_memory().total
+    fraction = float(os.getenv("GRIDPATH_BENDERS_MEMORY_FRACTION", "0.75"))
+    reserve_fraction = float(os.getenv("GRIDPATH_BENDERS_RESERVE_FRACTION", "0.10"))
+    minimum_reserve_gb = float(
+        os.getenv("GRIDPATH_BENDERS_MINIMUM_RESERVE_GB", "32")
+    )
+    if not 0 < fraction <= 1:
+        raise ValueError("GRIDPATH_BENDERS_MEMORY_FRACTION must be in (0, 1].")
+    if not 0 <= reserve_fraction < 1:
+        raise ValueError("GRIDPATH_BENDERS_RESERVE_FRACTION must be in [0, 1).")
+    if minimum_reserve_gb < 0:
+        raise ValueError("GRIDPATH_BENDERS_MINIMUM_RESERVE_GB must be non-negative.")
+    reserve = max(reserve_fraction * total, minimum_reserve_gb * 1024**3)
+    return int(min(fraction * total, max(0, total - reserve)))
+
+
+def _memory_reservation_gb(environment_name, default):
+    value = float(os.getenv(environment_name, str(default)))
+    if value < 0:
+        raise ValueError(f"{environment_name} must be non-negative.")
+    return int(value * 1024**3)
 
 @dataclass
 class BendersResult:
