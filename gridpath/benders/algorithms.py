@@ -133,11 +133,6 @@ def _memory_budget_from_system():
     return int(min(fraction * total, max(0, total - reserve)))
 
 
-def _memory_reservation_gb(environment_name, default):
-    value = float(os.getenv(environment_name, str(default)))
-    if value < 0:
-        raise ValueError(f"{environment_name} must be non-negative.")
-    return int(value * 1024**3)
 
 @dataclass
 class BendersResult:
@@ -601,7 +596,7 @@ def benders(
 
     startup_semaphore = ctx.Semaphore(worker_batch_size)
     memory_budget_bytes = _memory_budget_from_system()
-    memory_coordinator = BendersMemoryCoordinator(ctx, len(worker_keys), memory_budget_bytes)
+    memory_coordinator = BendersMemoryCoordinator(\n        ctx,\n        len(worker_keys),\n        memory_budget_bytes,\n        wait_timeout=float(os.getenv('GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT', '600')),\n    )
     logger.info(
         'Benders dynamic memory budget: %.1f GiB (physical RAM %.1f GiB).',
         memory_budget_bytes / 1024**3,
