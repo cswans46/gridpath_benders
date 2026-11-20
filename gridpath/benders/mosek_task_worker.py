@@ -156,9 +156,11 @@ class _TaskWorkerState:
     def _restore_original_bounds(self):
         for name, info in self.variables.items():
             col = info["column"]
-            key, lower, upper = _mosek_bound(
-                self.mosek, info["lb"], info["ub"]
-            )
+            if info["fixed"] and info.get("fixed_value") is not None:
+                lower = upper = float(info["fixed_value"])
+            else:
+                lower, upper = info["lb"], info["ub"]
+            key, lower, upper = _mosek_bound(self.mosek, lower, upper)
             self.task.putvarbound(col, key, lower, upper)
 
     def _set_integrality(self, preserve_integer):
