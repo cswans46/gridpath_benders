@@ -600,8 +600,15 @@ def benders(
         worker_batch_size = 1
 
     startup_semaphore = ctx.Semaphore(worker_batch_size)
+    memory_budget_bytes = _memory_budget_from_system()
+    memory_coordinator = BendersMemoryCoordinator(ctx, len(worker_keys), memory_budget_bytes)
+    logger.info(
+        'Benders dynamic memory budget: %.1f GiB (physical RAM %.1f GiB).',
+        memory_budget_bytes / 1024**3,
+        psutil.virtual_memory().total / 1024**3,
+    )
 
-    for key in worker_keys:
+    for worker_index, key in enumerate(worker_keys):
         input_queue = ctx.Queue()
         output_queue = ctx.Queue()
 
@@ -620,6 +627,8 @@ def benders(
                 startup_semaphore,
                 linking_var_bounds,
                 not use_pj_initialization,
+                memory_coordinator,
+                worker_index,
             ),
         )
 
@@ -630,10 +639,10 @@ def benders(
         input_queues[key] = input_queue
         output_queues[key] = output_queue
 
-    # All workers are started before any is waited on, so the Pyomo model
-    # builds run in parallel. Each worker holds `startup_semaphore` while it
-    # builds its model and solves its LP upper bound (the only license use
-    # before READY), so at most `worker_batch_size` do this at once.
+    # Workers reserve startup memory before building. The coordinator then
+    # replaces the startup estimate with measured resident model memory and
+    # releases the temporary startup reservation before READY. The semaphore
+    # separately limits simultaneous model builds / initial recourse solves.
     for key in worker_keys:
         
         result = _get_from_worker(output_queues[key], workers[key], key)
