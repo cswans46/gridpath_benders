@@ -230,81 +230,58 @@ This excludes trial points certified infeasible by the restoration problem.
 \end{frame}
 
 
-\begin{frame}{Quickstart: run a Benders scenario}
+
+\section{Quick start and essential information}
+
+\begin{frame}{Quick start and essential information}
 \small
-\begin{block}{Minimum command}
+\begin{block}{Minimum Benders command}
 \texttt{gridpath\_run --scenario YOUR\_SCENARIO --benders 1}
 \end{block}
 \begin{itemize}
-\item \texttt{gridpath\_run} is the installed console command.
-\item \texttt{--scenario} is required; \texttt{--benders} is a required integer flag (nonzero enables Benders, zero uses the ordinary solve path).
-\item Scenario directory: \texttt{<scenario\_location>/<scenario>}; default parent is \texttt{../scenarios}, relative to the working directory.
-\item Example with a custom location: \texttt{gridpath\_run --scenario CASE --scenario\_location /path/to/scenarios --benders 1}.
-\item Check the live interface with \texttt{gridpath\_run --help}; print the installed version with \texttt{--version}.
+\item Run from the intended Python environment after installing this GridPath checkout and preparing the scenario inputs.
+\item \texttt{--scenario} names the scenario directory. By default it is found under \texttt{../scenarios}; use \texttt{--scenario\_location} to set a different parent directory.
+\item \texttt{--benders 1} selects Benders decomposition. The flag is required; \texttt{0} selects the ordinary solve path.
+\item Select the solver with \texttt{--solver}; ensure its executable and licence are available. The scenario's \texttt{solver\_options.csv} may also configure the solver.
+\item \texttt{--n\_parallel\_solve} controls concurrent operational workers. Increase it only with sufficient memory, CPU capacity, and solver licences.
+\item Check the installed command and option spellings with \texttt{gridpath\_run --help}.
 \end{itemize}
 \end{frame}
 
-\begin{frame}{CLI options: convergence and run limits}
+\begin{frame}{Essential Benders CLI options: algorithm controls}
 \scriptsize
-\begin{tabular}{@{}p{0.43\textwidth}p{0.48\textwidth}@{}}
-\toprule Option (default) & Meaning \\
+\begin{tabular}{@{}p{0.43\textwidth}p{0.49\textwidth}@{}}
+\toprule Option (default) & What it controls \\
 \midrule
-\texttt{--max\_benders\_iter} (200) & Maximum Benders iterations.\\
-\texttt{--benders\_conv\_tol} ($10^{-10}$) & Relative convergence tolerance.\\
-\texttt{--benders\_abs\_gap\_tol} ($10^{-4}$) & Absolute objective-gap tolerance (NPV dollars here).\\
-\texttt{--max\_benders\_cpu\_time} (3600) & CPU-time limit supplied for each Benders subproblem.\\
-\texttt{--benders\_skip\_final\_export} (off) & Skip final worker solve/export at the best incumbent; planning and convergence outputs remain.\\
-\texttt{--benders\_use\_pj\_initialization} (true) & Use P\&J initialization when no discrete linking variables are present.\\
+\texttt{--max\_benders\_iter} (200) & Maximum number of master--worker iterations. \\
+\texttt{--benders\_conv\_tol} ($10^{-10}$) & Relative UB--LB convergence tolerance. \\
+\texttt{--benders\_abs\_gap\_tol} ($10^{-4}$) & Absolute UB--LB gap tolerance, in objective units. \\
+\texttt{--max\_benders\_cpu\_time} (3600) & CPU-time limit passed to each operational subproblem solve configuration, in seconds. \\
+\texttt{--benders\_master\_discrete\_method} (\texttt{pj\_relax}) & Master integer handling: \texttt{pj\_relax}, \texttt{linearized}, \texttt{djc}, or \texttt{none}. DJC requires native MOSEK. \\
+\texttt{--benders\_operational\_discrete\_method} (\texttt{fixed\_z}) & Treatment of non-linking operational integers: fix the integer state for dual cuts (\texttt{fixed\_z}) or relax integrality (\texttt{pj\_relax}). \\
+\texttt{--benders\_use\_pj\_initialization} (true) & Use Pecci--Jenkins initialization when there are no discrete linking variables. \\
 \bottomrule
 \end{tabular}
 \end{frame}
 
-\begin{frame}{CLI options: discrete decisions and stabilization}
+\begin{frame}{Essential Benders CLI options: stabilization and execution}
 \scriptsize
-\begin{tabular}{@{}p{0.43\textwidth}p{0.48\textwidth}@{}}
-\toprule Option (default) & Meaning \\
+\begin{tabular}{@{}p{0.43\textwidth}p{0.49\textwidth}@{}}
+\toprule Option (default) & What it controls \\
 \midrule
-\texttt{--benders\_master\_discrete\_method} (\texttt{pj\_relax}) & Master discrete handling: \texttt{none}, \texttt{pj\_relax}, \texttt{linearized}, or \texttt{djc}. DJC requires native MOSEK support.\\
-\texttt{--benders\_operational\_discrete\_method} (\texttt{fixed\_z}) & Operational non-linking integer handling: \texttt{fixed\_z} or \texttt{pj\_relax}.\\
-\texttt{--benders\_stabilization\_method} (\texttt{none}) & \texttt{none}, \texttt{l1}, or \texttt{l2}; none retains P\&J level-set regularization.\\
-\texttt{--benders\_stab\_param} (0.025) & Level-set parameter $\gamma$; L1/L2 require nonzero value.\\
-\texttt{--benders\_stab\_dynamic} (true) & Dynamically update $\gamma$; false keeps it fixed.\\
+\texttt{--benders\_stabilization\_method} (\texttt{none}) & Trial-point selection: no L1/L2 distance objective, weighted L1 distance, or weighted L2 distance. With the default nonzero level parameter, \texttt{none} still uses Pecci--Jenkins level-set regularization. \\
+\texttt{--benders\_stab\_param} (0.025) & Level-set parameter $\gamma$; controls how tightly the trial point is restricted relative to the current UB--LB gap. L1/L2 require a nonzero value. \\
+\texttt{--benders\_stab\_dynamic} (true) & Adapt $\gamma$ during iterations; set false to keep it fixed. \\
+\texttt{--benders\_operational\_solver} (\texttt{automatic}) & LP algorithm for MOSEK/Gurobi operational relaxations: \texttt{automatic}, \texttt{interior\_point}, or \texttt{primal\_simplex}. \\
+\texttt{--benders\_skip\_final\_export} (off) & Skip the final worker solves and per-subproblem exports at the best incumbent. Planning and convergence outputs are still written. \\
+\texttt{--n\_parallel\_solve} (1) & Number of operational subproblems solved concurrently. \\
+\texttt{--solver} (HiGHS if otherwise unspecified) & Pyomo solver interface for the master and selected Benders backend. Match the solver to the requested discrete method and installed integration. \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
 \begin{itemize}
-\item Boolean values accept true/false, t/f, yes/no, y/n, and 1/0.
-\item Parser help currently lists only \texttt{pj\_relax}/\texttt{djc} for the master method; the implementation also accepts \texttt{none}/\texttt{linearized}.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{CLI options: operational solver and standard run controls}
-\scriptsize
-\begin{itemize}
-\item \texttt{--benders\_operational\_solver} (\texttt{automatic}): MOSEK/Gurobi LP algorithm for \texttt{pj\_relax} operational LPs; choices \texttt{automatic}, \texttt{interior\_point}, \texttt{primal\_simplex}.
-\item \texttt{--n\_parallel\_solve} (1): number of subproblems solved concurrently.
-\item \texttt{--solver}, \texttt{--solver\_executable}: solver interface and optional executable path; HiGHS is the default if neither a solver nor scenario \texttt{solver\_options.csv} selects another.
-\item \texttt{--scenario\_location} (\texttt{../scenarios}), \texttt{--quiet}, \texttt{--verbose}: scenario path and console output.
-\item \texttt{--log}: duplicate run output to the scenario logs directory.
-\item \texttt{--mute\_solver\_output}: suppress solver log output.
-\item \texttt{--report\_timing}, \texttt{--testing}: timing report and test-suite behavior.
-\item \texttt{--ignore\_cleanup\_marker}: allow deliberate runs from cleaned/re-materialized scenario subsets.
-\end{itemize}
-\end{frame}
-
-\begin{frame}{CLI options: problem files, loading, and results}
-\scriptsize
-\begin{itemize}
-\item \texttt{--create\_lp\_problem\_file\_only}: write the problem file without solving; \texttt{--create\_lp\_problem\_file}: solve and also write an LP file.
-\item \texttt{--symbolic}: readable Pyomo component names in supported solver/problem files.
-\item \texttt{--write\_solver\_files\_to\_logs\_dir}, \texttt{--keepfiles}: solver-file location and retention (interface-dependent).
-\item \texttt{--load\_instance}: load a pre-built instance.
-\item \texttt{--load\_solution}, \texttt{--load\_cplex\_solution}, \texttt{--load\_gurobi\_solution}, \texttt{--load\_highs\_solution}: skip optimization and load the named solution format.
-\item \texttt{--quick\_write\_and\_solve}: load a prepared pickle and solve.
-\item \texttt{--skip\_duals}: do not import/save duals or dual-based result files.
-\item \texttt{--incomplete\_only}: skip cells with a results-export-complete marker.
-\item \texttt{--results\_export\_rule}, \texttt{--results\_export\_summary\_rule}: select detailed and summary export rules.
-\item \texttt{--skip\_quick\_summary}: omit the quick-summary text file. \texttt{-h/--help} prints help; \texttt{--version} prints the installed version.
+\item Boolean options accept true/false, t/f, yes/no, y/n, and 1/0.
+\item The implementation accepts \texttt{none} and \texttt{linearized} for the master discrete method even though the parser help text currently advertises only \texttt{pj\_relax} and \texttt{djc}.
 \end{itemize}
 \end{frame}
 
