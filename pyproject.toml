@@ -27,6 +27,7 @@ dependencies = [
     # highspy pin above.
     "highspy-extras==1.15.1", # HiPO dependencies for highspy
     "dill==0.4.1", # pickling
+    "psutil", # process and system memory monitoring for Benders admission control
     "duckdb==1.5.4", # data-handling
     "sphinx-rtd-theme", # documentation theme
 ]
