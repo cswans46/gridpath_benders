@@ -620,10 +620,10 @@ def benders_subproblem_worker(
     safety_factor = float(os.getenv('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR', '1.25'))
     if safety_factor < 1:
         raise ValueError('GRIDPATH_BENDERS_MEMORY_SAFETY_FACTOR must be at least 1.')
-    if memory_coordinator is not None:
-        memory_coordinator.set_reservation(worker_index, persistent=initial_persistent, temporary=initial_temporary)
-    guard.acquire()
     try:
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(worker_index, persistent=initial_persistent, temporary=initial_temporary)
+        guard.acquire()
         _benders_subproblem_worker_impl(
             key,
             planning_constraint_names,
