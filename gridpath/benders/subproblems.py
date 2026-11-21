@@ -979,6 +979,8 @@ def _benders_subproblem_worker_impl(
         native_task_path = os.path.join(native_task_directory, "subproblem.task")
         # One permanent equality row per linking variable; only its RHS
         # changes between Benders iterations.
+        var = None
+        row = None
         for name in present_linking_vars:
             var = instance.find_component(name)
             row = instance.BendersLinkingConstraints.add(var == 0.0)
@@ -996,6 +998,10 @@ def _benders_subproblem_worker_impl(
             instance.OP_NPV.set_value(original_objective)
         # The native task owns the compiled model. Do not retain the Pyomo
         # instance or Pyomo solver's model maps in the resident worker.
+        del original_objective
+        del var
+        del row
+        del task
         del instance
         del optimiser
         del task_compiler
