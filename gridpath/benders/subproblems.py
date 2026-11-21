@@ -800,6 +800,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             return {
                 "native_infeasible": True, "planning_sol": planning_sol,
                 "active_linking_vars": active, "was_mip": was_operational_mip,
+                "operational_discrete_method": operational_discrete_method,
                 "operational_mip_variables": mip_names,
             }
         lambdas = {name: lp["linking_duals"][name] for name in active}
@@ -822,6 +823,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             "continuous_point": continuous_point,
             "theta_coeff": 1.0,
             "operational_discrete_state": operational_state,
+            "operational_discrete_method": operational_discrete_method,
             "native_primal_values": lp["primal_values"],
             "master_discrete_state": master_state,
             "is_mip": was_operational_mip,
@@ -1126,7 +1128,7 @@ def _benders_subproblem_worker_impl(
                 )
                 restoration_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
                 fix_linking_variables(restoration_model, native_result["planning_sol"], restoration_present)
-                if message["master_discrete_method"] == "pj_relax" and not message.get("master_integrality_restored", False):
+                if native_result["operational_discrete_method"] == "pj_relax":
                     prepare_lp_for_duals(
                         restoration_model, present_linking_vars=restoration_present,
                         operational_discrete_method="pj_relax",
@@ -1181,7 +1183,7 @@ def _benders_subproblem_worker_impl(
                     for discrete_type in ("binary", "integer"):
                         for variable_name, variable_value in native_result["operational_discrete_state"][discrete_type].items():
                             validation_model.find_component(variable_name).fix(variable_value)
-                elif message["master_discrete_method"] == "pj_relax" and not message.get("master_integrality_restored", False):
+                elif native_result["operational_discrete_method"] == "pj_relax":
                     prepare_lp_for_duals(
                         validation_model, present_linking_vars=validation_present,
                         operational_discrete_method="pj_relax",
