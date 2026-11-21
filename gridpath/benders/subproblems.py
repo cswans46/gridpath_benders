@@ -761,9 +761,18 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
                     "active_linking_vars": active, "was_mip": True,
                     "operational_mip_variables": mip_names,
                 }
-            operational_state = {name: mip["primal_values"][name] for name in mip_names}
+            operational_fix_values = {name: mip["primal_values"][name] for name in mip_names}
+            operational_state = {"binary": {}, "integer": {}}
+            for name, value_ in operational_fix_values.items():
+                key = "binary" if runtime.variables[name].get("binary") else "integer"
+                rounded = int(round(value_))
+                if abs(value_ - rounded) > 1e-8:
+                    raise ValueError(
+                        "Native MOSEK returned non-integral fixed-z value for {}: {}".format(name, value_)
+                    )
+                operational_state[key][name] = rounded
             runtime.set_integrality(mip_names, False)
-            runtime.set_variable_bounds({name: (v, v) for name, v in operational_state.items()})
+            runtime.set_variable_bounds({name: (v, v) for name, v in operational_fix_values.items()})
             runtime.set_integrality(discrete_linking, False)
         elif message["operational_discrete_method"] == "pj_relax":
             runtime.set_all_operational_integrality(set(present_linking_vars), False)
@@ -1131,8 +1140,9 @@ def _benders_subproblem_worker_impl(
                 validation_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
                 fix_linking_variables(validation_model, native_result["planning_sol"], validation_present)
                 if native_result.get("operational_discrete_state") is not None:
-                    for variable_name, variable_value in native_result["operational_discrete_state"].items():
-                        validation_model.find_component(variable_name).fix(variable_value)
+                    for discrete_type in ("binary", "integer"):
+                        for variable_name, variable_value in native_result["operational_discrete_state"][discrete_type].items():
+                            validation_model.find_component(variable_name).fix(variable_value)
                 elif message["master_discrete_method"] == "pj_relax" and not message.get("master_integrality_restored", False):
                     prepare_lp_for_duals(
                         validation_model, present_linking_vars=validation_present,
