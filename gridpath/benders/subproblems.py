@@ -989,6 +989,9 @@ def _benders_subproblem_worker_impl(
     operation_temp_reservation = int(float(os.getenv('GRIDPATH_BENDERS_OPERATION_TEMPORARY_GB', '4')) * 1024**3)
     minimum_operation_temp = int(float(os.getenv('GRIDPATH_BENDERS_MIN_OPERATION_TEMPORARY_GB', '0.5')) * 1024**3)
     dynamic_components = DynamicComponents()
+    # Measure this worker's own build (+ startup recourse-bound solve) peak so
+    # later Pyomo rebuilds (export / restoration fallback) can reserve it.
+    _build_start_rss, build_peak_rss, build_monitor_stop, build_monitor = _start_rss_monitor()
 
     # ================================================================
     # Build the operational model once.
@@ -1172,6 +1175,12 @@ def _benders_subproblem_worker_impl(
     # Free build-time garbage (abstract model, data portal) first so the
     # measured footprint is not inflated by unreachable objects.
     gc.collect()
+    build_monitor_stop.set()
+    build_monitor.join()
+    build_temp_reservation = max(
+        minimum_operation_temp,
+        int(max(0, build_peak_rss[0] - process_memory_rss()) * safety_factor),
+    )
     if memory_coordinator is not None:
         resident_bytes = process_memory_rss()
         # Release the startup temporary allowance before increasing the
@@ -1215,7 +1224,7 @@ def _benders_subproblem_worker_impl(
 
         if native_task_runtime is not None and isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
             if memory_coordinator is not None:
-                memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
+                memory_coordinator.set_reservation(worker_index, temporary=max(operation_temp_reservation, build_temp_reservation))
             # Final export needs the full Pyomo model (it writes the standard
             # GridPath result files); build it once, with fresh dynamic
             # components, and discard it afterwards.
@@ -1282,6 +1291,11 @@ def _benders_subproblem_worker_impl(
                         )
                     # Rare path: rebuild the Pyomo model (fresh components) for
                     # Phase-I restoration / certificate-checked re-solve.
+                    if memory_coordinator is not None:
+                        memory_coordinator.set_reservation(
+                            worker_index,
+                            temporary=max(operation_temp_reservation, build_temp_reservation),
+                        )
                     subop_sol = _pyomo_recourse_fallback(
                         scenario_directory, key, multi_stage, parsed_arguments,
                         planning_constraint_names, linking_vars, solver_options,
