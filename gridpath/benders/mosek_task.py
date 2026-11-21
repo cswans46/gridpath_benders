@@ -191,7 +191,8 @@ class MosekTaskRuntime:
         self.set_variable_bounds({
             name: (
                 (info.get("fixed_value"), info.get("fixed_value"))
-                if info.get("fixed") else (info.get("lb"), info.get("ub"))
+                if info.get("fixed") and info.get("fixed_value") is not None
+                else (info.get("lb"), info.get("ub"))
             )
             for name, info in self.variables.items()
         })
@@ -259,7 +260,8 @@ class MosekTaskRuntime:
             return result
         result["objective_value"] = self.objective_value()
         result["primal_values"] = self.primal_values()
-        result["linking_duals"] = self.linking_duals()
+        if not mixed_integer:
+            result["linking_duals"] = self.linking_duals()
         return result
 
     def primal_values(self, names=None):
