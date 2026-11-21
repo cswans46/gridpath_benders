@@ -943,8 +943,28 @@ def _benders_subproblem_worker_impl(
     # ================================================================
     native_task_runtime = None
     native_task_directory = None
-    if os.getenv("GRIDPATH_BENDERS_NATIVE_TASK", "1") == "1" and str(parsed_arguments.solver).lower() == "mosek":
+    configured_solver_name = str(parsed_arguments.solver).lower()
+    configured_backend_name = str(getattr(optimiser, "backend_name", "")).lower()
+    native_mosek_requested = (
+        configured_solver_name in ("mosek", "mosek_direct", "mosek_persistent")
+        or configured_backend_name.startswith("mosek")
+    )
+    if os.getenv("GRIDPATH_BENDERS_NATIVE_TASK", "1") == "1" and native_mosek_requested:
         from gridpath.benders.mosek_task import write_pyomo_mosek_task, MosekTaskRuntime
+        # Compile through Pyomo's direct MOSEK interface even when the
+        # configured recourse solver is the GAMS/MOSEK adapter.
+        task_compiler = SolverFactory("mosek_direct")
+        compiler_options = {
+            name: str(option)
+            for name, option in getattr(optimiser, "options", {}).items()
+            if str(name).startswith("MSK_")
+        }
+        if solver_options:
+            compiler_options.update({
+                name: str(option) for name, option in solver_options.items()
+                if str(name).startswith("MSK_")
+            })
+        task_compiler.options.update(compiler_options)
         native_task_directory = tempfile.mkdtemp(prefix="gridpath_benders_{}_".format(worker_index))
         native_task_path = os.path.join(native_task_directory, "subproblem.task")
         # One permanent equality row per linking variable; only its RHS
@@ -957,7 +977,7 @@ def _benders_subproblem_worker_impl(
         instance.OP_NPV.set_value(original_objective / BENDERS_RECOURSE_OBJECTIVE_SCALE)
         try:
             task, metadata = write_pyomo_mosek_task(
-                instance, optimiser, native_task_path,
+                instance, task_compiler, native_task_path,
                 instance.BendersLinkingConstraintMap,
                 objective_scale=BENDERS_RECOURSE_OBJECTIVE_SCALE,
             )
@@ -968,6 +988,7 @@ def _benders_subproblem_worker_impl(
         # instance or Pyomo solver's model maps in the resident worker.
         del instance
         del optimiser
+        del task_compiler
         gc.collect()
 
     # ================================================================
