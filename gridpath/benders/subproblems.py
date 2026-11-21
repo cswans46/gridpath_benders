@@ -716,7 +716,13 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
     for name in present_linking_vars:
         if name not in planning_sol.values:
             raise KeyError("Missing master value for linking variable {!r}".format(name))
-        values[name] = float(planning_sol.values[name])
+        target = float(planning_sol.values[name])
+        info = runtime.variables[name]
+        if info.get("lb") is not None:
+            target = max(target, float(info["lb"]))
+        if info.get("ub") is not None:
+            target = min(target, float(info["ub"]))
+        values[name] = target
 
     # Each iteration starts from the original compiled MIP domains/bounds.
     runtime.restore_original_bounds()
@@ -763,6 +769,16 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             }
         lambdas = {name: lp["linking_duals"][name] for name in active}
         continuous_point = {name: values[name] for name in active}
+        discrete_cut_phase = (
+            (master_method == "pj_relax" and bool(discrete_linking) and message.get("master_integrality_restored", False))
+            or (master_method in ("linearized", "djc") and bool(discrete_linking))
+        )
+        master_state = None
+        if discrete_cut_phase:
+            master_state = {
+                "binary": {name: int(round(values[name])) for name in linking_vars_by_type["binary"]},
+                "integer": {name: int(round(values[name])) for name in linking_vars_by_type["integer"]},
+            }
         result = {
             "feasible": True,
             "op_cost": -float(lp["objective_value"]),
@@ -772,7 +788,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             "theta_coeff": 1.0,
             "operational_discrete_state": operational_state,
             "native_primal_values": lp["primal_values"],
-            "master_discrete_state": None,
+            "master_discrete_state": master_state,
             "is_mip": operational_mip,
             "operational_mip_variables": mip_names,
         }
