@@ -63,6 +63,7 @@ def write_pyomo_mosek_task(model, solver, task_path, linking_constraint_map, obj
             "fixed_value": _finite_value(variable.value) if variable.fixed else None,
             "binary": bool(variable.is_binary()),
             "integer": bool(variable.is_integer()),
+            "domain": "binary" if variable.is_binary() else ("integer" if variable.is_integer() else "continuous"),
         }
     task.writedata(str(task_path))
     metadata = {
@@ -116,6 +117,8 @@ class MosekTaskRuntime:
         self.linking_rows = dict(metadata["linking_rows"])
         self.variable_columns = dict(metadata["variable_columns"])
         self.objective_scale = float(metadata["objective_scale"])
+        self.variables = dict(metadata.get("variables", {}))
+        self._integer_names = {name for name, info in self.variables.items() if info.get("integer") or info.get("binary")}
 
     @classmethod
     def load(cls, task_path, metadata_path=None, env=None, mosek_module=None):
@@ -141,7 +144,38 @@ class MosekTaskRuntime:
             rhs = float(values[name])
             self.task.putconbound(row, self.mosek.boundkey.fx, rhs, rhs)
 
-    def optimize(self):
+    def set_variable_bounds(self, bounds):
+        """Update native column bounds without rebuilding the task."""
+        for name, pair in bounds.items():
+            if name not in self.variable_columns:
+                raise KeyError("Unknown native MOSEK variable {!r}.".format(name))
+            lb, ub = pair
+            if lb is None and ub is None:
+                key, lower, upper = self.mosek.boundkey.fr, 0.0, 0.0
+            elif lb is None:
+                key, lower, upper = self.mosek.boundkey.up, 0.0, float(ub)
+            elif ub is None:
+                key, lower, upper = self.mosek.boundkey.lo, float(lb), 0.0
+            elif float(lb) == float(ub):
+                key, lower, upper = self.mosek.boundkey.fx, float(lb), float(ub)
+            else:
+                key, lower, upper = self.mosek.boundkey.ra, float(lb), float(ub)
+            self.task.putvarbound(self.variable_columns[name], key, lower, upper)
+
+    def set_integrality(self, names, integer):
+        """Toggle selected columns between continuous and integer types."""
+        target = self.mosek.variabletype.type_int if integer else self.mosek.variabletype.type_cont
+        for name in names:
+            if name not in self.variable_columns:
+                raise KeyError("Unknown native MOSEK variable {!r}.".format(name))
+            self.task.putvartype(self.variable_columns[name], target)
+
+    def set_all_operational_integrality(self, linking_names, integer):
+        names = self._integer_names.difference(linking_names)
+        self.set_integrality(names, integer)
+        return sorted(names)
+
+    def optimize(self, mixed_integer=False):
         """Optimize and select an actually available continuous LP solution.
 
         MOSEK can populate either the interior-point (itr) or basic (bas)
@@ -149,6 +183,9 @@ class MosekTaskRuntime:
         that a basic solution was produced.
         """
         self.task.optimize()
+        if mixed_integer:
+            self.solution_type = self.mosek.soltype.itg
+            return self.task.getsolsta(self.solution_type)
         acceptable = {
             self.mosek.solsta.optimal,
             getattr(self.mosek.solsta, "near_optimal", None),
@@ -170,6 +207,8 @@ class MosekTaskRuntime:
         """Whether the selected solution type has a usable optimal LP point."""
         if self.solution_type is None:
             return False
+        if self.solution_type == getattr(self.mosek.soltype, "itg", object()):
+            return self.task.getsolsta(self.solution_type) == self.mosek.solsta.integer_optimal
         acceptable = {
             self.mosek.solsta.optimal,
             getattr(self.mosek.solsta, "near_optimal", None),
@@ -177,7 +216,7 @@ class MosekTaskRuntime:
         acceptable.discard(None)
         return self.task.getsolsta(self.solution_type) in acceptable
 
-    def solve(self, values, require_optimal=True):
+    def solve(self, values, require_optimal=True, mixed_integer=False):
         """Update linking rows, solve, and return objective/primal/dual data.
 
         Objective and linking duals are returned in the original, unscaled
@@ -185,7 +224,7 @@ class MosekTaskRuntime:
         or otherwise non-optimal solution.
         """
         self.set_linking_values(values)
-        status = self.optimize()
+        status = self.optimize(mixed_integer=mixed_integer)
         result = {
             "solution_status": str(status),
             "has_primal_solution": self.has_primal_solution(),
@@ -211,6 +250,8 @@ class MosekTaskRuntime:
         return {name: float(values[column]) for name, column in zip(names, columns)}
 
     def linking_duals(self):
+        if self.solution_type == getattr(self.mosek.soltype, "itg", object()):
+            raise RuntimeError("Duals are unavailable from a mixed-integer solution; solve the fixed-z LP first.")
         values = [0.0] * self.task.getnumcon()
         self.task.gety(self.solution_type, values)
         return {name: -float(values[row]) * self.objective_scale for name, row in self.linking_rows.items()}
