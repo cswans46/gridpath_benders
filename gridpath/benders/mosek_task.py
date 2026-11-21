@@ -119,7 +119,14 @@ class MosekTaskRuntime:
         self.variable_columns = dict(metadata["variable_columns"])
         self.objective_scale = float(metadata["objective_scale"])
         self.variables = dict(metadata.get("variables", {}))
-        self._integer_names = {name for name, info in self.variables.items() if info.get("integer") or info.get("binary")}
+        self._all_integer_names = {
+            name for name, info in self.variables.items()
+            if info.get("integer") or info.get("binary")
+        }
+        self._integer_names = {
+            name for name, info in self.variables.items()
+            if (info.get("integer") or info.get("binary")) and not info.get("fixed")
+        }
 
     @classmethod
     def load(cls, task_path, metadata_path=None, env=None, mosek_module=None):
@@ -178,7 +185,7 @@ class MosekTaskRuntime:
 
     def restore_original_integrality(self):
         """Restore every integer/binary column to its compiled domain."""
-        self.set_integrality(self._integer_names, True)
+        self.set_integrality(self._all_integer_names, True)
 
     def restore_original_bounds(self):
         self.set_variable_bounds({
