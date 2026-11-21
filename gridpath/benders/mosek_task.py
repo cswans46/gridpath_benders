@@ -126,8 +126,44 @@ class MosekTaskRuntime:
             self.task.putconbound(row, self.mosek.boundkey.fx, rhs, rhs)
 
     def optimize(self):
+        """Optimize the resident task and return its MOSEK solution status."""
         self.task.optimize()
         return self.task.getsolsta(self.solution_type)
+
+    def has_primal_solution(self):
+        """Whether the selected solution type has a usable primal solution."""
+        status = self.task.getsolsta(self.solution_type)
+        acceptable = {
+            self.mosek.solsta.optimal,
+            getattr(self.mosek.solsta, "near_optimal", None),
+        }
+        acceptable.discard(None)
+        return status in acceptable
+
+    def solve(self, values, require_optimal=True):
+        """Update linking rows, solve, and return objective/primal/dual data.
+
+        Objective and linking duals are returned in the original, unscaled
+        objective units. No primal or dual values are read for an infeasible
+        or otherwise non-optimal solution.
+        """
+        self.set_linking_values(values)
+        status = self.optimize()
+        result = {
+            "solution_status": str(status),
+            "has_primal_solution": self.has_primal_solution(),
+        }
+        if not result["has_primal_solution"]:
+            if require_optimal:
+                raise RuntimeError(
+                    "Native MOSEK task did not produce an optimal primal "
+                    f"solution (solution status: {status})."
+                )
+            return result
+        result["objective_value"] = self.objective_value()
+        result["primal_values"] = self.primal_values()
+        result["linking_duals"] = self.linking_duals()
+        return result
 
     def primal_values(self, names=None):
         names = list(self.variable_columns) if names is None else list(names)
