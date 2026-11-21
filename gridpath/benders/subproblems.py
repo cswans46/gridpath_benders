@@ -718,59 +718,69 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             raise KeyError("Missing master value for linking variable {!r}".format(name))
         values[name] = float(planning_sol.values[name])
 
+    # Each iteration starts from the original compiled MIP domains/bounds.
+    runtime.restore_original_bounds()
+    runtime.restore_original_integrality()
     master_method = message["master_discrete_method"]
     pj_relaxed = master_method == "pj_relax" and not message.get("master_integrality_restored", False)
     active = present_linking_vars if pj_relaxed else linking_vars_by_type["continuous"]
+    discrete_linking = linking_vars_by_type["binary"] + linking_vars_by_type["integer"]
+
     if pj_relaxed:
-        runtime.set_integrality(
-            linking_vars_by_type["binary"] + linking_vars_by_type["integer"], False
-        )
+        runtime.set_integrality(discrete_linking, False)
 
     mip_names = runtime.set_all_operational_integrality(
-        set(present_linking_vars), bool(message["operational_discrete_method"] == "fixed_z")
+        set(present_linking_vars), True
     )
-    # A MIP solve is needed only when there are operational integer columns.
     operational_mip = bool(mip_names) and message["operational_discrete_method"] == "fixed_z"
     operational_state = None
-    if operational_mip:
-        mip = runtime.solve(values, require_optimal=False, mixed_integer=True)
-        if not mip["has_primal_solution"]:
-            return {"native_infeasible": True, "planning_sol": planning_sol,
+    try:
+        if operational_mip:
+            mip = runtime.solve(values, require_optimal=False, mixed_integer=True)
+            if not mip["has_primal_solution"]:
+                return {
+                    "native_infeasible": True, "planning_sol": planning_sol,
                     "active_linking_vars": active, "was_mip": True,
-                    "operational_mip_variables": mip_names}
-        operational_state = {
-            name: mip["primal_values"][name] for name in mip_names
-        }
-        runtime.set_integrality(mip_names, False)
-        runtime.set_variable_bounds({
-            name: (value, value) for name, value in operational_state.items()
-        })
-        lp = runtime.solve(values, require_optimal=False)
-    else:
-        if message["operational_discrete_method"] == "pj_relax":
+                    "operational_mip_variables": mip_names,
+                }
+            operational_state = {name: mip["primal_values"][name] for name in mip_names}
+            runtime.set_integrality(mip_names, False)
+            runtime.set_variable_bounds({name: (v, v) for name, v in operational_state.items()})
+            runtime.set_integrality(discrete_linking, False)
+        elif message["operational_discrete_method"] == "pj_relax":
             runtime.set_all_operational_integrality(set(present_linking_vars), False)
+        else:
+            # With no operational MIP, fixed-z reduces to an LP. Discrete
+            # master-linking columns still need relaxing for valid duals.
+            runtime.set_integrality(discrete_linking, False)
+
         lp = runtime.solve(values, require_optimal=False)
-
-    if not lp["has_primal_solution"]:
-        return {"native_infeasible": True, "planning_sol": planning_sol,
+        if not lp["has_primal_solution"]:
+            return {
+                "native_infeasible": True, "planning_sol": planning_sol,
                 "active_linking_vars": active, "was_mip": operational_mip,
-                "operational_mip_variables": mip_names}
+                "operational_mip_variables": mip_names,
+            }
+        lambdas = {name: lp["linking_duals"][name] for name in active}
+        continuous_point = {name: values[name] for name in active}
+        result = {
+            "feasible": True,
+            "op_cost": -float(lp["objective_value"]),
+            "benders_lambda": lambdas,
+            "continuous_lambda": dict(lambdas),
+            "continuous_point": continuous_point,
+            "theta_coeff": 1.0,
+            "operational_discrete_state": operational_state,
+            "native_primal_values": lp["primal_values"],
+            "master_discrete_state": None,
+            "is_mip": operational_mip,
+            "operational_mip_variables": mip_names,
+        }
+        return result
+    finally:
+        runtime.restore_original_bounds()
+        runtime.restore_original_integrality()
 
-    lambdas = {name: lp["linking_duals"][name] for name in active}
-    continuous_point = {name: values[name] for name in active}
-    return {
-        "feasible": True,
-        "op_cost": -float(lp["objective_value"]),
-        "benders_lambda": lambdas,
-        "continuous_lambda": dict(lambdas),
-        "continuous_point": continuous_point,
-        "theta_coeff": 1.0,
-        "operational_discrete_state": operational_state,
-        "native_primal_values": lp["primal_values"],
-        "master_discrete_state": None,
-        "is_mip": operational_mip,
-        "operational_mip_variables": mip_names,
-    }
 
 def _benders_subproblem_worker_impl(
     key,
