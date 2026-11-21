@@ -774,6 +774,11 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
 
         lp = runtime.solve(values, require_optimal=False)
         if not lp["has_primal_solution"]:
+            if operational_mip:
+                raise RuntimeError(
+                    "Fixed-z native MOSEK LP did not solve to optimality after "
+                    "an optimal operational MIP."
+                )
             return {
                 "native_infeasible": True, "planning_sol": planning_sol,
                 "active_linking_vars": active, "was_mip": operational_mip,
@@ -1072,6 +1077,11 @@ def _benders_subproblem_worker_impl(
                 )
                 restoration_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
                 fix_linking_variables(restoration_model, native_result["planning_sol"], restoration_present)
+                if message["master_discrete_method"] == "pj_relax" and not message.get("master_integrality_restored", False):
+                    prepare_lp_for_duals(
+                        restoration_model, present_linking_vars=restoration_present,
+                        operational_discrete_method="pj_relax",
+                    )
                 failed = type("NativeTermination", (), {})()
                 failed.solver = type("SolverStatus", (), {})()
                 failed.solver.termination_condition = TerminationCondition.infeasible
