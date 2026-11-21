@@ -750,7 +750,8 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
     mip_names = runtime.set_all_operational_integrality(
         set(present_linking_vars), True
     )
-    operational_mip = bool(mip_names) and message["operational_discrete_method"] == "fixed_z"
+    was_operational_mip = bool(mip_names)
+    operational_mip = was_operational_mip and message["operational_discrete_method"] == "fixed_z"
     operational_state = None
     try:
         if operational_mip:
@@ -790,7 +791,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
                 )
             return {
                 "native_infeasible": True, "planning_sol": planning_sol,
-                "active_linking_vars": active, "was_mip": operational_mip,
+                "active_linking_vars": active, "was_mip": was_operational_mip,
                 "operational_mip_variables": mip_names,
             }
         lambdas = {name: lp["linking_duals"][name] for name in active}
@@ -815,7 +816,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             "operational_discrete_state": operational_state,
             "native_primal_values": lp["primal_values"],
             "master_discrete_state": master_state,
-            "is_mip": operational_mip,
+            "is_mip": was_operational_mip,
             "operational_mip_variables": mip_names,
         }
         return result
@@ -1121,9 +1122,28 @@ def _benders_subproblem_worker_impl(
                     active_linking_vars=native_result["active_linking_vars"],
                     present_linking_vars=restoration_present, subproblem_key=key,
                 )
+                discrete_cut_phase = (
+                    (message["master_discrete_method"] == "pj_relax"
+                     and bool(linking_vars_by_type["binary"] or linking_vars_by_type["integer"])
+                     and message.get("master_integrality_restored", False))
+                    or (message["master_discrete_method"] in ("linearized", "djc")
+                        and bool(linking_vars_by_type["binary"] or linking_vars_by_type["integer"]))
+                )
+                master_state = None
+                if discrete_cut_phase:
+                    master_state = {
+                        "binary": {
+                            name: int(round(float(native_result["planning_sol"].values[name])))
+                            for name in linking_vars_by_type["binary"]
+                        },
+                        "integer": {
+                            name: int(round(float(native_result["planning_sol"].values[name])))
+                            for name in linking_vars_by_type["integer"]
+                        },
+                    }
                 subop_sol.update({
                     "operational_discrete_state": None,
-                    "master_discrete_state": None,
+                    "master_discrete_state": master_state,
                     "is_mip": native_result["was_mip"],
                     "operational_mip_variables": native_result["operational_mip_variables"],
                 })
