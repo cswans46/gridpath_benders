@@ -30,6 +30,7 @@ import psutil
 import gc
 import threading
 import tempfile
+import shutil
 class BendersState(NamedTuple):
     values: tuple
 
@@ -709,6 +710,17 @@ def _new_benders_worker_model(
     return model, by_type, present
 
 
+def _new_benders_worker_solver(parsed_arguments, solver_options=None):
+    """Create a disposable solver with configured executable/options."""
+    kwargs = {}
+    if parsed_arguments.solver_executable is not None:
+        kwargs["executable"] = parsed_arguments.solver_executable
+    solver = SolverFactory(parsed_arguments.solver, **kwargs)
+    if solver_options:
+        solver.options.update(solver_options)
+    return solver
+
+
 def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_vars):
     """Solve one Benders trial using only the resident native MOSEK Task."""
     planning_sol = message["planning_sol"]
@@ -990,6 +1002,8 @@ def _benders_subproblem_worker_impl(
         message = input_queue.get()
 
         if message == "STOP":
+            if native_task_directory is not None:
+                shutil.rmtree(native_task_directory, ignore_errors=True)
             break
 
         if native_task_runtime is not None and isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
@@ -999,7 +1013,7 @@ def _benders_subproblem_worker_impl(
                 scenario_directory, key, dynamic_components, multi_stage,
                 parsed_arguments, planning_constraint_names, linking_vars,
             )
-            export_solver = SolverFactory(parsed_arguments.solver)
+            export_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
             export_status = _export_final_subproblem(
                 instance=export_model, dynamic_components=dynamic_components,
                 optimiser=export_solver, key=key, planning_sol=message["planning_sol"],
@@ -1041,6 +1055,8 @@ def _benders_subproblem_worker_impl(
             continue
 
         if native_task_runtime is not None:
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
             native_result = _native_task_trial(
                 native_task_runtime, message, linking_vars_by_type, present_linking_vars
             )
@@ -1051,7 +1067,7 @@ def _benders_subproblem_worker_impl(
                     scenario_directory, key, dynamic_components, multi_stage,
                     parsed_arguments, planning_constraint_names, linking_vars,
                 )
-                restoration_solver = SolverFactory(parsed_arguments.solver)
+                restoration_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
                 fix_linking_variables(restoration_model, native_result["planning_sol"], restoration_present)
                 failed = type("NativeTermination", (), {})()
                 failed.solver = type("SolverStatus", (), {})()
@@ -1078,7 +1094,7 @@ def _benders_subproblem_worker_impl(
                     scenario_directory, key, dynamic_components, multi_stage,
                     parsed_arguments, planning_constraint_names, linking_vars,
                 )
-                validation_solver = SolverFactory(parsed_arguments.solver)
+                validation_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
                 fix_linking_variables(validation_model, native_result["planning_sol"], validation_present)
                 if native_result.get("operational_discrete_state") is not None:
                     for variable_name, variable_value in native_result["operational_discrete_state"].items():
@@ -1117,6 +1133,12 @@ def _benders_subproblem_worker_impl(
                 })
                 del validation_model, validation_solver
                 gc.collect()
+            current_rss = process_memory_rss()
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=0)
+                memory_coordinator.set_reservation(
+                    worker_index, persistent=int(current_rss * safety_factor)
+                )
             output_queue.put((key, subop_sol))
             continue
 
