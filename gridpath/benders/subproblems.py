@@ -974,6 +974,10 @@ def _benders_subproblem_worker_impl(
                 name: str(option) for name, option in solver_options.items()
                 if str(name).startswith("MSK_")
             })
+        compiler_options.setdefault("MSK_IPAR_LOG", "0")
+        solver_threads = os.getenv("GRIDPATH_BENDERS_SOLVER_THREADS")
+        if solver_threads:
+            compiler_options["MSK_IPAR_NUM_THREADS"] = str(int(solver_threads))
         task_compiler.options.update(compiler_options)
         native_task_directory = tempfile.mkdtemp(prefix="gridpath_benders_{}_".format(worker_index))
         native_task_path = os.path.join(native_task_directory, "subproblem.task")
