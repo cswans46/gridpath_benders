@@ -182,7 +182,10 @@ class MosekTaskRuntime:
 
     def restore_original_bounds(self):
         self.set_variable_bounds({
-            name: (info.get("lb"), info.get("ub"))
+            name: (
+                (info.get("fixed_value"), info.get("fixed_value"))
+                if info.get("fixed") else (info.get("lb"), info.get("ub"))
+            )
             for name, info in self.variables.items()
         })
 
