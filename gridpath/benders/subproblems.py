@@ -107,15 +107,19 @@ def _solve_with_lp_optimizer(
     # by label, so numeric labels are safe for these two interfaces. Other
     # solvers (e.g. GAMS) keep symbolic labels.
     use_symbolic_labels = _use_symbolic_labels(optimiser)
-    previous_options = {
-        key: (
-            key in optimiser.options,
-            optimiser.options[key] if key in optimiser.options else None,
-        )
-        for key in scoped_options
-    }
+    # Keep the complete pre-call option set so temporary normalization
+    # does not leak into later solves.
+    previous_options = dict(optimiser.options)
     try:
         optimiser.options.update(scoped_options)
+        if solver_name.startswith("mosek"):
+            # MOSEKDirect applies *all* entries in solver.options using
+            # Task.putparam(name, value), whose Python binding requires str.
+            # Normalize the full option dictionary, not just options added
+            # above: user-supplied solver_options may contain ints/floats.
+            for key, option_value in list(optimiser.options.items()):
+                if not isinstance(option_value, str):
+                    optimiser.options[key] = str(option_value)
         try:
             return optimiser.solve(
                 instance,
@@ -137,11 +141,8 @@ def _solve_with_lp_optimizer(
                 )
             return results
     finally:
-        for key, (was_present, previous_value) in previous_options.items():
-            if was_present:
-                optimiser.options[key] = previous_value
-            else:
-                del optimiser.options[key]
+        optimiser.options.clear()
+        optimiser.options.update(previous_options)
 
 def _solve_scaled_recourse_lp(instance, optimiser, optimizer_name=None):
     """Solve an operational NPV LP with a normalized objective."""
