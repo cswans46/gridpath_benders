@@ -89,6 +89,18 @@ def _solve_with_lp_optimizer(
         elif solver_name.startswith("gurobi"):
             scoped_options["Threads"] = int(solver_threads)
     scoped_options.update(extra_options or {})
+
+    # Pyomo's MOSEKDirect plugin passes every option through Task.putparam(),
+    # whose Python binding requires the parameter value to be a string.
+    # In particular, GRIDPATH_BENDERS_SOLVER_THREADS is parsed as an int
+    # above, and caller-supplied extra_options may also contain numeric values.
+    # Normalize only the MOSEK options; Gurobi expects native numeric types.
+    if solver_name.startswith("mosek"):
+        scoped_options = {
+            key: str(option_value)
+            for key, option_value in scoped_options.items()
+        }
+
     # Pyomo's direct MOSEK/Gurobi interfaces build one Python label string per
     # row/column when symbolic labels are on (the MemoryError in
     # mosek_direct._add_constraints). Duals/solutions are mapped by object, not
