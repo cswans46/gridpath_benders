@@ -746,6 +746,9 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
     runtime.restore_original_integrality()
     master_method = message["master_discrete_method"]
     pj_relaxed = master_method == "pj_relax" and not message.get("master_integrality_restored", False)
+    operational_discrete_method = (
+        "pj_relax" if pj_relaxed else message["operational_discrete_method"]
+    )
     active = present_linking_vars if pj_relaxed else linking_vars_by_type["continuous"]
     discrete_linking = linking_vars_by_type["binary"] + linking_vars_by_type["integer"]
 
@@ -756,7 +759,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
         set(present_linking_vars), True
     )
     was_operational_mip = bool(mip_names)
-    operational_mip = was_operational_mip and message["operational_discrete_method"] == "fixed_z"
+    operational_mip = was_operational_mip and operational_discrete_method == "fixed_z"
     operational_state = None
     try:
         if operational_mip:
@@ -780,7 +783,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             runtime.set_integrality(mip_names, False)
             runtime.set_variable_bounds({name: (v, v) for name, v in operational_fix_values.items()})
             runtime.set_integrality(discrete_linking, False)
-        elif message["operational_discrete_method"] == "pj_relax":
+        elif operational_discrete_method == "pj_relax":
             runtime.set_all_operational_integrality(set(present_linking_vars), False)
         else:
             # With no operational MIP, fixed-z reduces to an LP. Discrete
