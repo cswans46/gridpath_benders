@@ -766,6 +766,7 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
         "continuous_point": continuous_point,
         "theta_coeff": 1.0,
         "operational_discrete_state": operational_state,
+        "native_primal_values": lp["primal_values"],
         "master_discrete_state": None,
         "is_mip": operational_mip,
         "operational_mip_variables": mip_names,
@@ -1044,7 +1045,52 @@ def _benders_subproblem_worker_impl(
                 del restoration_model, restoration_solver
                 gc.collect()
             else:
-                subop_sol = native_result
+                # Recreate a disposable Pyomo model to run original-model
+                # primal checks and dual-sign processing. The resident worker
+                # keeps only the native MOSEK task.
+                validation_model, validation_types, validation_present = _new_benders_worker_model(
+                    scenario_directory, key, dynamic_components, multi_stage,
+                    parsed_arguments, planning_constraint_names, linking_vars,
+                )
+                validation_solver = SolverFactory(parsed_arguments.solver)
+                fix_linking_variables(validation_model, native_result["planning_sol"], validation_present)
+                if native_result.get("operational_discrete_state") is not None:
+                    for variable_name, variable_value in native_result["operational_discrete_state"].items():
+                        validation_model.find_component(variable_name).fix(variable_value)
+                elif message["master_discrete_method"] == "pj_relax" and not message.get("master_integrality_restored", False):
+                    prepare_lp_for_duals(
+                        validation_model, present_linking_vars=validation_present,
+                        operational_discrete_method="pj_relax",
+                    )
+                else:
+                    prepare_lp_for_duals(
+                        validation_model, present_linking_vars=validation_present,
+                        operational_discrete_method="fixed_z",
+                    )
+                for variable_name, variable_value in native_result["native_primal_values"].items():
+                    variable = validation_model.find_component(variable_name)
+                    if variable is not None:
+                        variable.set_value(variable_value, skip_validation=True)
+                for variable_name, dual_value in native_result["benders_lambda"].items():
+                    row = validation_model.BendersLinkingConstraintMap[variable_name]
+                    validation_model.dual[row] = -float(dual_value)
+                optimal_result = type("NativeOptimalResult", (), {})()
+                optimal_result.solver = type("NativeSolverStatus", (), {})()
+                optimal_result.solver.termination_condition = TerminationCondition.optimal
+                subop_sol = process_subproblem_solution(
+                    validation_model, optimal_result, native_result["planning_sol"],
+                    validation_types, validation_solver,
+                    active_linking_vars=native_result["continuous_lambda"].keys(),
+                    present_linking_vars=validation_present, subproblem_key=key,
+                )
+                subop_sol.update({
+                    "operational_discrete_state": native_result["operational_discrete_state"],
+                    "master_discrete_state": native_result["master_discrete_state"],
+                    "is_mip": native_result["is_mip"],
+                    "operational_mip_variables": native_result["operational_mip_variables"],
+                })
+                del validation_model, validation_solver
+                gc.collect()
             output_queue.put((key, subop_sol))
             continue
 
