@@ -57,8 +57,9 @@ def write_pyomo_mosek_task(model, solver, task_path, linking_constraint_map, obj
         except KeyError:
             continue
         variable_columns[variable.name] = column
+        effective_lb, effective_ub = variable.bounds
         variable_metadata[variable.name] = {
-            "column": column, "lb": _finite_value(variable.lb), "ub": _finite_value(variable.ub),
+            "column": column, "lb": _finite_value(effective_lb), "ub": _finite_value(effective_ub),
             "fixed": bool(variable.fixed),
             "fixed_value": _finite_value(variable.value) if variable.fixed else None,
             "binary": bool(variable.is_binary()),
@@ -174,6 +175,16 @@ class MosekTaskRuntime:
         names = self._integer_names.difference(linking_names)
         self.set_integrality(names, integer)
         return sorted(names)
+
+    def restore_original_integrality(self):
+        """Restore every integer/binary column to its compiled domain."""
+        self.set_integrality(self._integer_names, True)
+
+    def restore_original_bounds(self):
+        self.set_variable_bounds({
+            name: (info.get("lb"), info.get("ub"))
+            for name, info in self.variables.items()
+        })
 
     def optimize(self, mixed_integer=False):
         """Optimize and select an actually available continuous LP solution.
