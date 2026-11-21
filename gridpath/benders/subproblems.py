@@ -882,6 +882,9 @@ def _benders_subproblem_worker_impl(
     else:
         optimiser = SolverFactory(parsed_arguments.solver)
 
+    if solver_options and hasattr(optimiser, "options"):
+        optimiser.options.update(solver_options)
+
     # ================================================================
     # Classify linking variables.
     #
