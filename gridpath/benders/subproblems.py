@@ -767,7 +767,8 @@ def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_v
             if not mip["has_primal_solution"]:
                 return {
                     "native_infeasible": True, "planning_sol": planning_sol,
-                    "active_linking_vars": active, "was_mip": True,
+                    "active_linking_vars": active, "was_mip": was_operational_mip,
+                    "operational_discrete_method": operational_discrete_method,
                     "operational_mip_variables": mip_names,
                 }
             operational_fix_values = {name: mip["primal_values"][name] for name in mip_names}
