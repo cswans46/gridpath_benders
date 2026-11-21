@@ -24,9 +24,6 @@ from gridpath.benders.regularization import *
 from gridpath.benders.subproblems import (
     benders_subproblem_worker,
 )
-from gridpath.benders.mosek_task_worker import (
-    benders_subproblem_worker as mosek_task_benders_subproblem_worker,
-)
 from gridpath.benders.gurobi_benders import (
     create_gurobi_benders_solver,
 )
@@ -573,22 +570,20 @@ def benders(
 
     print("Building subproblems for Benders decomposition...")
 
+    # The native MOSEK task path is integrated in the single worker
+    # implementation (subproblems.py) and is controlled by
+    # GRIDPATH_BENDERS_NATIVE_TASK / GRIDPATH_BENDERS_TASK_OFFLOAD.  The old
+    # GRIDPATH_BENDERS_WORKER_BACKEND switch is accepted for compatibility
+    # only ("mosek_task" is the default behaviour for MOSEK solvers).
     worker_backend = os.getenv("GRIDPATH_BENDERS_WORKER_BACKEND", "pyomo").strip().lower()
     if worker_backend not in {"pyomo", "mosek_task"}:
         raise ValueError(
             "GRIDPATH_BENDERS_WORKER_BACKEND must be 'pyomo' or 'mosek_task', "
             f"not {worker_backend!r}."
         )
-    worker_target = (
-        mosek_task_benders_subproblem_worker
-        if worker_backend == "mosek_task"
-        else benders_subproblem_worker
-    )
-    if worker_backend == "mosek_task" and str(parsed_arguments.solver).lower() == "gams":
-        logger.warning(
-            "Native task workers use the direct MOSEK interface; GAMS solver "
-            "options are not passed through except MOSEK-native options."
-        )
+    worker_target = benders_subproblem_worker
+    if worker_backend == "mosek_task":
+        os.environ.setdefault("GRIDPATH_BENDERS_NATIVE_TASK", "1")
 
     ctx = mp.get_context("spawn")
 

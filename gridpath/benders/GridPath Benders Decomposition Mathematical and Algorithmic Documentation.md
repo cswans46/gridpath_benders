@@ -786,61 +786,56 @@ This is **cooperative admission control**, not an operating-system memory limit.
 
 For recourse operations, each worker samples its RSS at 100 ms intervals. The observed increase over the operation's starting RSS, multiplied by the safety factor, becomes that worker's temporary reservation estimate for its next operation (subject to a configurable minimum). This lets workers develop different temporary-memory estimates from their own observed workloads. The estimate is updated between operations; it does not retroactively prevent an allocation that exceeds the current reservation, and very short-lived peaks may fall between samples. The first operation uses the configured initial temporary estimate. Final export uses the current estimate once. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
 
-## 15.5. Native MOSEK task offload (experimental worker backend)
+## 15.5. Native MOSEK task path with disk offload
 
 ### Purpose and activation
 
-The experimental mosek_task.py and mosek_task_worker.py modules add an opt-in worker backend that compiles an instantiated operational Pyomo model into a native MOSEK Task. The existing Pyomo worker remains the default. Activate the experimental backend by setting:
+For MOSEK solvers (`--solver mosek`), each worker compiles its operational Pyomo model **once** into a native MOSEK `Task`, writes it to the subproblem's own folder, drops the Pyomo model, and then runs every Benders trial on the task (change the right-hand sides of the linking rows, solve, read duals). The path lives in the single worker implementation in `subproblems.py`; helper code is in `mosek_task.py`. It is on by default for MOSEK; all environment variables are optional:
 
-GRIDPATH_BENDERS_WORKER_BACKEND=mosek_task
+| Variable | Default | Meaning |
+|---|---|---|
+| `GRIDPATH_BENDERS_NATIVE_TASK` | `1` | `0` forces the legacy Pyomo worker. |
+| `GRIDPATH_BENDERS_TASK_OFFLOAD` | `1` | `1`: dispose the task after every trial and re-read it from disk for the next (idle worker holds almost no model memory). `0`: keep the task resident (faster, more RAM). |
+| `GRIDPATH_BENDERS_TASK_DIR` | scenario dir | Root for task files. Layout is always `<root>/<weather>/<hydro>/<availability>/<subproblem>/<stage>/benders_task/subproblem.task`. By default this is the subproblem's own folder, next to its inputs and results (the D: drive when the scenario lives there). |
+| `GRIDPATH_BENDERS_KEEP_TASKS` | `0` | `1` keeps the `benders_task` folder after the run (for debugging). |
+| `GRIDPATH_BENDERS_NATIVE_TASK_GAMS` | `0` | Native path is not used with the GAMS/MOSEK adapter unless this is `1`; GAMS option names are not translated. Gurobi and other solvers always use the Pyomo worker. |
+| `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Retained for compatibility only; `mosek_task` merely sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
 
-The default is GRIDPATH_BENDERS_WORKER_BACKEND=pyomo. The native worker uses Pyomo's direct MOSEK interface for compilation; it does not use the GAMS shell adapter for the native task.
+`GRIDPATH_BENDERS_SOLVER_THREADS`, `GRIDPATH_BENDERS_MEMLOG` and the other memory variables keep their meaning.
 
-The design preserves the vertical worker architecture: each worker builds its operational model, owns its persistent recourse representation, performs its Benders iterations, and handles final export. The master, cut-generation logic, stabilization, and master discrete methods are not moved into the worker.
+### Memory behaviour (why offload is the default)
 
-### Worker lifecycle
+* The persistent reservation of an idle worker is its resident set after compilation (small in offload mode); the memory coordinator therefore admits many more workers than when every worker keeps a model.
+* During a trial the worker holds a **temporary** reservation covering task load, solve and native check. After each trial the worker measures its own peak above its idle footprint and uses that (times the safety factor) as its next temporary reservation, so concurrency adapts to the real per-trial need.
+* Cost of offload: one `readdata` per trial. If load time dominates the solve time for your subproblems, set `GRIDPATH_BENDERS_TASK_OFFLOAD=0` (resident) and rely on the adaptive reservations.
+* Only the metadata needed for Benders is kept in RAM: linking rows/columns, the integer/binary columns and their original bounds. No per-variable Pyomo map is retained.
 
-The native worker currently follows this sequence:
+### Where the Pyomo model is reinstated (rare paths only)
 
-1. Build the instantiated GridPath operational model using create_operational_problem_benders.
-2. Classify linking variables and calculate the existing global recourse bound using the configured solver path, before adding the Benders linking rows.
-3. Add one equality row per present linking variable and compile the resulting concrete model through SolverFactory("mosek", solver_io="direct").
-4. Scale the operational NPV objective by BENDERS_RECOURSE_OBJECTIVE_SCALE before compilation. The JSON sidecar records the inverse conversion factor used to report objective values and linking-row duals in the existing GridPath units.
-5. Persist the native task and metadata, release Pyomo's conversion maps, and drop the original Pyomo instance. The worker retains the native task and its direct-solver/environment owner.
-6. Update the RHS of the existing linking equality rows for each trial point and solve the native task.
-7. Reconstruct a Pyomo operational model only when the native solve requires the existing Phase-I restoration implementation or when final GridPath result export is requested.
-8. Release the temporary reconstructed model after restoration/export.
+1. **Infeasible trial** (native solve not optimal): Phase-I restoration needs the Pyomo model and the certificate-checked `restore()`.
+2. **Native primal check fails** (see below): the point is re-solved through the existing `solve_original()` retry.
+3. **Final export** (`EXPORT_FINAL`): the standard GridPath result files are written from a rebuilt model.
 
-The .task file is a serialization of the solver-native optimization model. It does not remove the mathematical constraint matrix or MOSEK's own optimization workspace. The expected memory benefit is the removal of the long-lived Pyomo model graph and its conversion maps after compilation, not a reduction in the initial model-instantiation or conversion peak.
+In all three the model is rebuilt with a **fresh** `DynamicComponents` (reusing the worker's populated object would double-count costs, revenues and load balance, because `create_abstract_model` appends to its lists) and discarded afterwards.
 
-### Native recourse solve paths
+### Native validation
 
-The worker implements the following native-task paths:
+The legacy worker called `restoration.primal_violations()`, which re-evaluates every Pyomo row and variable against its bounds at the returned solution. That needs the Pyomo model, so the native path replaces it with `MosekTaskRuntime.primal_violation()`: with NumPy, directly on the solved task, it computes the worst *relative* violation of every row activity (`getxc`) and column value (`getxx`) against its bounds (relative to `max(1, |bound|)`) and requires it to be at most `1e-7`. If the check fails the trial is re-solved on the Pyomo path above. Difference from the legacy check: the legacy row scale also included the sum of absolute coefficients; the native scale is the bound magnitude. Integrality is not needed in the LP stage (integers are fixed or relaxed).
 
-- **Continuous / pj_relax:** relax the integer variable types in the task, solve the LP, and extract linking-row duals. The dual sign and objective scaling follow the existing Pyomo worker convention.
-- **fixed_z:** solve the native operational MIP, retrieve the integer incumbent, fix the non-linking operational integer variables at that state through their variable bounds, convert the task to an LP, and solve the fixed-state LP for linking-row duals. The original bounds and variable types are restored before the next trial point.
-- **Discrete linking variables:** their linking equalities remain active. They are integer in the MIP solve where appropriate and are relaxed for the LP dual solve, consistent with the existing worker's fixed-state LP workflow.
-- **Recourse upper bound:** calculated during startup through the existing Pyomo implementation and returned through the unchanged READY protocol.
+### Trial logic by option (matches the legacy worker)
 
-A MIP solution is not used directly for dual extraction. The duals are obtained from the subsequent fixed-state LP.
+| Situation | Operational integers | Discrete linking columns | Lambdas returned for |
+|---|---|---|---|
+| master `pj_relax`, integrality not yet restored | relaxed | relaxed | all present linking vars |
+| operational `pj_relax` (any master method, after restoration) | relaxed | relaxed for the LP | continuous linking vars |
+| operational `fixed_z` with operational integers | MIP at trial point, rounded z* fixed through column bounds, then LP | integer in the MIP, relaxed for the LP | continuous linking vars |
+| operational `fixed_z`, no operational integers | none | relaxed | continuous linking vars |
 
-### Restoration and final export
+`master_discrete_state` is returned under exactly the legacy `discrete_cut_phase` rule (`pj_relax` after restoration, `linearized`, `djc`, and only when discrete linking variables exist). The `--benders_operational_solver` choice (`automatic`, `interior_point`, `primal_simplex`) is applied as `MSK_IPAR_OPTIMIZER` for the operational-`pj_relax` LP only, as in the legacy worker; all other stages use the configured/default optimizer. All `MSK_*` solver options, the thread cap and `MSK_IPAR_LOG=0` are re-applied with `putparam` after every task load and before every stage.
 
-The original Phase-I restoration formulation is retained rather than approximated with a different native formulation. If the task solve is not optimal, the worker reconstructs the Pyomo model, reapplies the current linking values, and calls the existing process_subproblem_solution / restoration.restore path. This deliberately trades temporary memory and model-build time for preservation of the existing restoration objective, elastic row and bound treatment, normalization, certificate checks, and cut conventions.
+### Status
 
-Final export is also routed through the existing GridPath machinery. On EXPORT_FINAL, the worker rebuilds the operational Pyomo instance and its DynamicComponents, applies the incumbent linking values, and calls _export_final_subproblem / save_results. This is the first implementation to test whether the existing export path can be cleanly separated from the persistent worker model. It should produce the same GridPath result directory structure, but this requires runtime verification against an actual scenario.
-
-### Important validation status and limitations
-
-This is an experimental implementation, not yet a validated production replacement. In particular:
-
-- the direct MOSEK interface, task serialization/reload behavior, and MOSEK solution-type handling have not been exercised in the user's Windows/MOSEK environment;
-- native-task primal solutions are not yet passed through the full Pyomo primal_violations checker on every optimal iteration; this is a remaining equivalence/robustness item;
-- Phase-I restoration and final export rebuild Pyomo models, so those exceptional operations still incur their normal construction peak and runtime;
-- the native worker's handling of all configured MOSEK options is narrower than the existing GAMS/Pyomo solver configuration: only MOSEK-native options and the worker thread cap are passed to the direct interface;
-- no numerical equivalence, final-export comparison, or memory benchmark has been completed.
-
-Before production use, compare both backends on the same scenario and trial points. Check objective values, primal feasibility, operational discrete states, every active linking-row dual, Phase-I feasibility cuts, and final exported files. Measure conversion peak RSS separately from steady-state worker RSS. The task backend should remain opt-in until these checks pass.
+Written and compile-checked without access to MOSEK or Pyomo. Before relying on it, run the equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc`) x operational method (`pj_relax`, `fixed_z`), compare native vs `GRIDPATH_BENDERS_NATIVE_TASK=0` on a few subproblems and trial points (op_cost, every linking dual, operational z*, final export), and check peak memory with `GRIDPATH_BENDERS_MEMLOG=1`.
 
 
 ## 16. References
