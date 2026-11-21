@@ -96,7 +96,23 @@ class MosekTaskRuntime:
         self.task = task
         self.env = env
         self.metadata = metadata
-        self.solution_type = solution_type or self.mosek.soltype.bas
+        # Do not assume a basic solution exists. MOSEK's automatic LP
+        # optimizer may return an interior-point solution, while the previous
+        # implementation hard-coded soltype.bas and then queried an undefined
+        # solution. An explicit solution_type remains available for callers
+        # that deliberately configure a particular optimizer.
+        self.solution_type = solution_type
+        self._available_solution_types = (
+            [solution_type] if solution_type is not None
+            else [
+                candidate
+                for candidate in (
+                    getattr(self.mosek.soltype, "itr", None),
+                    getattr(self.mosek.soltype, "bas", None),
+                )
+                if candidate is not None
+            ]
+        )
         self.linking_rows = dict(metadata["linking_rows"])
         self.variable_columns = dict(metadata["variable_columns"])
         self.objective_scale = float(metadata["objective_scale"])
@@ -126,19 +142,40 @@ class MosekTaskRuntime:
             self.task.putconbound(row, self.mosek.boundkey.fx, rhs, rhs)
 
     def optimize(self):
-        """Optimize the resident task and return its MOSEK solution status."""
-        self.task.optimize()
-        return self.task.getsolsta(self.solution_type)
+        """Optimize and select an actually available continuous LP solution.
 
-    def has_primal_solution(self):
-        """Whether the selected solution type has a usable primal solution."""
-        status = self.task.getsolsta(self.solution_type)
+        MOSEK can populate either the interior-point (itr) or basic (bas)
+        solution depending on its optimizer. Check both rather than assuming
+        that a basic solution was produced.
+        """
+        self.task.optimize()
         acceptable = {
             self.mosek.solsta.optimal,
             getattr(self.mosek.solsta, "near_optimal", None),
         }
         acceptable.discard(None)
-        return status in acceptable
+        last_status = None
+        for candidate in self._available_solution_types:
+            status = self.task.getsolsta(candidate)
+            last_status = status
+            if status in acceptable:
+                self.solution_type = candidate
+                return status
+        # Preserve a meaningful status for infeasible/unknown outcomes.
+        if self._available_solution_types:
+            self.solution_type = self._available_solution_types[0]
+        return last_status
+
+    def has_primal_solution(self):
+        """Whether the selected solution type has a usable optimal LP point."""
+        if self.solution_type is None:
+            return False
+        acceptable = {
+            self.mosek.solsta.optimal,
+            getattr(self.mosek.solsta, "near_optimal", None),
+        }
+        acceptable.discard(None)
+        return self.task.getsolsta(self.solution_type) in acceptable
 
     def solve(self, values, require_optimal=True):
         """Update linking rows, solve, and return objective/primal/dual data.
