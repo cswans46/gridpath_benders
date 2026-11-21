@@ -29,6 +29,7 @@ import logging
 import psutil
 import gc
 import threading
+import tempfile
 class BendersState(NamedTuple):
     values: tuple
 
@@ -686,6 +687,90 @@ def benders_subproblem_worker(
             memory_coordinator.release(worker_index)
 
 
+
+
+def _new_benders_worker_model(
+    scenario_directory, key, dynamic_components, multi_stage,
+    parsed_arguments, planning_constraint_names, linking_vars,
+):
+    """Reconstruct a disposable Pyomo model for Phase-I or final export."""
+    model = create_operational_problem_benders(
+        scenario_directory=scenario_directory, key=key,
+        dynamic_components=dynamic_components, multi_stage=multi_stage,
+        parsed_arguments=parsed_arguments,
+    )
+    for name in get_shared_constraints(model, planning_constraint_names):
+        model.find_component(name).deactivate()
+    by_type = classify_linking_vars(model, linking_vars)
+    present = get_present_linking_vars(by_type)
+    model.dual = Suffix(direction=Suffix.IMPORT)
+    model.BendersLinkingConstraints = ConstraintList()
+    model.BendersLinkingConstraintMap = {}
+    return model, by_type, present
+
+
+def _native_task_trial(runtime, message, linking_vars_by_type, present_linking_vars):
+    """Solve one Benders trial using only the resident native MOSEK Task."""
+    planning_sol = message["planning_sol"]
+    values = {}
+    for name in present_linking_vars:
+        if name not in planning_sol.values:
+            raise KeyError("Missing master value for linking variable {!r}".format(name))
+        values[name] = float(planning_sol.values[name])
+
+    master_method = message["master_discrete_method"]
+    pj_relaxed = master_method == "pj_relax" and not message.get("master_integrality_restored", False)
+    active = present_linking_vars if pj_relaxed else linking_vars_by_type["continuous"]
+    if pj_relaxed:
+        runtime.set_integrality(
+            linking_vars_by_type["binary"] + linking_vars_by_type["integer"], False
+        )
+
+    mip_names = runtime.set_all_operational_integrality(
+        set(present_linking_vars), bool(message["operational_discrete_method"] == "fixed_z")
+    )
+    # A MIP solve is needed only when there are operational integer columns.
+    operational_mip = bool(mip_names) and message["operational_discrete_method"] == "fixed_z"
+    operational_state = None
+    if operational_mip:
+        mip = runtime.solve(values, require_optimal=False, mixed_integer=True)
+        if not mip["has_primal_solution"]:
+            return {"native_infeasible": True, "planning_sol": planning_sol,
+                    "active_linking_vars": active, "was_mip": True,
+                    "operational_mip_variables": mip_names}
+        operational_state = {
+            name: mip["primal_values"][name] for name in mip_names
+        }
+        runtime.set_integrality(mip_names, False)
+        runtime.set_variable_bounds({
+            name: (value, value) for name, value in operational_state.items()
+        })
+        lp = runtime.solve(values, require_optimal=False)
+    else:
+        if message["operational_discrete_method"] == "pj_relax":
+            runtime.set_all_operational_integrality(set(present_linking_vars), False)
+        lp = runtime.solve(values, require_optimal=False)
+
+    if not lp["has_primal_solution"]:
+        return {"native_infeasible": True, "planning_sol": planning_sol,
+                "active_linking_vars": active, "was_mip": operational_mip,
+                "operational_mip_variables": mip_names}
+
+    lambdas = {name: lp["linking_duals"][name] for name in active}
+    continuous_point = {name: values[name] for name in active}
+    return {
+        "feasible": True,
+        "op_cost": -float(lp["objective_value"]),
+        "benders_lambda": lambdas,
+        "continuous_lambda": dict(lambdas),
+        "continuous_point": continuous_point,
+        "theta_coeff": 1.0,
+        "operational_discrete_state": operational_state,
+        "master_discrete_state": None,
+        "is_mip": operational_mip,
+        "operational_mip_variables": mip_names,
+    }
+
 def _benders_subproblem_worker_impl(
     key,
     planning_constraint_names,
@@ -806,6 +891,39 @@ def _benders_subproblem_worker_impl(
     instance.BendersLinkingConstraintMap = {}
 
     # ================================================================
+    # Compile a worker-local native MOSEK task. The model is discarded
+    # only after the Task and its name/index metadata have been persisted.
+    # ================================================================
+    native_task_runtime = None
+    native_task_directory = None
+    if os.getenv("GRIDPATH_BENDERS_NATIVE_TASK", "1") == "1" and str(parsed_arguments.solver).lower() == "mosek":
+        from gridpath.benders.mosek_task import write_pyomo_mosek_task, MosekTaskRuntime
+        native_task_directory = tempfile.mkdtemp(prefix="gridpath_benders_{}_".format(worker_index))
+        native_task_path = os.path.join(native_task_directory, "subproblem.task")
+        # One permanent equality row per linking variable; only its RHS
+        # changes between Benders iterations.
+        for name in present_linking_vars:
+            var = instance.find_component(name)
+            row = instance.BendersLinkingConstraints.add(var == 0.0)
+            instance.BendersLinkingConstraintMap[name] = row
+        original_objective = instance.OP_NPV.expr
+        instance.OP_NPV.set_value(original_objective / BENDERS_RECOURSE_OBJECTIVE_SCALE)
+        try:
+            task, metadata = write_pyomo_mosek_task(
+                instance, optimiser, native_task_path,
+                instance.BendersLinkingConstraintMap,
+                objective_scale=BENDERS_RECOURSE_OBJECTIVE_SCALE,
+            )
+            native_task_runtime = MosekTaskRuntime(task, metadata)
+        finally:
+            instance.OP_NPV.set_value(original_objective)
+        # The native task owns the compiled model. Do not retain the Pyomo
+        # instance or Pyomo solver's model maps in the resident worker.
+        del instance
+        del optimiser
+        gc.collect()
+
+    # ================================================================
     # Reconcile the startup estimate with the resident model footprint.
     # Free build-time garbage (abstract model, data portal) first so the
     # measured footprint is not inflated by unreachable objects.
@@ -847,6 +965,27 @@ def _benders_subproblem_worker_impl(
         if message == "STOP":
             break
 
+        if native_task_runtime is not None and isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
+            export_model, _, export_present = _new_benders_worker_model(
+                scenario_directory, key, dynamic_components, multi_stage,
+                parsed_arguments, planning_constraint_names, linking_vars,
+            )
+            export_solver = SolverFactory(parsed_arguments.solver)
+            export_status = _export_final_subproblem(
+                instance=export_model, dynamic_components=dynamic_components,
+                optimiser=export_solver, key=key, planning_sol=message["planning_sol"],
+                present_linking_vars=export_present, scenario_directory=scenario_directory,
+                multi_stage=multi_stage, parsed_arguments=parsed_arguments,
+            )
+            del export_model, export_solver
+            gc.collect()
+            output_queue.put((key, export_status))
+            if memory_coordinator is not None:
+                memory_coordinator.set_reservation(worker_index, temporary=0)
+            continue
+
         # Final-solution export: solve this subproblem once at the incumbent
         # investment decisions (operational integrality intact) and write its
         # results in the standard GridPath directory layout. The master sends
@@ -872,6 +1011,41 @@ def _benders_subproblem_worker_impl(
             )
             if memory_coordinator is not None:
                 memory_coordinator.set_reservation(worker_index, temporary=0)
+            continue
+
+        if native_task_runtime is not None:
+            native_result = _native_task_trial(
+                native_task_runtime, message, linking_vars_by_type, present_linking_vars
+            )
+            if native_result.get("native_infeasible"):
+                # Phase-I remains on the established, certificate-checked
+                # Pyomo restoration implementation, reconstructed on demand.
+                restoration_model, restoration_types, restoration_present = _new_benders_worker_model(
+                    scenario_directory, key, dynamic_components, multi_stage,
+                    parsed_arguments, planning_constraint_names, linking_vars,
+                )
+                restoration_solver = SolverFactory(parsed_arguments.solver)
+                fix_linking_variables(restoration_model, native_result["planning_sol"], restoration_present)
+                failed = type("NativeTermination", (), {})()
+                failed.solver = type("SolverStatus", (), {})()
+                failed.solver.termination_condition = TerminationCondition.infeasible
+                subop_sol = process_subproblem_solution(
+                    restoration_model, failed, native_result["planning_sol"],
+                    restoration_types, restoration_solver,
+                    active_linking_vars=native_result["active_linking_vars"],
+                    present_linking_vars=restoration_present, subproblem_key=key,
+                )
+                subop_sol.update({
+                    "operational_discrete_state": None,
+                    "master_discrete_state": None,
+                    "is_mip": native_result["was_mip"],
+                    "operational_mip_variables": native_result["operational_mip_variables"],
+                })
+                del restoration_model, restoration_solver
+                gc.collect()
+            else:
+                subop_sol = native_result
+            output_queue.put((key, subop_sol))
             continue
 
         if memory_coordinator is not None:
