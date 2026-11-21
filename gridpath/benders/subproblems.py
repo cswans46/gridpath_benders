@@ -711,12 +711,17 @@ def _new_benders_worker_model(
 
 
 def _new_benders_worker_solver(parsed_arguments, solver_options=None):
-    """Create a disposable solver with configured executable/options."""
+    """Create the same solver adapter used by the persistent worker."""
+    if str(parsed_arguments.solver).lower() == "gams":
+        return create_gams_solver(
+            solver_options,
+            executable=parsed_arguments.solver_executable,
+        )
     kwargs = {}
     if parsed_arguments.solver_executable is not None:
         kwargs["executable"] = parsed_arguments.solver_executable
     solver = SolverFactory(parsed_arguments.solver, **kwargs)
-    if solver_options:
+    if solver_options and hasattr(solver, "options"):
         solver.options.update(solver_options)
     return solver
 
