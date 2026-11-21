@@ -1184,6 +1184,10 @@ def _benders_subproblem_worker_impl(
                     for discrete_type in ("binary", "integer"):
                         for variable_name, variable_value in native_result["operational_discrete_state"][discrete_type].items():
                             validation_model.find_component(variable_name).fix(variable_value)
+                    prepare_lp_for_duals(
+                        validation_model, present_linking_vars=validation_present,
+                        operational_discrete_method="fixed_z",
+                    )
                 elif native_result["operational_discrete_method"] == "pj_relax":
                     prepare_lp_for_duals(
                         validation_model, present_linking_vars=validation_present,
