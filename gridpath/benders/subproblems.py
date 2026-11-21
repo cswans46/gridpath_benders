@@ -763,8 +763,70 @@ def _start_rss_monitor():
     return start, peak, stop, thread
 
 
+_NATIVE_RETRY_ATTEMPTS = (
+    # (label, MOSEK parameters).  Each attempt re-solves the already-loaded,
+    # already-fixed LP; nothing is rebuilt.
+    ("primal simplex, basis tol 1e-9", {
+        "MSK_IPAR_OPTIMIZER": "MSK_OPTIMIZER_PRIMAL_SIMPLEX",
+        "MSK_DPAR_BASIS_TOL_X": "1e-9",
+    }),
+    ("interior point, tol 1e-10", {
+        "MSK_IPAR_OPTIMIZER": "MSK_OPTIMIZER_INTPNT",
+        "MSK_DPAR_INTPNT_TOL_PFEAS": "1e-10",
+        "MSK_DPAR_INTPNT_TOL_DFEAS": "1e-10",
+        "MSK_DPAR_INTPNT_TOL_REL_GAP": "1e-10",
+    }),
+)
+# MOSEK defaults, restored after a retry so tight tolerances never leak into
+# later stages/trials of a resident (non-offloaded) task.
+_MOSEK_TOLERANCE_DEFAULTS = {
+    "MSK_DPAR_BASIS_TOL_X": "1.0e-6",
+    "MSK_DPAR_INTPNT_TOL_PFEAS": "1.0e-8",
+    "MSK_DPAR_INTPNT_TOL_DFEAS": "1.0e-8",
+    "MSK_DPAR_INTPNT_TOL_REL_GAP": "1.0e-8",
+}
+
+
+def _retry_restore_params(runtime, lp_optimizer):
+    """Tolerances/optimizer to re-apply after a retry (user values win)."""
+    restore = {
+        name: runtime.base_params.get(name, default)
+        for name, default in _MOSEK_TOLERANCE_DEFAULTS.items()
+    }
+    restore["MSK_IPAR_OPTIMIZER"] = lp_optimizer
+    return restore
+
+
+def _native_tight_retry(runtime, key_for_log, lp_optimizer, first_violation):
+    """Re-solve the fixed native LP with tighter tolerances until it validates.
+
+    Returns ``(validation_ok, worst_violation)`` for the solution that is
+    left selected on the task.  If no attempt both solves optimally and
+    validates, the original-tolerance solution is re-established and the
+    first (failed) result is returned, so the caller falls back to Pyomo.
+    """
+    log = logging.getLogger(__name__)
+    for label, params in _NATIVE_RETRY_ATTEMPTS:
+        runtime.set_stage_params(params)
+        if runtime.optimize(mixed_integer=False):
+            ok, worst = runtime.primal_violation()
+            if ok:
+                log.warning(
+                    "Native primal check passed after retry (%s) for %s: "
+                    "worst relative violation %.3g -> %.3g.",
+                    label, key_for_log, first_violation, worst,
+                )
+                runtime.set_stage_params(_retry_restore_params(runtime, lp_optimizer))
+                return True, worst
+    # Nothing validated: put the original solution back for the fallback.
+    runtime.set_stage_params(_retry_restore_params(runtime, lp_optimizer))
+    runtime.optimize(mixed_integer=False)
+    return False, first_violation
+
+
 def _native_task_trial(
-    runtime, message, linking_vars_by_type, present_linking_vars, parsed_arguments
+    runtime, message, linking_vars_by_type, present_linking_vars, parsed_arguments,
+    key=None,
 ):
     """Solve one Benders trial on the native MOSEK task.
 
@@ -865,6 +927,13 @@ def _native_task_trial(
         # Native replacement for restoration.primal_violations(): worst
         # relative row/column violation straight from the solved task.
         validation_ok, worst_violation = runtime.primal_violation()
+        if not validation_ok:
+            # Retry on the SAME native task (seconds) with tighter tolerances
+            # before paying for a full Pyomo rebuild + clone solves.
+            validation_ok, worst_violation = _native_tight_retry(
+                runtime, key_for_log=key, lp_optimizer=lp_optimizer,
+                first_violation=worst_violation,
+            )
         lambdas_all = runtime.linking_duals()
         lambdas = {name: lambdas_all[name] for name in active}
         op_cost = -runtime.objective_value()
@@ -1280,7 +1349,7 @@ def _benders_subproblem_worker_impl(
             try:
                 native_result = _native_task_trial(
                     native_task_runtime, message, linking_vars_by_type,
-                    present_linking_vars, parsed_arguments,
+                    present_linking_vars, parsed_arguments, key=key,
                 )
                 if native_result["native_infeasible"] or not native_result["native_validation_ok"]:
                     if not native_result["native_infeasible"]:

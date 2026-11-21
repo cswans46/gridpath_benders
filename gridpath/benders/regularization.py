@@ -278,9 +278,15 @@ def solve_int_level_set_problem(
     stabilization_weights=None,
     master_discrete_method="pj_relax",
     fallback_planning_sol=None,
+    required_variables=None,
 ):
     """
     Solve the Benders master over the interior level set.
+
+    ``required_variables`` (optional) names the planning variables that must
+    have a value after the solve; it is passed to ``process_planning_sol`` so
+    planning variables not used by any subproblem may be left unset, exactly
+    as in ``solve_planning_problem``.
 
     The level-set constraint is
 
@@ -489,6 +495,7 @@ def solve_int_level_set_problem(
         planning_sol = process_planning_sol(
             model,
             planning_variables,
+            required_variables=required_variables,
         )
 
     else:
