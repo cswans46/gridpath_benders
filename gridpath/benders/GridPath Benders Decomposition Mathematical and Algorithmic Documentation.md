@@ -1031,6 +1031,11 @@ The two switches and the cap value are part of the fingerprint, so changing them
 
 **Verification status.** The bound logic and cache were exercised on a small Pyomo model with a stand-in solver (explicit, GridPath, FBBT-only, chained FBBT, unbounded variable; cache hit, miss after a constraint change, objective-only change keeps the key, corrupt file ignored, master bounds restored after FBBT). It has not been run on a GridPath model or with MOSEK.
 
+* *Why FBBT failed on the first real run.* It raised `InfeasibleConstraintException('Detected an infeasible constraint.')` and the whole propagation was discarded. That message comes from the check that a numeric constant in a constraint still equals its propagated bounds, using an absolute tolerance (default 1e-8). With coefficients near 1e9 the rounding error alone exceeds 1e-8, so a feasible master is called infeasible. A larger tolerance is more conservative (it never removes feasible points).
+* *Tolerance ladder.* FBBT is now tried on the whole model at tolerance 1e-8, 1e-6, 1e-4, 1e-2 and the first pass that succeeds is used. If all fail, FBBT runs constraint by constraint (3 sweeps, tolerance 1e-2), skips and names each constraint it calls infeasible, and keeps everything it learned from the others. The bounds of the master are restored after every attempt. `GRIDPATH_BENDERS_FBBT_MAX_SECONDS` (default 900) limits the constraint-by-constraint mode.
+* *Recession-ray shortcut.* A variable `x` whose constraints all stay satisfied when only `x` increases (a row with a finite upper side has coefficient <= 0 on `x`, a row with a finite lower side has coefficient >= 0, no equality row contains `x`) can grow without limit at any feasible master point. OBBT would prove this with one full master solve per variable ("Problem is dual infeasible") and the code would then use the assumed cap. The structural test reaches the same result with one pass over the constraints and no solves; such variables go straight to the assumed cap. The `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[...]` variables in the first run were of this kind. Variables in non-linear constraints are never classified this way.
+* The bounds-cache version was raised to 2, so caches written by the earlier code are ignored.
+
 
 ## 16. References
 
