@@ -56,6 +56,13 @@ def _solve_with_lp_optimizer(
 ):
     """Solve once with a scoped MOSEK or Gurobi LP algorithm choice."""
     solver_name = str(getattr(optimiser, "name", "")).lower()
+    try:
+        _crash_log_note(
+            "LP solve start: algorithm=%s, constraints=%s"
+            % (optimizer_name, instance.nconstraints())
+        )
+    except Exception:
+        pass
     if solver_name.startswith("mosek"):
         optimizer_key = "MSK_IPAR_OPTIMIZER"
         optimizer_values = {
@@ -743,6 +750,22 @@ def process_memory_rss():
 
 
 _CRASH_LOG_HANDLE = None
+
+
+def _crash_log_note(message):
+    """Append a time-stamped line to this worker's crash log (if enabled).
+
+    faulthandler writes the stack after these lines when the worker crashes,
+    so the last note says which solve was running (algorithm, model size).
+    """
+    handle = _CRASH_LOG_HANDLE
+    if handle is None:
+        return
+    try:
+        handle.write("%s %s\n" % (time.strftime("%H:%M:%S"), message))
+        handle.flush()
+    except Exception:
+        pass
 
 
 def _enable_worker_crash_log(key, scenario_directory):

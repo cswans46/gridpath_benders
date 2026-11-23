@@ -910,9 +910,11 @@ The retry exists because the fallback is slow (rebuild plus two high-accuracy so
 | `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Kept for compatibility. `mosek_task` only sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
 | `GRIDPATH_BENDERS_SOLVER_THREADS` | unset | Caps MOSEK threads per worker (`MSK_IPAR_NUM_THREADS`). |
 | `GRIDPATH_BENDERS_MEMLOG` | `0` | `1` prints a memory line per trial. |
-| `GRIDPATH_BENDERS_CRASH_LOG` | `1` | Each worker enables Python's `faulthandler`, writing to `<scenario>/benders_crash_logs/worker_<subproblem>_pid<N>.log`. After a native crash (Windows exit code 3221225477, access violation) that file holds the Python stack at the crash; it stays empty otherwise. `0` disables. |
+| `GRIDPATH_BENDERS_CRASH_LOG` | `1` | Each worker enables Python's `faulthandler`, writing to `<scenario>/benders_crash_logs/worker_<subproblem>_pid<N>.log`. After a native crash (Windows exit code 3221225477, access violation) that file holds the Python stack at the crash, preceded by a line naming the LP solve that was running; it stays empty otherwise. `0` disables. |
 | `GRIDPATH_BENDERS_LEAN_EXPORT` | `1` | Final export solves MOSEK models with Pyomo's `save_results=False` path and numeric labels (15.5.16). `0` restores the legacy call. |
 | `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` | `4` | Attempts at the final export of one subproblem when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
+| `GRIDPATH_BENDERS_FALLBACK_ATTEMPTS` | `4` | Attempts at the Pyomo fallback (Phase-I restoration or certificate-checked re-solve) of one trial when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
+| `GRIDPATH_BENDERS_FALLBACK_FIRST_FACTOR` | `2.0` | Before a worker has measured a real fallback, it reserves this multiple of its build peak for one, because restoration clones the model and builds a second MOSEK task. |
 | `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Seconds to wait for a reservation. Once offload is working, 1800–3600 is reasonable; it should stay finite. |
 
 The Section 15.3 variables keep their meaning.
@@ -1036,6 +1038,18 @@ The two switches and the cap value are part of the fingerprint, so changing them
 * *Recession-ray shortcut.* A variable `x` whose constraints all stay satisfied when only `x` increases (a row with a finite upper side has coefficient <= 0 on `x`, a row with a finite lower side has coefficient >= 0, no equality row contains `x`) can grow without limit at any feasible master point. OBBT would prove this with one full master solve per variable ("Problem is dual infeasible") and the code would then use the assumed cap. The structural test reaches the same result with one pass over the constraints and no solves; such variables go straight to the assumed cap. The `BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION[...]` variables in the first run were of this kind. Variables in non-linear constraints are never classified this way.
 * The bounds-cache version was raised to 2, so caches written by the earlier code are ignored.
 
+
+**Addendum to 15.5.17: `--benders_zero_linking_vars`.**
+
+Some linking variables are known, from the model rather than from the optimisation, to be zero (for example the performance-standard allocation in the last period). Deriving a bound for them wastes work and gives `1e8` caps and "No finite lower bound" warnings. The option `--benders_zero_linking_vars NAME[:PERIOD][,NAME[:PERIOD]...]` sets the lower and upper bound of those master variables to 0 before any bound is derived.
+
+* `NAME` is the component name without an index (for example `PERFORMANCE_STANDARD_MW_ALLOCATION`).
+* `PERIOD`, if given, restricts the rule to variables whose index contains that value (the allocation variables are indexed by zone, period, subproblem).
+* Entries are separated by commas or semicolons. Default: none.
+* Because the bound is explicit, the variable is skipped by FBBT and OBBT (the explicit-bound tier is taken first), the master cannot move it, and it works with or without `--benders_use_pj_initialization`.
+* It is an assumption about the model and is not checked. If the master needs a non-zero value, the master becomes infeasible or more costly.
+
+Example: `--benders_zero_linking_vars PERFORMANCE_STANDARD_MW_ALLOCATION:2050`
 
 ## 16. References
 
