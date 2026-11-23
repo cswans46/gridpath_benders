@@ -910,6 +910,8 @@ The retry exists because the fallback is slow (rebuild plus two high-accuracy so
 | `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Kept for compatibility. `mosek_task` only sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
 | `GRIDPATH_BENDERS_SOLVER_THREADS` | unset | Caps MOSEK threads per worker (`MSK_IPAR_NUM_THREADS`). |
 | `GRIDPATH_BENDERS_MEMLOG` | `0` | `1` prints a memory line per trial. |
+| `GRIDPATH_BENDERS_LEAN_EXPORT` | `1` | Final export solves MOSEK models with Pyomo's `save_results=False` path and numeric labels (15.5.16). `0` restores the legacy call. |
+| `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` | `4` | Attempts at the final export of one subproblem when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
 | `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Seconds to wait for a reservation. Once offload is working, 1800–3600 is reasonable; it should stay finite. |
 
 The Section 15.3 variables keep their meaning.
@@ -966,7 +968,7 @@ Equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc
 
 #### 15.5.14 Files changed
 
-`gridpath/benders/mosek_task.py` (rewritten: compile and `MosekTaskRuntime`), `gridpath/benders/subproblems.py` (native compile, offload, trial, check, retry, fallback, reservations), `gridpath/benders/algorithms.py` (backend switch is an alias; stale import removed), `gridpath/benders/regularization.py` (`required_variables`), `gridpath/benders/mosek_task_worker.py` (removed), and this document.
+`gridpath/benders/mosek_task.py` (rewritten: compile and `MosekTaskRuntime`), `gridpath/benders/subproblems.py` (native compile, offload, trial, check, retry, fallback, reservations), `gridpath/benders/algorithms.py` (backend switch is an alias; stale import removed), `gridpath/benders/regularization.py` (`required_variables`), `gridpath/benders/linking_bounds.py` (new: FBBT and the bounds cache, 15.5.17), `gridpath/benders/mosek_task_worker.py` (removed), and this document.
 
 
 #### 15.5.15 Observations from the first multi-iteration native run
@@ -979,9 +981,6 @@ Equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc
 * **Change made.** Each worker now keeps `rebuild_temp_reservation`, which starts at the measured build peak and is raised after every Pyomo fallback to the largest transient (peak RSS minus RSS at the start of that trial, times the safety factor) it has needed. Fallback and export reserve this amount. A fallback no longer overwrites the (much smaller) reservation used for ordinary native trials. The memory log marks such trials with `native (pyomo-fallback)`.
 * **Why subproblems fall back to Pyomo.** In that run the cause of each fallback was not recorded: the code treated every non-optimal native LP as infeasible, including numerical stalls (subproblem 61 ended with `trm_max_num_setbacks`). The status report and retry in 15.5.7 item 5 now distinguish a proved infeasibility from a numerical failure. Phase-I restoration logs its slack for each subproblem; a tiny slack means a tiny infeasibility.
 * **Still open.** Memory the operating system keeps assigned after a Pyomo rebuild is not returned by deleting objects. The robust remedy is to run the fallback and the export rebuild in a short-lived child process, whose memory is returned in full when it exits; this has not been implemented. Reducing the number of simultaneous exports (for example a separate export semaphore) would also lower the peak.
-| `GRIDPATH_BENDERS_LEAN_EXPORT` | `1` | Final export solves MOSEK models with Pyomo's `save_results=False` path and numeric labels (15.5.16). `0` restores the legacy call. |
-| `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` | `4` | Attempts at the final export of one subproblem when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
-
 #### 15.5.16 Final export: out-of-memory failure and fix
 
 **Observed.** The run stopped on `TIMELIMIT` (elapsed 7740 s). The final export, which rebuilds each subproblem's Pyomo model in its worker, then raised `MemoryError` inside Pyomo's MOSEK interface in several workers, and one worker died when pandas reported `C error: out of memory` while reading an input CSV. A dead worker is fatal to the run.
