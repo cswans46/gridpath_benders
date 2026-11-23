@@ -979,6 +979,58 @@ Equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc
 * **Change made.** Each worker now keeps `rebuild_temp_reservation`, which starts at the measured build peak and is raised after every Pyomo fallback to the largest transient (peak RSS minus RSS at the start of that trial, times the safety factor) it has needed. Fallback and export reserve this amount. A fallback no longer overwrites the (much smaller) reservation used for ordinary native trials. The memory log marks such trials with `native (pyomo-fallback)`.
 * **Why subproblems fall back to Pyomo.** In that run the cause of each fallback was not recorded: the code treated every non-optimal native LP as infeasible, including numerical stalls (subproblem 61 ended with `trm_max_num_setbacks`). The status report and retry in 15.5.7 item 5 now distinguish a proved infeasibility from a numerical failure. Phase-I restoration logs its slack for each subproblem; a tiny slack means a tiny infeasibility.
 * **Still open.** Memory the operating system keeps assigned after a Pyomo rebuild is not returned by deleting objects. The robust remedy is to run the fallback and the export rebuild in a short-lived child process, whose memory is returned in full when it exits; this has not been implemented. Reducing the number of simultaneous exports (for example a separate export semaphore) would also lower the peak.
+| `GRIDPATH_BENDERS_LEAN_EXPORT` | `1` | Final export solves MOSEK models with Pyomo's `save_results=False` path and numeric labels (15.5.16). `0` restores the legacy call. |
+| `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` | `4` | Attempts at the final export of one subproblem when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
+
+#### 15.5.16 Final export: out-of-memory failure and fix
+
+**Observed.** The run stopped on `TIMELIMIT` (elapsed 7740 s). The final export, which rebuilds each subproblem's Pyomo model in its worker, then raised `MemoryError` inside Pyomo's MOSEK interface in several workers, and one worker died when pandas reported `C error: out of memory` while reading an input CSV. A dead worker is fatal to the run.
+
+**Cause.** The export called `solve(instance, symbolic_solver_labels=True)`. With Pyomo's default `save_results=True`, `mosek_direct._postsolve` builds, for every variable and constraint, a Python name string and a dictionary entry in the `Solution` object, then `load_from` builds another dictionary of all components. For a large subproblem this is several gigabytes, the largest memory peak of the run. Symbolic labels also store a name in the MOSEK task for every row and column. GridPath's export uses neither.
+
+**Fix.**
+1. *Lean solve.* For MOSEK the export calls `solve(instance, symbolic_solver_labels=False, save_results=False)`. Pyomo copies primal values (and duals, when an import `dual` suffix exists) straight from the task into the model. Exported values are the same.
+2. *Retry on out-of-memory.* An out-of-memory failure (Python `MemoryError` or a library error saying "out of memory") frees the worker's model, asks the coordinator for a reservation 1.5 times larger (so the worker waits for other workers to release memory), pauses 5, 10, 15 s, and retries, up to `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` times. Other exceptions are re-raised.
+3. *Timing.* Each native trial memory log line ends with `elapsed=...s`.
+
+**Why the run stopped early.** `status=TIMELIMIT` is not convergence and not a crash. The default `--max_benders_cpu_time` is 3600 s and is counted from the start of `benders()`, including the worker build. Iteration 2 alone took about 1.5 hours, consistent with roughly 20 subproblems running Phase-I restoration on rebuilt Pyomo models (subproblem 61 ended its first solve with `trm_max_num_setbacks`). Raise `--max_benders_cpu_time` to let the algorithm continue.
+
+#### 15.5.17 Bounded first master: FBBT propagation and the bounds cache
+
+**What the switch is.** With `--benders_use_pj_initialization true` (the default) the first master maximises the planning objective alone, with no operating-cost term and no cuts. Any continuous linking variable without an upper bound is then unbounded, the solver reports unbounded, and the code caps those variables at 1e8 (`Planning problem unbounded; capped N variable(s)`). The first trial point is meaningless, many subproblems are infeasible at it, and the upper bound is not informative. With `--benders_use_pj_initialization false` every continuous linking variable is bounded before the first master solve, each worker computes a global bound on its recourse cost, and the first master includes that bound. This is the bounded first master. It is also used automatically when the model has discrete linking variables.
+
+**Definitions.**
+* *Linking variable*: a master variable that appears in a subproblem (for example a capacity). *Continuous* excludes binary and integer ones.
+* *FBBT (feasibility-based bound tightening)*: interval arithmetic through the master's constraints. If `x + 2y <= 10` with `x, y >= 0`, then `x <= 10` and `y <= 5`. It repeats until no bound improves by more than a tolerance (Pyomo `pyomo.contrib.fbbt.fbbt.fbbt`). It makes no solver call. A bound it derives is implied by the constraints, so it holds at every feasible master point.
+* *OBBT (optimization-based bound tightening)*: maximise the variable over the master (integrality relaxed). One LP per variable, so it is slow for many variables.
+* *Assumed cap*: if no tier bounds a variable, `BENDERS_MASTER_VARIABLE_CAP` (1e8) is used and is also enforced in the master so that the recourse bound stays valid.
+* *Fingerprint*: a SHA-256 digest of every master variable (name, domain, bounds, fixed value) and every active master constraint (name, sides, linear coefficients), plus the settings below. The objective is excluded because OBBT replaces it. The order of components does not matter.
+
+**Order in which a variable's upper bound is sought** (first hit wins):
+1. its explicit Pyomo bound;
+2. GridPath's capacity / potential constraints (`CAPACITY_BOUND_CONSTRAINTS`), now through an index built once instead of re-reading every capacity constraint for every variable;
+3. FBBT, run once for all variables that tiers 1 and 2 cannot bound. FBBT tightens variable bounds in place, so every variable's bounds are recorded first and restored afterwards; the master is not changed. A result of 1e10 or more is discarded as an artefact of big-M chains;
+4. OBBT, one master LP per remaining variable, if allowed;
+5. the assumed cap.
+
+**Cache.** After the bounds are computed they are written to `<scenario directory>/benders_bounds_cache/linking_bounds_<fingerprint>.json` (atomically). At the next run the fingerprint is recomputed from the master. If a file with that fingerprint exists and covers every linking variable, the bounds and the set of assumed-cap variables are loaded, the caps are re-enforced in the master, and no bound-related solve is done. If the master changed in any variable or constraint (or any setting below changed), the fingerprint differs and the bounds are recomputed; a corrupt file is ignored. Bounds are also kept on the model, so the later call that clears the per-iteration bound cache (after the pj_relax restoration) reuses them instead of re-running OBBT.
+
+**Command-line options.**
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--benders_use_pj_initialization` | `true` | `false` selects the bounded first master described above. |
+| `--benders_bound_propagation` | `true` | Run FBBT (tier 3). |
+| `--benders_recourse_bound_obbt` | `true` | Allow OBBT (tier 4). `false` gives the assumed cap to anything FBBT could not bound. |
+| `--benders_bounds_cache` | `true` | Read and write the bounds cache. |
+| `--benders_bounds_cache_dir` | scenario directory + `benders_bounds_cache` | Folder of the cache. |
+
+The two switches and the cap value are part of the fingerprint, so changing them never returns an old result.
+
+**What this does not speed up.** With `--benders_use_pj_initialization false` each worker also solves a global LP relaxation of its recourse problem to bound its operating cost. That is one LP per subproblem, done in the worker build, and it is not cached by this change.
+
+**Verification status.** The bound logic and cache were exercised on a small Pyomo model with a stand-in solver (explicit, GridPath, FBBT-only, chained FBBT, unbounded variable; cache hit, miss after a constraint change, objective-only change keeps the key, corrupt file ignored, master bounds restored after FBBT). It has not been run on a GridPath model or with MOSEK.
+
 
 ## 16. References
 
