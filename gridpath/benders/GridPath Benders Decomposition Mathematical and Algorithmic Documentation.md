@@ -1051,6 +1051,12 @@ Some linking variables are known, from the model rather than from the optimisati
 
 Example: `--benders_zero_linking_vars PERFORMANCE_STANDARD_MW_ALLOCATION:2050`
 
+**Addendum to 15.5.17: variables without a finite lower bound, and diagnostics.**
+
+* *Why some variables cost solves and got nothing.* A linking variable with no finite lower bound (for example `PERFORMANCE_STANDARD_MW_ALLOCATION[zone, period, subproblem]`, which is free and tied only by "sum over subproblems = 0") can never be given bounds: every route of the bounds search ends by rejecting it ("No finite lower bound found"). It sits in an equality row, so the no-solve test for variables that can grow without limit does not apply, and OBBT used to run one full master solve per variable, once per zone, period and subproblem, before the result was discarded.
+* *Fix.* The lower-bound test now comes first, in `compute_linking_variable_bounds` and in `get_continuous_variable_bounds`. Such variables are left out of FBBT, the recession test and OBBT, reported in one summary line (`Benders: N linking variable(s) have no finite lower bound and are skipped without solves`), recorded as skipped in the bounds cache, and receive no recourse bounds, exactly as before. Only the solves are gone.
+* *`--benders_zero_linking_vars` diagnostics.* At the start of the bounds step the log prints `Benders: --benders_zero_linking_vars = '<value>'` (`(not set)` if the flag did not arrive). If the flag is set but no variable matches, a warning lists the linking-variable component names of the model. The component name is matched case-insensitively and quotes are ignored.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.

@@ -575,6 +575,10 @@ def benders(
     # derived, so FBBT and OBBT never see them, and it holds on both the PJ
     # initialisation path and the bounded-first-master path.
     zero_rules = parse_zero_linking_rules(setup.get("ZeroLinkingVars"))
+    print(
+        "Benders: --benders_zero_linking_vars = %r"
+        % (setup.get("ZeroLinkingVars") or "(not set)")
+    )
     if zero_rules:
         zeroed = apply_zero_linking_bounds(
             planning_problem, linking_vars, zero_rules

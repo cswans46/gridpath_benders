@@ -297,11 +297,13 @@ def apply_zero_linking_bounds(model, linking_var_names, rules):
         return []
 
     matched = []
+    component_names = {}
     for name in linking_var_names:
         var = model.find_component(name)
         if var is None or var.fixed:
             continue
         component = var.parent_component().name
+        component_names[component] = component_names.get(component, 0) + 1
         try:
             index = var.index()
         except Exception:
@@ -312,7 +314,7 @@ def apply_zero_linking_bounds(model, linking_var_names, rules):
             else ([str(index)] if index is not None else [])
         )
         for rule_name, period in rules:
-            if component != rule_name:
+            if component.lower() != rule_name.strip("'\" ").lower():
                 continue
             if period is not None and period not in index_items:
                 continue
@@ -326,6 +328,15 @@ def apply_zero_linking_bounds(model, linking_var_names, rules):
         len(matched),
         rules,
     )
+    if not matched:
+        message = (
+            "--benders_zero_linking_vars %s matched no linking variable. "
+            "Rules are NAME[:PERIOD] with NAME the component name without an "
+            "index. Linking-variable components in this model include: %s."
+            % (rules, sorted(component_names)[:15])
+        )
+        logger.warning(message)
+        print("WARNING: " + message)
     return matched
 
 
