@@ -355,6 +355,31 @@ class MosekTaskRuntime:
                 return True
         return False
 
+    def status_summary(self):
+        """Human-readable MOSEK problem/solution status for every solution type."""
+        parts = []
+        for label, candidate in (("bas", self.mosek.soltype.bas),
+                                 ("itr", self.mosek.soltype.itr)):
+            try:
+                parts.append("{}: solsta={} prosta={}".format(
+                    label,
+                    _mosek_enum_name(self.task.getsolsta(candidate)),
+                    _mosek_enum_name(self.task.getprosta(candidate)),
+                ))
+            except Exception as exc:  # a solution type may not exist
+                parts.append("{}: unavailable ({})".format(label, type(exc).__name__))
+        return "; ".join(parts)
+
+    def proved_infeasible(self):
+        """True when MOSEK holds a primal infeasibility certificate."""
+        for candidate in (self.mosek.soltype.bas, self.mosek.soltype.itr):
+            try:
+                if self.task.getsolsta(candidate) == self.mosek.solsta.prim_infeas_cer:
+                    return True
+            except Exception:
+                continue
+        return False
+
     def primal_values(self, names):
         solution = self.task.getxx(self.solution_type)
         return {

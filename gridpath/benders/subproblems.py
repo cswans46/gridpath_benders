@@ -917,12 +917,43 @@ def _native_task_trial(
 
         runtime.set_stage_params({"MSK_IPAR_OPTIMIZER": lp_optimizer})
         if not runtime.optimize(mixed_integer=False):
-            if operational_state is not None:
-                raise RuntimeError(
-                    "Fixed-z native MOSEK LP did not solve to optimality after "
-                    "an optimal operational MIP."
+            # "Not optimal" is NOT the same as "infeasible": MOSEK can also stop
+            # on numerical trouble (e.g. trm_max_num_setbacks) with solsta
+            # unknown.  Record the real status, and only when MOSEK has not
+            # produced an infeasibility certificate retry with other settings.
+            log = logging.getLogger(__name__)
+            statuses = [runtime.status_summary()]
+            recovered = False
+            if not runtime.proved_infeasible():
+                for label, params in _NATIVE_RETRY_ATTEMPTS:
+                    runtime.set_stage_params(params)
+                    if runtime.optimize(mixed_integer=False):
+                        recovered = True
+                        log.warning(
+                            "Native LP for %s was not optimal (%s) but solved "
+                            "after retry (%s).", key, statuses[0], label,
+                        )
+                        break
+                    statuses.append("{} -> {}".format(label, runtime.status_summary()))
+                    if runtime.proved_infeasible():
+                        break
+                runtime.set_stage_params(_retry_restore_params(runtime, lp_optimizer))
+            if not recovered:
+                proved = runtime.proved_infeasible()
+                log.warning(
+                    "Native LP for %s is not optimal; MOSEK infeasibility "
+                    "certificate: %s. Status: %s. Falling back to Phase-I "
+                    "restoration on the Pyomo model.",
+                    key, "YES" if proved else "NO (numerical/unknown)",
+                    " | ".join(statuses),
                 )
-            return dict(result_common, native_infeasible=True)
+                if operational_state is not None:
+                    raise RuntimeError(
+                        "Fixed-z native MOSEK LP did not solve to optimality after "
+                        "an optimal operational MIP: " + " | ".join(statuses)
+                    )
+                return dict(result_common, native_infeasible=True,
+                            native_proved_infeasible=proved)
 
         # Native replacement for restoration.primal_violations(): worst
         # relative row/column violation straight from the solved task.
@@ -1250,6 +1281,10 @@ def _benders_subproblem_worker_impl(
         minimum_operation_temp,
         int(max(0, build_peak_rss[0] - process_memory_rss()) * safety_factor),
     )
+    # Largest transient any Pyomo rebuild (build, restoration, export) has needed
+    # above this worker's idle footprint.  Starts at the measured build peak and
+    # only ever grows, so later rebuilds never reserve less than an earlier one used.
+    rebuild_temp_reservation = build_temp_reservation
     if memory_coordinator is not None:
         resident_bytes = process_memory_rss()
         # Release the startup temporary allowance before increasing the
@@ -1293,7 +1328,7 @@ def _benders_subproblem_worker_impl(
 
         if native_task_runtime is not None and isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
             if memory_coordinator is not None:
-                memory_coordinator.set_reservation(worker_index, temporary=max(operation_temp_reservation, build_temp_reservation))
+                memory_coordinator.set_reservation(worker_index, temporary=max(operation_temp_reservation, rebuild_temp_reservation))
             # Final export needs the full Pyomo model (it writes the standard
             # GridPath result files); build it once, with fresh dynamic
             # components, and discard it afterwards.
@@ -1346,6 +1381,7 @@ def _benders_subproblem_worker_impl(
             if memory_coordinator is not None:
                 memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
             operation_start_rss, observed_peak_rss, monitor_stop, memory_monitor = _start_rss_monitor()
+            used_pyomo_fallback = False
             try:
                 native_result = _native_task_trial(
                     native_task_runtime, message, linking_vars_by_type,
@@ -1360,10 +1396,11 @@ def _benders_subproblem_worker_impl(
                         )
                     # Rare path: rebuild the Pyomo model (fresh components) for
                     # Phase-I restoration / certificate-checked re-solve.
+                    used_pyomo_fallback = True
                     if memory_coordinator is not None:
                         memory_coordinator.set_reservation(
                             worker_index,
-                            temporary=max(operation_temp_reservation, build_temp_reservation),
+                            temporary=max(operation_temp_reservation, rebuild_temp_reservation),
                         )
                     subop_sol = _pyomo_recourse_fallback(
                         scenario_directory, key, multi_stage, parsed_arguments,
@@ -1409,13 +1446,21 @@ def _benders_subproblem_worker_impl(
             current_rss = process_memory_rss()
             # Adapt the temporary (load + solve + check) reservation to what
             # this worker actually needed above its idle footprint.
-            operation_temp_reservation = max(
-                minimum_operation_temp,
-                int(max(0, observed_peak_rss[0] - current_rss) * safety_factor),
-            )
+            if used_pyomo_fallback:
+                # A Pyomo rebuild is not representative of a native trial: keep
+                # its (much larger) transient as the rebuild estimate only.
+                rebuild_temp_reservation = max(
+                    rebuild_temp_reservation,
+                    int(max(0, observed_peak_rss[0] - operation_start_rss) * safety_factor),
+                )
+            else:
+                operation_temp_reservation = max(
+                    minimum_operation_temp,
+                    int(max(0, observed_peak_rss[0] - current_rss) * safety_factor),
+                )
             if os.getenv("GRIDPATH_BENDERS_MEMLOG", "0") == "1":
                 print(
-                    f"[benders-mem] native subproblem={key.subproblem} "
+                    f"[benders-mem] native{' (pyomo-fallback)' if used_pyomo_fallback else ''} subproblem={key.subproblem} "
                     f"rss_start={operation_start_rss / 1024**3:.2f}GiB "
                     f"rss_peak={observed_peak_rss[0] / 1024**3:.2f}GiB "
                     f"rss_end={current_rss / 1024**3:.2f}GiB",

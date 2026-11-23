@@ -786,56 +786,186 @@ This is **cooperative admission control**, not an operating-system memory limit.
 
 For recourse operations, each worker samples its RSS at 100 ms intervals. The observed increase over the operation's starting RSS, multiplied by the safety factor, becomes that worker's temporary reservation estimate for its next operation (subject to a configurable minimum). This lets workers develop different temporary-memory estimates from their own observed workloads. The estimate is updated between operations; it does not retroactively prevent an allocation that exceeds the current reservation, and very short-lived peaks may fall between samples. The first operation uses the configured initial temporary estimate. Final export uses the current estimate once. If the retained models alone cannot fit within the budget, workers will wait and eventually raise a `MemoryError`; reducing `n_parallel_solve` only limits simultaneous startup/dispatch and does not make the total resident model footprint disappear. In that case, reduce model memory, increase available RAM or change the worker lifecycle so models can be unloaded and reconstructed.
 
-## 15.5. Native MOSEK task path with disk offload
+In native offload mode (Section 15.5) the persistent reservation of an idle worker is its small post-offload footprint, not a resident model, which is what makes the limitations above less binding.
 
-### Purpose and activation
+### 15.5 Native MOSEK task path with disk offload
 
-For MOSEK solvers (`--solver mosek`), each worker compiles its operational Pyomo model **once** into a native MOSEK `Task`, writes it to the subproblem's own folder, drops the Pyomo model, and then runs every Benders trial on the task (change the right-hand sides of the linking rows, solve, read duals). The path lives in the single worker implementation in `subproblems.py`; helper code is in `mosek_task.py`. It is on by default for MOSEK; all environment variables are optional:
+This section documents the change that moves each worker's operational model out of Pyomo and RAM. It describes what was done, why, how it fits the global memory rule of Section 15.1, how to configure it, and what is still unverified. Words with a specific meaning here are defined in 15.5.1 and are written the same way throughout.
+
+#### 15.5.1 Glossary
+
+| Term | Meaning in this document |
+| --- | --- |
+| **Subproblem / worker** | One operational subproblem (for example one day-group) and the persistent operating-system process (a *spawned* Python process) that solves it. There is one worker per subproblem. |
+| **Pyomo model (instance)** | The algebraic model object built by `create_operational_problem_benders`. It is large because it stores every variable, constraint and expression as Python objects. |
+| **MOSEK Task** | MOSEK's own in-memory problem object (a sparse matrix, bounds, objective and parameters). It is much smaller than the Pyomo model and is what MOSEK actually optimizes. |
+| **`.task` file** | The MOSEK Task written to disk. Reading it back recreates the Task exactly. |
+| **Compile** | Converting the Pyomo model into a MOSEK Task once, through Pyomo's MOSEK interface (so rows and columns match the Pyomo path), and writing the `.task` file. |
+| **Dispose / release** | Explicitly destroying the in-memory MOSEK Task so its memory returns to the operating system. |
+| **Offload** | Disposing the Task after every trial and reading it from the `.task` file for the next one. After an offload the worker holds almost no model memory. |
+| **Resident** | Held in RAM. *Resident mode* (`GRIDPATH_BENDERS_TASK_OFFLOAD=0`) keeps the Task in RAM between trials. |
+| **RSS (resident set size)** | The physical memory the operating system currently assigns to a process (the "Working set" column in Windows Task Manager). All memory figures in the logs are RSS. |
+| **Idle footprint** | A worker's RSS when it is waiting for a message: the Python interpreter and imported libraries plus whatever model it keeps. |
+| **Persistent reservation** \\(R_w\\) | The amount of memory worker \\(w\\) tells the coordinator it keeps for as long as it lives (its idle footprint times the safety factor). |
+| **Temporary reservation** \\(T_w\\) | The extra amount worker \\(w\\) tells the coordinator it needs only while a trial, build or export is running. It is released afterwards. |
+| **Budget** \\(M_{\\mathrm{budget}}\\) | The total memory Benders may reserve (Section 15.1). |
+| **Cooperative** | The coordinator only adds up what workers declare. The operating system does not stop a worker that allocates more than it declared. |
+| **Trial** | One evaluation of one subproblem at one master (planning) solution during a Benders iteration. |
+| **Linking variable** | A planning variable that also appears in a subproblem. Its value comes from the master. |
+| **Linking row** | A permanent equality constraint `linking variable == value` added to the subproblem. Only its right-hand side changes between trials. Its **dual** is that variable's Benders cut coefficient. |
+| **Dual (\\(y\\)) and \\(\\lambda\\)** | \\(y\\) is MOSEK's dual value of a row. The cut coefficient is \\(\\lambda = -y\\cdot s\\), where \\(s\\) is the objective scale below. |
+| **Objective scale** \\(s\\) | The subproblem objective is divided by `BENDERS_RECOURSE_OBJECTIVE_SCALE` (\\(10^{6}\\)) before solving for numerical conditioning; costs and duals are multiplied back by \\(s\\). |
+| **LP / MIP** | Linear program (no integer variables) / mixed-integer program. Duals exist only for LPs. |
+| **Relaxed** | An integer or binary variable treated as continuous (its type is changed to continuous). |
+| **\\(z\\)** | The operational integer or binary variables (those that are not linking variables). |
+| **`pj_relax` / `fixed_z`** | Operational discrete methods. `pj_relax`: relax every \\(z\\) and solve one LP. `fixed_z`: solve the MIP, round and fix \\(z^\\ast\\), then solve an LP to get duals. |
+| **Master phases** | `pj_relaxed` phase: master integrality relaxed. `restored`: master integrality restored after the relaxed phase. `linearized` and `djc` use discrete cuts. |
+| **Basic (`bas`), interior (`itr`), integer (`itg`) solution** | MOSEK's three solution types. For an LP the basic solution (from simplex, or from interior point followed by crossover) is used because it contains duals. `itg` is for MIPs. |
+| **Primal violation** | By how much the returned solution breaks a constraint or variable bound, divided by `max(1, abs(bound))` (a *relative* violation). |
+| **Tolerance** | The largest relative violation accepted: `1e-7` for the native check. |
+| **Fallback** | The rare path that rebuilds the Pyomo model (15.5.7). |
+| **Phase-I restoration** | The existing procedure that handles an infeasible subproblem (adds penalized slack to recover a feasible point and a valid cut). It needs the Pyomo model. |
+| **`DynamicComponents`** | A registry object that model modules append cost, revenue and load-balance terms to while a model is built. |
+| **Env** | MOSEK's environment handle (license and global state). Every Task is created from one and the Env must stay alive while any of its Tasks exist. |
+| **`putparam`** | The MOSEK call that sets a solver parameter on a Task. |
+
+#### 15.5.2 Problem and cause
+
+In a 72-subproblem run on the legacy Pyomo worker the memory log showed each worker's RSS rising during its first solve (from about 0.44–0.71 GiB to 1.6–2.8 GiB) and staying there. Roughly 68 workers at about 2.5 GiB is about 167 GiB resident, and about 210 GiB once the 1.25 safety factor multiplies each persistent reservation. The budget was then full of persistent reservations, so a worker asking for even the minimum 0.5 GiB temporary reservation at the start of its next trial waited until the 600-second timeout and raised `MemoryError`. The failure was therefore at the start of a trial (after the first solves), not during the model build. Waiting cannot help in that state, because persistent reservations are never released while workers live.
+
+#### 15.5.3 How this satisfies the global memory rule
+
+The rule of Section 15.1 is unchanged:
+
+$$
+\\sum_{w\\in W}\\left(R_w(t)+T_w(t)\\right)\\leq M_{\\mathrm{budget}}\\quad\\text{for all }t.
+$$
+
+What changes is the *size and timing* of the terms. In offload mode:
+
+* **Build phase.** Each worker reserves its startup estimate, builds, solves the recourse upper-bound LP and compiles the task. The startup semaphore (`n_parallel_solve`) still limits simultaneous builds.
+* **After compile.** The Pyomo model, solver object and index maps are deleted, the Task is disposed, and the worker's temporary reservation is released before it reports `READY`. \\(R_w\\) falls to the small idle footprint. This memory is immediately available to workers still building, so a finished worker does not hold memory that others need.
+* **Trial.** The worker requests \\(T_w\\) (load, solve and check). Several workers can run trials at once whenever the sum fits. A worker that cannot get its reservation waits, then continues when others finish (up to the timeout).
+* **Adaptation.** A background sampler records the worker's RSS every 100 ms. After each trial \\(T_w\\) becomes (peak RSS during the trial minus RSS after it) times the safety factor, never below the minimum (0.5 GiB). \\(R_w\\) becomes the RSS after the trial times the safety factor.
+* **Pyomo rebuild paths.** At startup the worker also measures its own build-plus-bound-solve peak above its idle footprint (`build_temp_reservation`). The final export and the fallback request the larger of that value and the trial estimate, because a rebuild needs far more than a task trial.
+* **Results.** A worker returns its result after updating its reservations. The master waits for all workers in a window before building cuts, so one slow worker delays the whole round (see 15.5.9).
+
+Resident mode keeps the task in RAM, so \\(R_w\\) stays larger but each trial is faster.
+
+#### 15.5.4 Lifecycle of a worker
+
+1. **Build** the Pyomo operational model with a fresh `DynamicComponents`, and compute the recourse bound (existing logic).
+2. **Compile.** Add one linking row per present linking variable, divide the objective by \\(s\\), create a `mosek_persistent` Pyomo solver, call `set_instance`, and write `<subproblem folder>/benders_task/subproblem.task` plus `subproblem.task.json` (metadata). Restore the objective expression.
+3. **Release.** Delete the Pyomo model and solver, and (offload mode) dispose the Task.
+4. **Trial** (repeated each iteration): open the Task if not resident; apply parameters; set linking-row right-hand sides; run the stage logic of 15.5.6; check the solution (15.5.7); read \\(\\lambda\\) and the cost; end the trial (dispose in offload mode, or reset the touched columns in resident mode).
+5. **Export final results** (`EXPORT_FINAL`): rebuild the Pyomo model once (fresh `DynamicComponents`), solve and write GridPath's normal result files, then discard it.
+6. **Shutdown:** dispose the Task, delete the `benders_task` folder (unless kept) and release reservations.
+
+Only the metadata needed for Benders stays in RAM: linking rows and columns, the integer and binary columns, and the original bounds of the columns Benders may change. No Pyomo object or per-variable name map for ordinary variables is kept.
+
+#### 15.5.5 Files and folders
+
+Task files live in the subproblem's own folder, next to its input files and results (the D: drive when the scenario is there):
+
+`<scenario>/<weather>/<hydro>/<availability>/<subproblem>/<stage>/benders_task/subproblem.task`
+
+`GRIDPATH_BENDERS_TASK_DIR` replaces `<scenario>` as the root and keeps the rest of the path. The folder is deleted when the worker stops unless `GRIDPATH_BENDERS_KEEP_TASKS=1`.
+
+#### 15.5.6 Trial logic by option
+
+| Situation | \\(z\\) (operational integers) | Discrete linking columns | Lambdas returned for |
+| --- | --- | --- | --- |
+| Master `pj_relax`, not yet restored | relaxed | relaxed | all present linking variables |
+| Operational `pj_relax` (after restoration, or master `linearized`/`djc`) | relaxed | relaxed for the LP | continuous linking variables |
+| Operational `fixed_z` with \\(z\\) present | MIP at the trial point, rounded \\(z^\\ast\\) fixed through column bounds, then an LP | integer in the MIP, relaxed in the LP | continuous linking variables |
+| Operational `fixed_z`, no \\(z\\) | none | relaxed | continuous linking variables |
+
+Other rules:
+
+* Discrete linking columns are relaxed in **every** LP stage; otherwise no duals exist.
+* \\(z^\\ast\\) is rounded to the nearest integer; a deviation above \\(10^{-6}\\) raises an error.
+* `master_discrete_state` is returned under the legacy `discrete_cut_phase` rule (master `pj_relax` after restoration, `linearized`, or `djc`, and only when discrete linking variables exist).
+* `--benders_operational_solver` (`automatic`, `interior_point`, `primal_simplex`) sets `MSK_IPAR_OPTIMIZER` for the operational-`pj_relax` LP only, as in the legacy worker. All other stages use the configured optimizer.
+* All `MSK_*` solver options, the thread cap and `MSK_IPAR_LOG=0` are re-applied with `putparam` after every load and before every stage, because the options passed to Pyomo are not stored in the task.
+
+#### 15.5.7 Native primal check, native retry and Pyomo fallback
+
+1. **Native primal check.** The legacy worker re-evaluated every Pyomo row and bound with `primal_violations()`. That needs the Pyomo model, so the native path computes, with NumPy on the solved task, the worst relative violation of every row activity and every column value against its bounds, and accepts at most \\(10^{-7}\\). The row scale is the bound magnitude; the legacy check also included the sum of absolute coefficients, so the two checks are not identical.
+2. **Native retry.** If the check fails, the same, already-fixed LP is re-solved on the same task: first primal simplex with `MSK_DPAR_BASIS_TOL_X = 1e-9`, then interior point with feasibility and gap tolerances \\(10^{-10}\\). The first attempt that solves and passes is used, and a warning "Native primal check passed after retry (...)" names the attempt. Tolerances are then reset to the user's values or MOSEK's defaults so they do not leak into later trials.
+3. **Pyomo fallback.** Only if both retries fail, or the native solve is infeasible, the model is rebuilt (fresh `DynamicComponents`, measured build-sized reservation) and the legacy path runs: `solve_original` re-solves on cloned models for a failed check, and Phase-I restoration handles infeasibility. The model is discarded afterwards.
+4. **Final export** also uses a rebuilt model.
+
+The retry exists because the fallback is slow (rebuild plus two high-accuracy solves) and, since the master waits for all workers, two slow workers stall every worker. In the first native run subproblems 31 and 65 failed the check with relative violations of 1.01e-06 and 4.01e-07 (MOSEK's default basis tolerance is \\(10^{-6}\\)).
+
+#### 15.5.8 Configuration
 
 | Variable | Default | Meaning |
-|---|---|---|
+| --- | --- | --- |
 | `GRIDPATH_BENDERS_NATIVE_TASK` | `1` | `0` forces the legacy Pyomo worker. |
-| `GRIDPATH_BENDERS_TASK_OFFLOAD` | `1` | `1`: dispose the task after every trial and re-read it from disk for the next (idle worker holds almost no model memory). `0`: keep the task resident (faster, more RAM). |
-| `GRIDPATH_BENDERS_TASK_DIR` | scenario dir | Root for task files. Layout is always `<root>/<weather>/<hydro>/<availability>/<subproblem>/<stage>/benders_task/subproblem.task`. By default this is the subproblem's own folder, next to its inputs and results (the D: drive when the scenario lives there). |
-| `GRIDPATH_BENDERS_KEEP_TASKS` | `0` | `1` keeps the `benders_task` folder after the run (for debugging). |
-| `GRIDPATH_BENDERS_NATIVE_TASK_GAMS` | `0` | Native path is not used with the GAMS/MOSEK adapter unless this is `1`; GAMS option names are not translated. Gurobi and other solvers always use the Pyomo worker. |
-| `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Retained for compatibility only; `mosek_task` merely sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
+| `GRIDPATH_BENDERS_TASK_OFFLOAD` | `1` | `1` offload mode; `0` resident mode (faster, more RAM). |
+| `GRIDPATH_BENDERS_TASK_DIR` | scenario folder | Root for task files (same sub-layout). |
+| `GRIDPATH_BENDERS_KEEP_TASKS` | `0` | `1` keeps `benders_task` after the run. |
+| `GRIDPATH_BENDERS_NATIVE_TASK_GAMS` | `0` | The native path is off for the GAMS adapter unless `1` (GAMS option names are not translated). Gurobi and other solvers always use the Pyomo worker. |
+| `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Kept for compatibility. `mosek_task` only sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
+| `GRIDPATH_BENDERS_SOLVER_THREADS` | unset | Caps MOSEK threads per worker (`MSK_IPAR_NUM_THREADS`). |
+| `GRIDPATH_BENDERS_MEMLOG` | `0` | `1` prints a memory line per trial. |
+| `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Seconds to wait for a reservation. Once offload is working, 1800–3600 is reasonable; it should stay finite. |
 
-`GRIDPATH_BENDERS_SOLVER_THREADS`, `GRIDPATH_BENDERS_MEMLOG` and the other memory variables keep their meaning.
+The Section 15.3 variables keep their meaning.
 
-### Memory behaviour (why offload is the default)
+#### 15.5.9 Waiting, timeouts and stalls
 
-* The persistent reservation of an idle worker is its resident set after compilation (small in offload mode); the memory coordinator therefore admits many more workers than when every worker keeps a model.
-* During a trial the worker holds a **temporary** reservation covering task load, solve and native check. After each trial the worker measures its own peak above its idle footprint and uses that (times the safety factor) as its next temporary reservation, so concurrency adapts to the real per-trial need.
-* Cost of offload: one `readdata` per trial. If load time dominates the solve time for your subproblems, set `GRIDPATH_BENDERS_TASK_OFFLOAD=0` (resident) and rely on the adaptive reservations.
-* Only the metadata needed for Benders is kept in RAM: linking rows/columns, the integer/binary columns and their original bounds. No per-variable Pyomo map is retained.
+* A worker whose reservation does not fit **waits**, re-checking about once a second and whenever another worker releases memory. It continues when the total fits. After the timeout it raises `MemoryError`. A single request larger than the whole budget fails immediately.
+* Waiting helps only for **temporary** reservations, which are released after each trial. If persistent reservations alone fill the budget, nothing is released and the timeout is reached. Offload reduces the persistent part.
+* The master collects every worker's result in a window before building cuts, so one slow worker (typically one in the Pyomo fallback) holds up the round. A log with fewer `[benders-mem]` lines than subproblems means the missing ones are still running.
+* The coordinator does not control actual allocation (it is cooperative), and raising the budget above the safe fraction of RAM risks an operating-system failure.
 
-### Where the Pyomo model is reinstated (rare paths only)
+#### 15.5.10 Defects fixed in the prototype
 
-1. **Infeasible trial** (native solve not optimal): Phase-I restoration needs the Pyomo model and the certificate-checked `restore()`.
-2. **Native primal check fails** (see below): the point is re-solved through the existing `solve_original()` retry.
-3. **Final export** (`EXPORT_FINAL`): the standard GridPath result files are written from a rebuilt model.
+| Defect | Effect | Fix |
+| --- | --- | --- |
+| `set_instance` called on `mosek_direct` | `AttributeError` at compile | `mosek_persistent` solver (or `_set_instance`) |
+| Worker's populated `DynamicComponents` reused when rebuilding | Costs, revenues and load balance double-counted in validation, restoration and export models | A fresh `DynamicComponents` on every rebuild |
+| Solver options not applied to the saved task | Default threads, optimizer and tolerances | `putparam` after each load and stage |
+| Discrete linking columns left integer in operational `pj_relax` outside the relaxed phase | MIP, so no valid duals | Relaxed in every LP stage |
+| Unrounded \\(z^\\ast\\) used as fixed bounds | Slightly infeasible LP | Rounded before fixing |
+| Preferred solution type mismatch | Duals from the wrong solution | Basic solution first, interior second |
+| MOSEK `Env` not kept alive | Possible invalid Task | Runtime keeps the Env reference |
+| Native branch skipped adaptive temporary reservation | Coordinator never learned peaks | Per-trial RSS sampling |
+| Rebuilds reserved task-sized memory | Under-reservation for export and fallback | Measured `build_temp_reservation` |
+| `solve_int_level_set_problem` rejected `required_variables` | `TypeError` at the first stabilised iteration; all planning variables required to have values | Parameter added and passed to `process_planning_sol` |
+| Task files in a temporary folder | Not in the subproblem folder | `benders_task` under the subproblem folder |
+| Two diverging worker implementations | Inconsistent behaviour | `mosek_task_worker.py` removed |
 
-In all three the model is rebuilt with a **fresh** `DynamicComponents` (reusing the worker's populated object would double-count costs, revenues and load balance, because `create_abstract_model` appends to its lists) and discarded afterwards.
+#### 15.5.11 Observed result
 
-### Native validation
+In the first native run all 72 subproblems built and solved, task files appeared in the subproblem folders, and workers' RSS after a trial was about 0.68 GiB (subproblems 1–12), about 1.0–1.06 GiB (subproblems 13–72), compared with 1.5–2.8 GiB (legacy) after the same trial. The idle footprint is not zero: the interpreter and imported libraries remain, so about 0.45–1.0 GiB per worker stays resident, and trial peaks (about 0.7–1.1 GiB) are transient. The run then stalled on the two workers in the Pyomo fallback (31 and 65) before the native retry existed, and failed at the second iteration on the level-set defect above. Both are fixed; the next run is the test of those fixes.
 
-The legacy worker called `restoration.primal_violations()`, which re-evaluates every Pyomo row and variable against its bounds at the returned solution. That needs the Pyomo model, so the native path replaces it with `MosekTaskRuntime.primal_violation()`: with NumPy, directly on the solved task, it computes the worst *relative* violation of every row activity (`getxc`) and column value (`getxx`) against its bounds (relative to `max(1, |bound|)`) and requires it to be at most `1e-7`. If the check fails the trial is re-solved on the Pyomo path above. Difference from the legacy check: the legacy row scale also included the sum of absolute coefficients; the native scale is the bound magnitude. Integrality is not needed in the LP stage (integers are fixed or relaxed).
+#### 15.5.12 Limitations and what is not done
 
-### Trial logic by option (matches the legacy worker)
+* **Order inside a worker.** The recourse upper-bound LP is still solved on the Pyomo model *before* compile. The worker therefore does not offload and then solve; the bound could be computed from the task instead.
+* **Build admission is count-based.** Concurrent builds are limited by the `n_parallel_solve` semaphore and a flat startup estimate (4 GiB persistent + 4 GiB temporary), not by measured free memory.
+* **Cooperative accounting** (15.5.9).
+* **Freed Python memory may not shrink RSS.** Deleting the Pyomo model does not guarantee the interpreter returns memory to the operating system; MOSEK memory does return when the Task is disposed.
+* **Offload costs a file read per trial.** If load time dominates solve time use resident mode.
+* **Native path scope:** MOSEK only (Gurobi, and GAMS unless enabled, use the Pyomo worker).
+* **Native check is not identical to the legacy check** (15.5.7).
+* **Verification status.** The code was written and compile-checked without MOSEK or Pyomo installed. Equivalence to the legacy worker has not been demonstrated; see 15.5.13.
 
-| Situation | Operational integers | Discrete linking columns | Lambdas returned for |
-|---|---|---|---|
-| master `pj_relax`, integrality not yet restored | relaxed | relaxed | all present linking vars |
-| operational `pj_relax` (any master method, after restoration) | relaxed | relaxed for the LP | continuous linking vars |
-| operational `fixed_z` with operational integers | MIP at trial point, rounded z* fixed through column bounds, then LP | integer in the MIP, relaxed for the LP | continuous linking vars |
-| operational `fixed_z`, no operational integers | none | relaxed | continuous linking vars |
+#### 15.5.13 Verification and log guide
 
-`master_discrete_state` is returned under exactly the legacy `discrete_cut_phase` rule (`pj_relax` after restoration, `linearized`, `djc`, and only when discrete linking variables exist). The `--benders_operational_solver` choice (`automatic`, `interior_point`, `primal_simplex`) is applied as `MSK_IPAR_OPTIMIZER` for the operational-`pj_relax` LP only, as in the legacy worker; all other stages use the configured/default optimizer. All `MSK_*` solver options, the thread cap and `MSK_IPAR_LOG=0` are re-applied with `putparam` after every task load and before every stage.
+Equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc`) crossed with each operational method (`pj_relax`, `fixed_z`), run a few subproblems and trial points with the native path and with `GRIDPATH_BENDERS_NATIVE_TASK=0`, and compare `op_cost`, every linking dual, \\(z^\\ast\\) and the final export to solver tolerance.
 
-### Status
+| Log text | Meaning |
+| --- | --- |
+| `[benders-mem] native subproblem=k rss_start=… rss_peak=… rss_end=…` | A native trial finished. `rss_end` close to the idle footprint means the offload works. |
+| `Native primal check passed after retry (…)` | The check failed once and the same-task retry fixed it. |
+| `Native primal check failed … re-solving through the Pyomo path.` | Both retries failed; the slow fallback is running for that subproblem. |
+| `Worker … could not obtain its memory reservation within … seconds` | Persistent reservations filled the budget (15.5.9). |
 
-Written and compile-checked without access to MOSEK or Pyomo. Before relying on it, run the equivalence test: for each master method (`none`, `pj_relax`, `linearized`, `djc`) x operational method (`pj_relax`, `fixed_z`), compare native vs `GRIDPATH_BENDERS_NATIVE_TASK=0` on a few subproblems and trial points (op_cost, every linking dual, operational z*, final export), and check peak memory with `GRIDPATH_BENDERS_MEMLOG=1`.
+#### 15.5.14 Files changed
+
+`gridpath/benders/mosek_task.py` (rewritten: compile and `MosekTaskRuntime`), `gridpath/benders/subproblems.py` (native compile, offload, trial, check, retry, fallback, reservations), `gridpath/benders/algorithms.py` (backend switch is an alias; stale import removed), `gridpath/benders/regularization.py` (`required_variables`), `gridpath/benders/mosek_task_worker.py` (removed), and this document.
 
 
 ## 16. References

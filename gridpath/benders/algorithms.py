@@ -1474,6 +1474,13 @@ def benders(
     # in the workers because they hold the (large) operational instances.
     # ---------------------------------------------------------------------
     final_export_status = {}
+    print(
+        "Benders terminated: status={} after {} master solve(s), "
+        "elapsed {:.0f} s, relative gap {:.3e}, LB {:.6g}, UB {:.6g}.".format(
+            term_status, len(LB_hist) - 1, time.time() - solver_start,
+            gap_hist[-1] if gap_hist else math.nan, LB, UB,
+        )
+    )
     if getattr(parsed_arguments, "benders_skip_final_export", False):
         pass
     elif planning_sol_best is None:
