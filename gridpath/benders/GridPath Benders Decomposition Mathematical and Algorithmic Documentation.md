@@ -910,6 +910,7 @@ The retry exists because the fallback is slow (rebuild plus two high-accuracy so
 | `GRIDPATH_BENDERS_WORKER_BACKEND` | `pyomo` | Kept for compatibility. `mosek_task` only sets `GRIDPATH_BENDERS_NATIVE_TASK=1`. The separate `mosek_task_worker.py` was removed. |
 | `GRIDPATH_BENDERS_SOLVER_THREADS` | unset | Caps MOSEK threads per worker (`MSK_IPAR_NUM_THREADS`). |
 | `GRIDPATH_BENDERS_MEMLOG` | `0` | `1` prints a memory line per trial. |
+| `GRIDPATH_BENDERS_CRASH_LOG` | `1` | Each worker enables Python's `faulthandler`, writing to `<scenario>/benders_crash_logs/worker_<subproblem>_pid<N>.log`. After a native crash (Windows exit code 3221225477, access violation) that file holds the Python stack at the crash; it stays empty otherwise. `0` disables. |
 | `GRIDPATH_BENDERS_LEAN_EXPORT` | `1` | Final export solves MOSEK models with Pyomo's `save_results=False` path and numeric labels (15.5.16). `0` restores the legacy call. |
 | `GRIDPATH_BENDERS_EXPORT_ATTEMPTS` | `4` | Attempts at the final export of one subproblem when it fails for lack of memory; each retry reserves 1.5 times more and pauses first. |
 | `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` | `600` | Seconds to wait for a reservation. Once offload is working, 1800–3600 is reasonable; it should stay finite. |

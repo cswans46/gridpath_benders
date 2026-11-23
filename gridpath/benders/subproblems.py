@@ -682,6 +682,44 @@ def _export_with_memory_retries(
     return status
 
 
+def _fallback_with_memory_retries(
+    run_fallback, memory_coordinator, worker_index, base_reservation, key
+):
+    """Run the Pyomo fallback (``run_fallback()``) and survive out-of-memory.
+
+    Phase-I restoration clones the rebuilt model and then builds a second
+    MOSEK task for it, so it needs more memory than the rebuild itself.
+    About 20 workers can enter it at once. A MemoryError there used to end the
+    worker (and the run). Now the worker frees its model, asks the coordinator
+    for a 1.5x larger temporary reservation (which makes it wait until other
+    workers have released memory), pauses and tries again, up to
+    GRIDPATH_BENDERS_FALLBACK_ATTEMPTS times (default 4).
+    """
+    attempts = max(1, int(os.getenv("GRIDPATH_BENDERS_FALLBACK_ATTEMPTS", "4")))
+    reservation = int(base_reservation)
+    for attempt in range(1, attempts + 1):
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(worker_index, temporary=reservation)
+        failed_for_memory = False
+        try:
+            return run_fallback()
+        except Exception as exc:  # noqa: BLE001
+            if not _is_memory_error(exc) or attempt == attempts:
+                raise
+            failed_for_memory = True
+        # The exception (and the frames that hold the clone) is released
+        # here, before the memory is collected and the retry starts.
+        if failed_for_memory:
+            gc.collect()
+            logging.getLogger(__name__).warning(
+                "Pyomo fallback of %s ran out of memory (attempt %d/%d); "
+                "retrying with a 1.5x larger reservation after a pause.",
+                key, attempt, attempts,
+            )
+            reservation = int(reservation * 1.5)
+            time.sleep(min(30, 5 * attempt))
+
+
 class _StartupGuard:
     """Idempotent holder for the startup semaphore permit."""
 
@@ -702,6 +740,41 @@ class _StartupGuard:
 
 def process_memory_rss():
     return psutil.Process(os.getpid()).memory_info().rss
+
+
+_CRASH_LOG_HANDLE = None
+
+
+def _enable_worker_crash_log(key, scenario_directory):
+    """
+    Make a native crash (Windows access violation, exit code 3221225477 =
+    0xC0000005, or a segfault) leave a Python traceback.
+
+    A native crash kills the worker without any Python traceback, so the log
+    shows only "worker died". ``faulthandler`` writes the Python stack of
+    every thread to ``<scenario>/benders_crash_logs/worker_<subproblem>_pid<N>.log``
+    at the moment of the crash, which names the call that crashed. The file
+    stays empty if the worker never crashes.  Disable with
+    GRIDPATH_BENDERS_CRASH_LOG=0.
+    """
+    global _CRASH_LOG_HANDLE
+    if os.getenv("GRIDPATH_BENDERS_CRASH_LOG", "1") != "1":
+        return
+    try:
+        import faulthandler
+
+        directory = os.path.join(scenario_directory, "benders_crash_logs")
+        os.makedirs(directory, exist_ok=True)
+        label = str(getattr(key, "subproblem", "") or "sub")
+        path = os.path.join(
+            directory, "worker_%s_pid%d.log" % (label, os.getpid())
+        )
+        _CRASH_LOG_HANDLE = open(path, "w", buffering=1)
+        faulthandler.enable(file=_CRASH_LOG_HANDLE, all_threads=True)
+    except Exception as exc:  # diagnostics must never stop a worker
+        logging.getLogger(__name__).warning(
+            "Could not enable the worker crash log: %r", exc
+        )
 
 
 def benders_subproblem_worker(
@@ -728,6 +801,7 @@ def benders_subproblem_worker(
     startup fails. That lets the parent start all workers at once while
     bounding how many build/solve at the same time.
     """
+    _enable_worker_crash_log(key, scenario_directory)
     guard = _StartupGuard(startup_semaphore)
     process = psutil.Process(os.getpid())
     initial_persistent = int(float(os.getenv('GRIDPATH_BENDERS_INITIAL_PERSISTENT_GB', '4')) * 1024**3)
@@ -1359,6 +1433,7 @@ def _benders_subproblem_worker_impl(
     # above this worker's idle footprint.  Starts at the measured build peak and
     # only ever grows, so later rebuilds never reserve less than an earlier one used.
     rebuild_temp_reservation = build_temp_reservation
+    rebuild_measured = False
     if memory_coordinator is not None:
         resident_bytes = process_memory_rss()
         # Release the startup temporary allowance before increasing the
@@ -1480,15 +1555,23 @@ def _benders_subproblem_worker_impl(
                     # Rare path: rebuild the Pyomo model (fresh components) for
                     # Phase-I restoration / certificate-checked re-solve.
                     used_pyomo_fallback = True
-                    if memory_coordinator is not None:
-                        memory_coordinator.set_reservation(
-                            worker_index,
-                            temporary=max(operation_temp_reservation, rebuild_temp_reservation),
-                        )
-                    subop_sol = _pyomo_recourse_fallback(
-                        scenario_directory, key, multi_stage, parsed_arguments,
-                        planning_constraint_names, linking_vars, solver_options,
-                        native_result, solve_failed=native_result["native_infeasible"],
+                    # Until this worker has measured a real fallback, assume
+                    # the restoration (model clone + second MOSEK task) needs
+                    # a multiple of the build peak.
+                    fallback_base = max(
+                        operation_temp_reservation,
+                        rebuild_temp_reservation
+                        * (1.0 if rebuild_measured else float(
+                            os.getenv("GRIDPATH_BENDERS_FALLBACK_FIRST_FACTOR", "2.0")
+                        )),
+                    )
+                    subop_sol = _fallback_with_memory_retries(
+                        lambda: _pyomo_recourse_fallback(
+                            scenario_directory, key, multi_stage, parsed_arguments,
+                            planning_constraint_names, linking_vars, solver_options,
+                            native_result, solve_failed=native_result["native_infeasible"],
+                        ),
+                        memory_coordinator, worker_index, fallback_base, key,
                     )
                     discrete_cut_phase_native = bool(
                         linking_vars_by_type["binary"] or linking_vars_by_type["integer"]
@@ -1536,6 +1619,7 @@ def _benders_subproblem_worker_impl(
                     rebuild_temp_reservation,
                     int(max(0, observed_peak_rss[0] - operation_start_rss) * safety_factor),
                 )
+                rebuild_measured = True
             else:
                 operation_temp_reservation = max(
                     minimum_operation_temp,

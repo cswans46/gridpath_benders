@@ -29,12 +29,13 @@ import tempfile
 import time
 
 import pyomo.environ as pyo
+from pyomo.core.expr.visitor import identify_variables
 from pyomo.repn.standard_repn import generate_standard_repn
 
 logger = logging.getLogger(__name__)
 
 # Bump when the meaning of a stored bound changes; old files are then ignored.
-BOUNDS_CACHE_VERSION = 1
+BOUNDS_CACHE_VERSION = 2
 
 # An FBBT upper bound at or above this is treated as "no useful bound": it is
 # an artefact of big-M style chains and would only weaken the recourse LP.
@@ -46,8 +47,30 @@ FBBT_MAX_USEFUL_BOUND = 1e10
 # ---------------------------------------------------------------------------
 
 
+# FBBT compares propagated bounds of numeric constants with the constants
+# themselves using an ABSOLUTE tolerance. With coefficients near 1e9 the
+# floating-point rounding alone exceeds 1e-8, and FBBT then raises "Detected
+# an infeasible constraint" for a perfectly feasible master. A larger
+# tolerance is more conservative (it never removes feasible points), so the
+# attempts below go from strict to loose.
+FBBT_TOLERANCE_LADDER = (1e-8, 1e-6, 1e-4, 1e-2)
+# Constraint-by-constraint sweeps (see below) use this tolerance.
+FBBT_SWEEP_TOLERANCE = 1e-2
+FBBT_SWEEPS = 3
+
+
+def _useful_upper_bound(lb, ub):
+    if ub is None or not math.isfinite(ub):
+        return None
+    if abs(ub) >= FBBT_MAX_USEFUL_BOUND:
+        return None
+    if lb is not None and math.isfinite(lb) and ub < lb - 1e-9:
+        return None
+    return float(ub)
+
+
 def propagate_upper_bounds(
-    model, target_vars, max_iter=10, feasibility_tol=1e-8
+    model, target_vars, max_iter=10, max_seconds=None
 ):
     """
     Return ``{var.name: upper_bound}`` for the variables in ``target_vars``
@@ -55,13 +78,21 @@ def propagate_upper_bounds(
 
     ``pyomo.contrib.fbbt.fbbt.fbbt`` tightens variable bounds in place on the
     whole model.  Every variable's bounds are therefore recorded first and
-    restored afterwards, so the master is left exactly as it was; only the
-    bounds for ``target_vars`` are returned.  An upper bound derived this way
-    is implied by the master's constraints, so it is valid at every feasible
-    master point (cuts only shrink the feasible set).
+    restored after each attempt, so the master is left exactly as it was;
+    only the bounds for ``target_vars`` are returned.  An upper bound derived
+    this way is implied by the master's constraints, so it is valid at every
+    feasible master point (cuts only shrink the feasible set).
 
-    Any failure (an exception raised by FBBT, an unsupported Pyomo version)
-    returns an empty dict; the caller then falls back to OBBT.
+    Strategy:
+    1. One whole-model pass at each tolerance in ``FBBT_TOLERANCE_LADDER``
+       until one succeeds (see the comment on the ladder).
+    2. If every whole-model pass raises, propagate constraint by constraint
+       (``FBBT_SWEEPS`` sweeps, tolerance ``FBBT_SWEEP_TOLERANCE``), skipping
+       and naming each constraint FBBT calls infeasible. One numerically
+       awkward constraint then costs only its own propagation.
+
+    Any other failure returns an empty dict; the caller then falls back to
+    OBBT.
     """
     target_vars = list(target_vars)
     if not target_vars:
@@ -69,9 +100,13 @@ def propagate_upper_bounds(
 
     try:
         from pyomo.contrib.fbbt.fbbt import fbbt
+        from pyomo.common.errors import InfeasibleConstraintException
     except Exception as exc:  # pragma: no cover - depends on the install
         logger.warning("FBBT is not available (%r); skipping.", exc)
         return {}
+
+    if max_seconds is None:
+        max_seconds = float(os.getenv("GRIDPATH_BENDERS_FBBT_MAX_SECONDS", "900"))
 
     all_vars = list(model.component_data_objects(pyo.Var, descend_into=True))
     if all_vars and not hasattr(all_vars[0], "_lb"):
@@ -82,46 +117,144 @@ def propagate_upper_bounds(
         return {}
 
     snapshot = [(v, v._lb, v._ub) for v in all_vars]
-    started = time.time()
-    found = {}
 
-    try:
-        new_bounds = fbbt(
-            model,
-            max_iter=max_iter,
-            feasibility_tol=feasibility_tol,
-        )
-        for var in target_vars:
-            bounds = new_bounds.get(var)
-            if bounds is None:
-                continue
-            lb, ub = bounds
-            if ub is None or not math.isfinite(ub):
-                continue
-            if abs(ub) >= FBBT_MAX_USEFUL_BOUND:
-                continue
-            if lb is not None and math.isfinite(lb) and ub < lb - 1e-9:
-                continue
-            found[var.name] = float(ub)
-    except Exception as exc:
-        logger.warning(
-            "FBBT failed (%r); the master is unchanged and OBBT will be used "
-            "for the remaining variables.",
-            exc,
-        )
-        found = {}
-    finally:
+    def restore_bounds():
         for var, lb, ub in snapshot:
             var.setlb(lb)
             var.setub(ub)
 
+    started = time.time()
+    found = {}
+    mode = None
+
+    # ---- 1. whole-model passes -------------------------------------------
+    for tolerance in FBBT_TOLERANCE_LADDER:
+        try:
+            new_bounds = fbbt(model, max_iter=max_iter, feasibility_tol=tolerance)
+            for var in target_vars:
+                bounds = new_bounds.get(var)
+                if bounds is None:
+                    continue
+                ub = _useful_upper_bound(*bounds)
+                if ub is not None:
+                    found[var.name] = ub
+            mode = "whole-model pass, tolerance %g" % tolerance
+            restore_bounds()
+            break
+        except InfeasibleConstraintException as exc:
+            restore_bounds()
+            logger.info(
+                "FBBT whole-model pass at tolerance %g raised %r.", tolerance, exc
+            )
+        except Exception as exc:
+            restore_bounds()
+            logger.warning("FBBT failed (%r); using OBBT instead.", exc)
+            return {}
+
+    # ---- 2. constraint-by-constraint fallback ----------------------------
+    if mode is None:
+        skipped = []
+        constraints = list(
+            model.component_data_objects(
+                pyo.Constraint, active=True, descend_into=True
+            )
+        )
+        try:
+            for sweep in range(FBBT_SWEEPS):
+                for con in constraints:
+                    if time.time() - started > max_seconds:
+                        raise TimeoutError("FBBT time budget used up")
+                    try:
+                        fbbt(
+                            con,
+                            max_iter=max_iter,
+                            feasibility_tol=FBBT_SWEEP_TOLERANCE,
+                        )
+                    except InfeasibleConstraintException:
+                        if sweep == 0:
+                            skipped.append(con.name)
+            for var in target_vars:
+                ub = _useful_upper_bound(var.lb, var.ub)
+                if ub is not None:
+                    found[var.name] = ub
+            mode = "constraint-by-constraint, %d skipped" % len(skipped)
+            if skipped:
+                logger.warning(
+                    "FBBT regards %d master constraint(s) as infeasible at "
+                    "tolerance %g and skipped them; first ones: %s. This is "
+                    "usually floating-point error with very large "
+                    "coefficients, but check them if the master itself is "
+                    "infeasible.",
+                    len(skipped),
+                    FBBT_SWEEP_TOLERANCE,
+                    skipped[:5],
+                )
+        except Exception as exc:
+            logger.warning("FBBT failed (%r); using OBBT instead.", exc)
+            found = {}
+        finally:
+            restore_bounds()
+
     logger.info(
-        "FBBT bounded %d of %d variable(s) in %.1f s.",
+        "FBBT (%s) bounded %d of %d variable(s) in %.1f s.",
+        mode,
         len(found),
         len(target_vars),
         time.time() - started,
     )
     return found
+
+
+def find_free_recession_variables(model, candidate_vars):
+    """
+    Names of candidate variables whose value can grow without limit at any
+    feasible master point, found without a solver call.
+
+    If every constraint that contains ``x`` stays satisfied when only ``x``
+    increases (a row with a finite upper side needs coefficient <= 0, a row
+    with a finite lower side needs coefficient >= 0, an equality row must not
+    contain ``x``), then ``x + t`` is feasible for every t >= 0 whenever ``x``
+    is. Its upper bound is infinite, which is exactly what OBBT would find
+    after one full master solve per variable ("Problem is dual infeasible").
+    Variables in a non-linear or unparseable constraint are never reported.
+    Only variables without an explicit upper bound should be passed in.
+    """
+    started = time.time()
+    candidates = {id(v): v for v in candidate_vars if not v.fixed}
+    blocked = set()
+
+    for c in model.component_data_objects(
+        pyo.Constraint, active=True, descend_into=True
+    ):
+        has_lower = c.has_lb()
+        has_upper = c.has_ub()
+        try:
+            repn = generate_standard_repn(
+                c.body, compute_values=True, quadratic=False
+            )
+            if not repn.is_linear():
+                raise ValueError("non-linear")
+            for v, coef in zip(repn.linear_vars, repn.linear_coefs):
+                if id(v) not in candidates:
+                    continue
+                coef = float(coef)
+                if coef == 0.0:
+                    continue
+                if (has_upper and coef > 0) or (has_lower and coef < 0):
+                    blocked.add(id(v))
+        except Exception:
+            for v in identify_variables(c.body, include_fixed=False):
+                blocked.add(id(v))
+
+    free = {v.name for key, v in candidates.items() if key not in blocked}
+    logger.info(
+        "%d of %d unbounded variable(s) can grow without limit (no OBBT "
+        "needed); %.1f s.",
+        len(free),
+        len(candidates),
+        time.time() - started,
+    )
+    return free
 
 
 # ---------------------------------------------------------------------------

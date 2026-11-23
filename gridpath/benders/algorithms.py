@@ -23,6 +23,7 @@ from gridpath.benders.planning import *
 from gridpath.benders.linking_bounds import (
     bounds_cache_path,
     bounds_fingerprint,
+    find_free_recession_variables,
     load_bounds_cache,
     propagate_upper_bounds,
     save_bounds_cache,
@@ -3210,6 +3211,24 @@ def compute_linking_variable_bounds(
 
     n_fbbt = len(getattr(planning_problem, "_benders_fbbt_ub", {}))
 
+    # Variables FBBT could not bound and that provably have no upper limit:
+    # skip OBBT (one master solve each) and use the assumed cap directly.
+    if allow_obbt:
+        fbbt_done = getattr(planning_problem, "_benders_fbbt_ub", {})
+        remaining = [
+            var
+            for _, var in candidates
+            if var.ub is None
+            and var.name not in fbbt_done
+            and find_gridpath_capacity_upper_bound(planning_problem, var)
+            is None
+        ]
+        planning_problem._benders_recession_vars = (
+            find_free_recession_variables(planning_problem, remaining)
+            if remaining
+            else set()
+        )
+
     # -----------------------------------------------------------------
     # Per-variable tiers (explicit, GridPath, FBBT, OBBT, assumed cap)
     # -----------------------------------------------------------------
@@ -3243,15 +3262,16 @@ def compute_linking_variable_bounds(
 
     message = (
         "Linking-variable bounds: %d variables bounded (%d explicit, "
-        "%d by FBBT, %d with an assumed cap enforced in the master, "
-        "%d skipped); %.1f s."
+        "%d by FBBT, %d with an assumed cap enforced in the master "
+        "(%d of them recognised without OBBT), %d skipped); %.1f s."
     )
+    n_recession = len(getattr(planning_problem, "_benders_recession_vars", ()))
     logger.info(
-        message, len(bounds), n_explicit, n_fbbt, len(assumed),
+        message, len(bounds), n_explicit, n_fbbt, len(assumed), n_recession,
         len(skipped), time.time() - started,
     )
     print(message % (
-        len(bounds), n_explicit, n_fbbt, len(assumed),
+        len(bounds), n_explicit, n_fbbt, len(assumed), n_recession,
         len(skipped), time.time() - started,
     ))
 
@@ -3415,6 +3435,9 @@ def get_continuous_variable_bounds(
     # 3. OBBT fallback
     # ---------------------------------------------------------
 
+    # A variable that provably can grow without limit (see
+    # find_free_recession_variables) would make OBBT return "unbounded" after
+    # a full master solve; take the assumed cap directly.
     ub = (
         obbt_upper_bound(
             planning_problem,
@@ -3422,6 +3445,8 @@ def get_continuous_variable_bounds(
             optimiser,
         )
         if allow_obbt
+        and var.name
+        not in getattr(planning_problem, "_benders_recession_vars", ())
         else None
     )
 
