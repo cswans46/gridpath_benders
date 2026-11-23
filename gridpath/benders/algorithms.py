@@ -21,10 +21,12 @@ from pyomo.repn.standard_repn import generate_standard_repn
 # from gridpath.benders.subproblems import solve_subproblem
 from gridpath.benders.planning import *
 from gridpath.benders.linking_bounds import (
+    apply_zero_linking_bounds,
     bounds_cache_path,
     bounds_fingerprint,
     find_free_recession_variables,
     load_bounds_cache,
+    parse_zero_linking_rules,
     propagate_upper_bounds,
     save_bounds_cache,
 )
@@ -567,6 +569,21 @@ def benders(
     # ---------------------------------------------------------
 
     linking_var_bounds = None
+
+    # Variables the user declares to be zero (--benders_zero_linking_vars)
+    # get bounds [0, 0] in the master. This is applied before any bound is
+    # derived, so FBBT and OBBT never see them, and it holds on both the PJ
+    # initialisation path and the bounded-first-master path.
+    zero_rules = parse_zero_linking_rules(setup.get("ZeroLinkingVars"))
+    if zero_rules:
+        zeroed = apply_zero_linking_bounds(
+            planning_problem, linking_vars, zero_rules
+        )
+        print(
+            "Benders: %d linking variable(s) set to zero by "
+            "--benders_zero_linking_vars %s."
+            % (len(zeroed), setup.get("ZeroLinkingVars"))
+        )
 
     if not use_pj_initialization:
         linking_var_bounds = compute_linking_variable_bounds(

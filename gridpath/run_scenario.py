@@ -2601,6 +2601,9 @@ def solve(instance,
             # (used when the initial master is bounded, i.e. PJ
             # initialization is off): FBBT propagation, optional OBBT, and an
             # on-disk cache keyed by the master's structure.
+            "ZeroLinkingVars": getattr(
+                parsed_arguments, "benders_zero_linking_vars", ""
+            ),
             "BoundPropagation": getattr(
                 parsed_arguments, "benders_bound_propagation", True
             ),

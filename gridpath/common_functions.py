@@ -235,6 +235,16 @@ def get_benders_flag_parser():
         help="Flag to enable PJ style initialization for Benders decomposition (skips endogenous calculation of upper bound for first subproblem solve). Defaults to True.",
     )
     parser.add_argument(
+        "--benders_zero_linking_vars",
+        default="",
+        type=str,
+        help="Comma-separated NAME[:PERIOD] entries. Every master linking "
+        "variable of component NAME (no index), and, if given, whose index "
+        "contains PERIOD, gets bounds [0, 0] before any bound is derived. "
+        "Example: PERFORMANCE_STANDARD_MW_ALLOCATION:2050. This is an "
+        "assumption about the model; it is not verified. Default: none.",
+    )
+    parser.add_argument(
         "--benders_bound_propagation",
         default=True,
         type=str2bool,

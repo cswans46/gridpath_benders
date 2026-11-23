@@ -258,6 +258,78 @@ def find_free_recession_variables(model, candidate_vars):
 
 
 # ---------------------------------------------------------------------------
+# User-specified zero bounds
+# ---------------------------------------------------------------------------
+
+
+def parse_zero_linking_rules(text):
+    """
+    Parse ``"NAME[:PERIOD],NAME2"`` into ``[(component_name, period_or_None)]``.
+
+    ``NAME`` is a master variable component name without an index, for
+    example ``PERFORMANCE_STANDARD_MW_ALLOCATION``. ``PERIOD`` limits the rule
+    to variables whose index contains that value (the period, for GridPath's
+    allocation variables, which are indexed by zone, period, subproblem).
+    Entries are separated by commas or semicolons.
+    """
+    rules = []
+    for entry in str(text or "").replace(";", ",").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, _, period = entry.partition(":")
+        rules.append((name.strip(), period.strip() or None))
+    return rules
+
+
+def apply_zero_linking_bounds(model, linking_var_names, rules):
+    """
+    Set the lower and upper bound of every linking variable matched by
+    ``rules`` to 0 in the master and return the names of those variables.
+
+    An explicit bound removes the variable from FBBT and OBBT altogether (the
+    explicit-bound tier of the bounds search is taken first), and the master
+    can no longer move it. This is a statement about the model made by the
+    user (for example "the performance standard allocation is zero in 2050");
+    it is not derived or checked here.
+    """
+    if not rules:
+        return []
+
+    matched = []
+    for name in linking_var_names:
+        var = model.find_component(name)
+        if var is None or var.fixed:
+            continue
+        component = var.parent_component().name
+        try:
+            index = var.index()
+        except Exception:
+            index = None
+        index_items = (
+            [str(item) for item in index]
+            if isinstance(index, tuple)
+            else ([str(index)] if index is not None else [])
+        )
+        for rule_name, period in rules:
+            if component != rule_name:
+                continue
+            if period is not None and period not in index_items:
+                continue
+            var.setlb(0.0)
+            var.setub(0.0)
+            matched.append(var.name)
+            break
+
+    logger.info(
+        "Set bounds [0, 0] on %d linking variable(s) matching %s.",
+        len(matched),
+        rules,
+    )
+    return matched
+
+
+# ---------------------------------------------------------------------------
 # Fingerprint and on-disk cache
 # ---------------------------------------------------------------------------
 
