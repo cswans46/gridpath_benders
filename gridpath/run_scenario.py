@@ -2597,6 +2597,22 @@ def solve(instance,
             "StabilizationMethod": parsed_arguments.benders_stabilization_method,
             # Employ PJ style initialization (skips endogenous calculation of upper bound for first subproblem solve).
             "UsePjInitialization": parsed_arguments.benders_use_pj_initialization,
+            # Finite bounds for the master's continuous linking variables
+            # (used when the initial master is bounded, i.e. PJ
+            # initialization is off): FBBT propagation, optional OBBT, and an
+            # on-disk cache keyed by the master's structure.
+            "BoundPropagation": getattr(
+                parsed_arguments, "benders_bound_propagation", True
+            ),
+            "RecourseBoundOBBT": getattr(
+                parsed_arguments, "benders_recourse_bound_obbt", True
+            ),
+            "BoundsCache": getattr(
+                parsed_arguments, "benders_bounds_cache", True
+            ),
+            "BoundsCacheDir": getattr(
+                parsed_arguments, "benders_bounds_cache_dir", None
+            ),
         }
 
         # Optional override of the Benders setup, e.g. for permutation tests:

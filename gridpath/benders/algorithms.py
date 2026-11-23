@@ -20,6 +20,13 @@ from pyomo.repn.standard_repn import generate_standard_repn
 # from gridpath.benders.regularization import solve_int_level_set_problem
 # from gridpath.benders.subproblems import solve_subproblem
 from gridpath.benders.planning import *
+from gridpath.benders.linking_bounds import (
+    bounds_cache_path,
+    bounds_fingerprint,
+    load_bounds_cache,
+    propagate_upper_bounds,
+    save_bounds_cache,
+)
 from gridpath.benders.regularization import *
 from gridpath.benders.subproblems import (
     benders_subproblem_worker,
@@ -566,6 +573,12 @@ def benders(
             linking_vars,
             optimiser,
             allow_obbt=setup.get("RecourseBoundOBBT", True),
+            use_propagation=setup.get("BoundPropagation", True),
+            use_cache=setup.get("BoundsCache", True),
+            cache_dir=(
+                setup.get("BoundsCacheDir")
+                or os.path.join(scenario_directory, "benders_bounds_cache")
+            ),
         )
 
     print("Building subproblems for Benders decomposition...")
@@ -3074,28 +3087,137 @@ def compute_linking_variable_bounds(
     linking_vars,
     optimiser,
     allow_obbt=True,
+    use_propagation=True,
+    use_cache=True,
+    cache_dir=None,
 ):
     """
     Return {name: (lb, ub)} for every continuous linking variable that
     exists in the planning problem.
 
     Bounds come from ``get_continuous_variable_bounds``: explicit Pyomo
-    bounds, then GridPath capacity/potential constraints, then (optionally)
-    OBBT on the master, and finally BENDERS_MASTER_VARIABLE_CAP as an
-    assumed bound. Any variable that ends up with an assumed bound also
-    gets that bound enforced in the master, so the bound used by the
-    workers' recourse LP is valid at every master point.
+    bounds, then GridPath capacity/potential constraints, then FBBT
+    interval propagation (one pass, no solves, ``use_propagation``), then
+    (optionally) OBBT on the master, and finally
+    BENDERS_MASTER_VARIABLE_CAP as an assumed bound. Any variable that ends
+    up with an assumed bound also gets that bound enforced in the master,
+    so the bound used by the workers' recourse LP is valid at every master
+    point.
+
+    With ``use_cache`` the result is stored in ``cache_dir`` under a
+    fingerprint of the master's variables and constraints and reused by
+    later runs on an identical master (see linking_bounds.py).
     """
+
+    from gridpath.benders.planning import BENDERS_MASTER_VARIABLE_CAP
+
+    started = time.time()
+
+    candidates = []
+    for name in linking_vars:
+        var = planning_problem.find_component(name)
+        if var is None or var.is_binary() or var.is_integer():
+            continue
+        candidates.append((name, var))
+    candidate_names = [name for name, _ in candidates]
+
+    extras = {
+        "allow_obbt": bool(allow_obbt),
+        "use_propagation": bool(use_propagation),
+        "variable_cap": BENDERS_MASTER_VARIABLE_CAP,
+        "linking_vars": sorted(candidate_names),
+    }
+
+    # -----------------------------------------------------------------
+    # On-disk cache
+    # -----------------------------------------------------------------
+
+    cache_path = None
+    fingerprint = None
+
+    if use_cache and cache_dir:
+        payload = None
+        try:
+            fingerprint = bounds_fingerprint(planning_problem, extras)
+            cache_path = bounds_cache_path(cache_dir, fingerprint)
+            payload = load_bounds_cache(cache_path, fingerprint)
+        except Exception as exc:
+            logger.warning(
+                "Bounds cache unavailable (%r); computing the bounds.", exc
+            )
+            cache_path = None
+
+        if payload is not None:
+            stored = payload.get("bounds", {})
+            skipped_names = set(payload.get("skipped", []))
+            if all(
+                name in stored or name in skipped_names
+                for name in candidate_names
+            ):
+                bounds = {
+                    name: (float(stored[name][0]), float(stored[name][1]))
+                    for name in candidate_names
+                    if name in stored
+                }
+                planning_problem._benders_assumed_bounds = set(
+                    payload.get("assumed", [])
+                )
+                _register_linking_bounds(planning_problem, candidates, bounds)
+                _enforce_assumed_bounds(planning_problem, bounds)
+                message = (
+                    "Linking-variable bounds loaded from %s: %d variables "
+                    "bounded (%d with an assumed cap), %d skipped; "
+                    "%.1f s."
+                )
+                logger.info(
+                    message,
+                    cache_path,
+                    len(bounds),
+                    len(planning_problem._benders_assumed_bounds),
+                    len(skipped_names),
+                    time.time() - started,
+                )
+                print(message % (
+                    cache_path,
+                    len(bounds),
+                    len(planning_problem._benders_assumed_bounds),
+                    len(skipped_names),
+                    time.time() - started,
+                ))
+                return bounds
+
+    # -----------------------------------------------------------------
+    # FBBT for the variables the cheap tiers cannot bound
+    # -----------------------------------------------------------------
+
+    n_explicit = sum(1 for _, var in candidates if var.ub is not None)
+
+    if use_propagation:
+        unresolved = [
+            var
+            for _, var in candidates
+            if var.ub is None
+            and find_gridpath_capacity_upper_bound(planning_problem, var)
+            is None
+        ]
+        if unresolved:
+            planning_problem._benders_fbbt_ub = propagate_upper_bounds(
+                planning_problem,
+                unresolved,
+            )
+    else:
+        unresolved = []
+
+    n_fbbt = len(getattr(planning_problem, "_benders_fbbt_ub", {}))
+
+    # -----------------------------------------------------------------
+    # Per-variable tiers (explicit, GridPath, FBBT, OBBT, assumed cap)
+    # -----------------------------------------------------------------
 
     bounds = {}
     skipped = []
 
-    for name in linking_vars:
-        var = planning_problem.find_component(name)
-
-        if var is None or var.is_binary() or var.is_integer():
-            continue
-
+    for name, var in candidates:
         try:
             bounds[name] = get_continuous_variable_bounds(
                 planning_problem,
@@ -3107,6 +3229,58 @@ def compute_linking_variable_bounds(
             skipped.append(name)
             logger.warning("No linking-variable bounds for %s: %s", name, exc)
 
+    # The capacity index is only needed while bounds are derived.
+    planning_problem._benders_capacity_index = None
+
+    _enforce_assumed_bounds(planning_problem, bounds)
+    assumed = getattr(planning_problem, "_benders_assumed_bounds", set())
+
+    planning_problem._benders_persisted_bounds = {
+        var.name: bounds[name]
+        for name, var in candidates
+        if name in bounds
+    }
+
+    message = (
+        "Linking-variable bounds: %d variables bounded (%d explicit, "
+        "%d by FBBT, %d with an assumed cap enforced in the master, "
+        "%d skipped); %.1f s."
+    )
+    logger.info(
+        message, len(bounds), n_explicit, n_fbbt, len(assumed),
+        len(skipped), time.time() - started,
+    )
+    print(message % (
+        len(bounds), n_explicit, n_fbbt, len(assumed),
+        len(skipped), time.time() - started,
+    ))
+
+    if cache_path is not None and fingerprint is not None:
+        try:
+            save_bounds_cache(
+                cache_path, fingerprint, bounds, assumed, skipped, extras
+            )
+            logger.info("Linking-variable bounds cached in %s.", cache_path)
+        except Exception as exc:
+            logger.warning(
+                "Could not write the bounds cache %s (%r).", cache_path, exc
+            )
+
+    return bounds
+
+def _register_linking_bounds(planning_problem, candidates, bounds):
+    """Make loaded bounds visible to get_continuous_variable_bounds."""
+    if not hasattr(planning_problem, "_benders_variable_bounds"):
+        planning_problem._benders_variable_bounds = {}
+    persisted = {}
+    for name, var in candidates:
+        if name in bounds:
+            persisted[var.name] = bounds[name]
+            planning_problem._benders_variable_bounds[var.name] = bounds[name]
+    planning_problem._benders_persisted_bounds = persisted
+
+def _enforce_assumed_bounds(planning_problem, bounds):
+    """Put assumed caps into the master so the recourse bound stays valid."""
     assumed = getattr(planning_problem, "_benders_assumed_bounds", set())
 
     for name in assumed:
@@ -3115,16 +3289,6 @@ def compute_linking_variable_bounds(
         var = planning_problem.find_component(name)
         if var is not None and not var.has_ub():
             var.setub(bounds[name][1])
-
-    logger.info(
-        "Linking-variable bounds: %d variables bounded (%d with an assumed "
-        "cap enforced in the master, %d skipped).",
-        len(bounds),
-        len(assumed),
-        len(skipped),
-    )
-
-    return bounds
 
 def get_variable_lower_bound(var):
     """
@@ -3213,6 +3377,39 @@ def get_continuous_variable_bounds(
 
         cache[var.name] = (lb, ub)
         return lb, ub
+
+    # ---------------------------------------------------------
+    # 2b. Bounds already computed (or loaded from the on-disk cache) for
+    #     this master, then FBBT interval propagation.  Neither needs a
+    #     solver call.  The persisted bounds stay valid after the cache
+    #     above is cleared, because cuts never remove a feasible master
+    #     point.
+    # ---------------------------------------------------------
+
+    persisted = getattr(
+        planning_problem, "_benders_persisted_bounds", None
+    )
+    if persisted and var.name in persisted:
+        cache[var.name] = persisted[var.name]
+        return cache[var.name]
+
+    fbbt_ub = getattr(planning_problem, "_benders_fbbt_ub", {}).get(
+        var.name
+    )
+
+    if fbbt_ub is not None:
+
+        if lb is None:
+            lb = get_variable_lower_bound(var)
+
+        if lb is None:
+            raise ValueError(
+                f"No finite lower bound found for "
+                f"continuous linking variable '{var.name}'."
+            )
+
+        cache[var.name] = (lb, float(fbbt_ub))
+        return cache[var.name]
 
     # ---------------------------------------------------------
     # 3. OBBT fallback
@@ -3373,6 +3570,42 @@ def obbt_upper_bound(
         for var, original_domain in integer_vars:
             var.domain = original_domain
 
+def _capacity_constraint_index(planning_problem):
+    """
+    {(id(var), constraint_name): [(constraint, linear repn), ...]} for the
+    linear GridPath capacity / potential constraints.
+
+    Built once and kept on the model.  Scanning every capacity constraint
+    for every candidate variable repeats generate_standard_repn
+    (variables x constraints) times; the index does it once per constraint.
+    """
+    index = getattr(planning_problem, "_benders_capacity_index", None)
+    if index is not None:
+        return index
+
+    index = {}
+    for constraint_name in CAPACITY_BOUND_CONSTRAINTS:
+        component = planning_problem.find_component(constraint_name)
+        if component is None:
+            continue
+        for constraint in component.values():
+            if not constraint.active:
+                continue
+            repn = generate_standard_repn(constraint.body)
+            if not repn.is_linear():
+                continue
+            seen = set()
+            for var in repn.linear_vars:
+                if id(var) in seen:
+                    continue
+                seen.add(id(var))
+                index.setdefault((id(var), constraint_name), []).append(
+                    (constraint, repn)
+                )
+
+    planning_problem._benders_capacity_index = index
+    return index
+
 def find_gridpath_capacity_upper_bound(
     planning_problem,
     target_var,
@@ -3386,23 +3619,15 @@ def find_gridpath_capacity_upper_bound(
 
     best_ub = None
 
+    index = _capacity_constraint_index(planning_problem)
+
     for constraint_name in CAPACITY_BOUND_CONSTRAINTS:
 
-        constraint_component = planning_problem.find_component(
-            constraint_name
-        )
-
-        if constraint_component is None:
-            continue
-
-        for constraint in constraint_component.values():
+        for constraint, repn in index.get(
+            (id(target_var), constraint_name), ()
+        ):
 
             if not constraint.active:
-                continue
-
-            repn = generate_standard_repn(constraint.body)
-
-            if not repn.is_linear():
                 continue
 
             # Check whether target_var occurs in this constraint.

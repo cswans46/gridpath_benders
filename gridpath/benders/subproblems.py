@@ -28,6 +28,7 @@ import os
 import logging
 import psutil
 import gc
+import time
 import threading
 import tempfile
 import shutil
@@ -561,11 +562,31 @@ def _export_final_subproblem(
             detect_active_mip_variables(instance, linking_vars=present_linking_vars)
         )
 
-        results = optimiser.solve(
-            instance,
-            tee=False,
-            symbolic_solver_labels=True,
+        # Lean solve for MOSEK (default): with save_results=False Pyomo skips the
+        # legacy Solution/results object, which would otherwise create a Python
+        # name string and dictionary entry for EVERY variable and constraint
+        # (gigabytes for a large subproblem), and loads values (and duals, when
+        # the model has an import 'dual' suffix) straight from the MOSEK task into
+        # the Pyomo components.  Numeric solver labels are also enough: GridPath's
+        # export reads the Pyomo components, never the solver-side names.
+        # GRIDPATH_BENDERS_LEAN_EXPORT=0 restores the legacy call.
+        use_lean_solve = (
+            os.getenv("GRIDPATH_BENDERS_LEAN_EXPORT", "1") == "1"
+            and "mosek" in str(getattr(optimiser, "name", "")).lower()
         )
+        if use_lean_solve:
+            results = optimiser.solve(
+                instance,
+                tee=False,
+                symbolic_solver_labels=False,
+                save_results=False,
+            )
+        else:
+            results = optimiser.solve(
+                instance,
+                tee=False,
+                symbolic_solver_labels=True,
+            )
 
         export_args = parsed_arguments
         if is_mip and not parsed_arguments.skip_duals:
@@ -600,12 +621,65 @@ def _export_final_subproblem(
         }
     except Exception as e:  # noqa: BLE001 - report, don't kill the worker
         traceback.print_exc()
-        return {"status": "ERROR", "error": repr(e)}
+        return {
+            "status": "ERROR",
+            "error": repr(e),
+            "memory_error": _is_memory_error(e),
+        }
     finally:
         if logger is not None:
             logger.close()
             sys.stdout = stdout_original
             sys.stderr = stderr_original
+
+
+def _is_memory_error(exc):
+    """True for Python MemoryError and for libraries that re-raise out-of-memory
+    as another type (pandas: ParserError "C error: out of memory")."""
+    return isinstance(exc, MemoryError) or "out of memory" in str(exc).lower()
+
+
+def _export_with_memory_retries(
+    build_and_export, memory_coordinator, worker_index, base_reservation, key
+):
+    """Run ``build_and_export`` (builds the Pyomo model, exports, discards it).
+
+    An out-of-memory failure no longer kills the worker (which aborted the whole
+    run after hours of compute): the worker frees what it holds, asks the
+    coordinator for a larger temporary reservation (1.5x per attempt, which makes
+    it wait until other workers have released memory), pauses, and tries again.
+    Returns the export status dict.
+    """
+    import time
+
+    attempts = max(1, int(os.getenv("GRIDPATH_BENDERS_EXPORT_ATTEMPTS", "4")))
+    reservation = int(base_reservation)
+    status = {"status": "ERROR", "error": "export not attempted"}
+    for attempt in range(1, attempts + 1):
+        if memory_coordinator is not None:
+            memory_coordinator.set_reservation(worker_index, temporary=reservation)
+        try:
+            status = build_and_export()
+            failed_for_memory = (
+                status.get("status") == "ERROR" and status.get("memory_error", False)
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not _is_memory_error(exc):
+                raise
+            status = {"status": "ERROR", "error": repr(exc), "memory_error": True}
+            failed_for_memory = True
+        gc.collect()
+        if not failed_for_memory:
+            return status
+        if attempt < attempts:
+            logging.getLogger(__name__).warning(
+                "Final export of %s ran out of memory (attempt %d/%d); retrying "
+                "with a %.1fx larger reservation after a pause.",
+                key, attempt, attempts, 1.5,
+            )
+            reservation = int(reservation * 1.5)
+            time.sleep(min(30, 5 * attempt))
+    return status
 
 
 class _StartupGuard:
@@ -1327,24 +1401,32 @@ def _benders_subproblem_worker_impl(
             break
 
         if native_task_runtime is not None and isinstance(message, dict) and message.get("command") == "EXPORT_FINAL":
-            if memory_coordinator is not None:
-                memory_coordinator.set_reservation(worker_index, temporary=max(operation_temp_reservation, rebuild_temp_reservation))
             # Final export needs the full Pyomo model (it writes the standard
             # GridPath result files); build it once, with fresh dynamic
-            # components, and discard it afterwards.
-            export_model, _, export_present, export_dc = _new_benders_worker_model(
-                scenario_directory, key, None, multi_stage,
-                parsed_arguments, planning_constraint_names, linking_vars,
+            # components, and discard it afterwards.  Out-of-memory failures are
+            # retried with a growing reservation instead of killing the worker.
+            def _build_and_export():
+                export_model = export_solver = export_dc = None
+                try:
+                    export_model, _, export_present, export_dc = _new_benders_worker_model(
+                        scenario_directory, key, None, multi_stage,
+                        parsed_arguments, planning_constraint_names, linking_vars,
+                    )
+                    export_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
+                    return _export_final_subproblem(
+                        instance=export_model, dynamic_components=export_dc,
+                        optimiser=export_solver, key=key, planning_sol=message["planning_sol"],
+                        present_linking_vars=export_present, scenario_directory=scenario_directory,
+                        multi_stage=multi_stage, parsed_arguments=parsed_arguments,
+                    )
+                finally:
+                    del export_model, export_solver, export_dc
+                    gc.collect()
+
+            export_status = _export_with_memory_retries(
+                _build_and_export, memory_coordinator, worker_index,
+                max(operation_temp_reservation, rebuild_temp_reservation), key,
             )
-            export_solver = _new_benders_worker_solver(parsed_arguments, solver_options)
-            export_status = _export_final_subproblem(
-                instance=export_model, dynamic_components=export_dc,
-                optimiser=export_solver, key=key, planning_sol=message["planning_sol"],
-                present_linking_vars=export_present, scenario_directory=scenario_directory,
-                multi_stage=multi_stage, parsed_arguments=parsed_arguments,
-            )
-            del export_model, export_solver, export_dc
-            gc.collect()
             output_queue.put((key, export_status))
             if memory_coordinator is not None:
                 memory_coordinator.set_reservation(worker_index, temporary=0)
@@ -1382,6 +1464,7 @@ def _benders_subproblem_worker_impl(
                 memory_coordinator.set_reservation(worker_index, temporary=operation_temp_reservation)
             operation_start_rss, observed_peak_rss, monitor_stop, memory_monitor = _start_rss_monitor()
             used_pyomo_fallback = False
+            trial_started_at = time.time()
             try:
                 native_result = _native_task_trial(
                     native_task_runtime, message, linking_vars_by_type,
@@ -1463,7 +1546,8 @@ def _benders_subproblem_worker_impl(
                     f"[benders-mem] native{' (pyomo-fallback)' if used_pyomo_fallback else ''} subproblem={key.subproblem} "
                     f"rss_start={operation_start_rss / 1024**3:.2f}GiB "
                     f"rss_peak={observed_peak_rss[0] / 1024**3:.2f}GiB "
-                    f"rss_end={current_rss / 1024**3:.2f}GiB",
+                    f"rss_end={current_rss / 1024**3:.2f}GiB "
+                    f"elapsed={time.time() - trial_started_at:.0f}s",
                     flush=True,
                 )
             if memory_coordinator is not None:

@@ -186,7 +186,7 @@ def get_benders_flag_parser():
     )
     parser.add_argument(
         "--max_benders_cpu_time",
-        default=3600,
+        default=360000,
         type=float,
         help="The maximum CPU time for each Benders subproblem. Defaults to 3600 seconds.",
     )
@@ -233,6 +233,40 @@ def get_benders_flag_parser():
         default=True,
         type=str2bool,
         help="Flag to enable PJ style initialization for Benders decomposition (skips endogenous calculation of upper bound for first subproblem solve). Defaults to True.",
+    )
+    parser.add_argument(
+        "--benders_bound_propagation",
+        default=True,
+        type=str2bool,
+        help="Bound the master's continuous linking variables with one "
+        "pass of feasibility-based bound tightening (FBBT, no solver calls) "
+        "before falling back to one LP per variable (OBBT). Used only when "
+        "--benders_use_pj_initialization is false (or the model has discrete "
+        "linking variables). Defaults to True.",
+    )
+    parser.add_argument(
+        "--benders_recourse_bound_obbt",
+        default=True,
+        type=str2bool,
+        help="Allow OBBT (one master LP per variable) for linking variables "
+        "that explicit bounds, GridPath capacity constraints and FBBT could "
+        "not bound. If False, those variables get the assumed cap instead. "
+        "Defaults to True.",
+    )
+    parser.add_argument(
+        "--benders_bounds_cache",
+        default=True,
+        type=str2bool,
+        help="Store the linking-variable bounds on disk, keyed by a "
+        "fingerprint of the master's variables and constraints, and reuse "
+        "them on later runs with an identical master. Defaults to True.",
+    )
+    parser.add_argument(
+        "--benders_bounds_cache_dir",
+        default=None,
+        type=str,
+        help="Folder for the bounds cache. Defaults to "
+        "<scenario directory>/benders_bounds_cache.",
     )
     parser.add_argument(
         "--benders_operational_solver",
