@@ -3204,6 +3204,27 @@ def compute_linking_variable_bounds(
                 ))
                 return bounds
 
+    # Variables with no finite lower bound can never receive bounds (see
+    # get_continuous_variable_bounds); leave them out of FBBT, the recession
+    # test and OBBT, and report them once instead of once per variable.
+    no_lower_bound = [
+        name for name, var in candidates if get_variable_lower_bound(var) is None
+    ]
+    if no_lower_bound:
+        skip_set = set(no_lower_bound)
+        candidates = [(n, v) for n, v in candidates if n not in skip_set]
+        logger.warning(
+            "%d linking variable(s) have no finite lower bound and get no "
+            "recourse bounds (for example %s).",
+            len(no_lower_bound),
+            no_lower_bound[:3],
+        )
+        print(
+            "Benders: %d linking variable(s) have no finite lower bound and "
+            "are skipped without solves (for example %s)."
+            % (len(no_lower_bound), no_lower_bound[:2])
+        )
+
     # -----------------------------------------------------------------
     # FBBT for the variables the cheap tiers cannot bound
     # -----------------------------------------------------------------
@@ -3251,7 +3272,7 @@ def compute_linking_variable_bounds(
     # -----------------------------------------------------------------
 
     bounds = {}
-    skipped = []
+    skipped = list(no_lower_bound)
 
     for name, var in candidates:
         try:
@@ -3371,6 +3392,16 @@ def get_continuous_variable_bounds(
 
     lb = pyo.value(var.lb) if var.has_lb() else None
     ub = pyo.value(var.ub) if var.has_ub() else None
+
+    # A variable without a finite lower bound is rejected at the end of every
+    # route below ("No finite lower bound found"), whatever its upper bound.
+    # Reject it first, so that no OBBT solve (one full master LP) is spent
+    # on a bound that would be discarded.
+    if lb is None and get_variable_lower_bound(var) is None:
+        raise ValueError(
+            f"No finite lower bound found for "
+            f"continuous linking variable '{var.name}'."
+        )
 
     # ---------------------------------------------------------
     # 1. Explicit Pyomo bounds
