@@ -1,4 +1,5 @@
 import pyomo.environ as pyo
+from pyomo.core.expr.visitor import identify_variables
 import math
 from pyomo.environ import (
     Var,
@@ -615,6 +616,8 @@ def _export_final_subproblem(
             export_args,
         )
 
+        if results.solver.termination_condition == TerminationCondition.optimal:
+            _initialise_unloaded_objective_vars(instance.OP_NPV)
         return {
             "status": str(results.solver.status),
             "termination_condition": str(results.solver.termination_condition),
@@ -2311,6 +2314,7 @@ def process_subproblem_solution(
 
     if mip_term == TerminationCondition.optimal:
 
+        _initialise_unloaded_objective_vars(instance.OP_NPV)
         op_cost = -value(instance.OP_NPV)
 
         if os.environ.get("GRIDPATH_BENDERS_CREDIT_DIAG") and hasattr(
@@ -2516,12 +2520,34 @@ def calculate_recourse_upper_bound(
                 f"or upper bound (first 10: {still_unbounded[:10]})."
             )
 
+        _initialise_unloaded_objective_vars(lp_instance.OP_NPV)
         bound = value(lp_instance.OP_NPV)
     finally:
         if restore_state is not None:
             _restore_after_bound_lp(restore_state)
 
     return bound
+
+
+def _initialise_unloaded_objective_vars(objective):
+    """Give a value to objective variables the solver never loaded.
+
+    A variable whose objective coefficient is zero (for example a build
+    variable that only appears in linking rows) is not sent to the solver, so
+    it comes back uninitialised and evaluating the objective expression
+    raises "No value for uninitialized VarData". Its coefficient is zero, so
+    any value inside its bounds gives the same objective; use 0 clamped to
+    the bounds.
+    """
+    for var in identify_variables(objective.expr, include_fixed=False):
+        if var.value is not None:
+            continue
+        val = 0.0
+        if var.lb is not None and val < var.lb:
+            val = float(var.lb)
+        if var.ub is not None and val > var.ub:
+            val = float(var.ub)
+        var.set_value(val, skip_validation=True)
 
 
 def _snapshot_for_bound_lp(instance, linking_var_names):
@@ -3005,6 +3031,7 @@ def solve_subproblem(
 
     if term == "optimal":
 
+        _initialise_unloaded_objective_vars(model.OP_NPV)
         op_cost = -value(model.OP_NPV)
 
         duals = [
