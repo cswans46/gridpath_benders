@@ -22,7 +22,8 @@ from pyomo.environ import (
     Var,
     NonNegativeReals,
     Set,
-    Reals
+    Reals,
+    Expression,
 )
 
 Infinity = float("inf")
@@ -69,11 +70,12 @@ def add_model_components(
 
         c.execute(
             """
-            SELECT DISTINCT period, subproblem_id
+            SELECT period, subproblem_id, AVG(timepoint_weight)
             FROM inputs_temporal
             WHERE temporal_scenario_id = ?
               AND stage_id = ?
               AND spinup_or_lookahead = 0
+            GROUP BY period, subproblem_id
             """,
             (subscenarios.TEMPORAL_SCENARIO_ID, int(stage_temp)),
         )
@@ -82,8 +84,18 @@ def add_model_components(
         conn.close()
 
     subproblems_by_period = {}
-    for period, subproblem_id in rows:
+    # Number of days each representative subproblem stands for (average
+    # timepoint weight). Used to weight the period-wide SOC balance.
+    subproblem_day_weight = {}
+    for period, subproblem_id, weight in rows:
         subproblems_by_period.setdefault(int(period), []).append(str(subproblem_id))
+        subproblem_day_weight[(int(period), str(subproblem_id))] = (
+            float(weight) if weight is not None else 1.0
+        )
+
+    # Kept for seeding: the master uses these day weights to split policy
+    # budgets across representative days before any cut is available.
+    m._benders_subproblem_day_weight = subproblem_day_weight
 
     # ============================================================
     # Subproblem Sets
@@ -178,6 +190,35 @@ def add_model_components(
         m.PERFORMANCE_STANDARD_MW_ALLOCATION = Var(
             m.PERFORMANCE_STANDARD_MW_SUBPROBLEMS_BY_PERIOD,
         )
+
+        if not getattr(m, "_is_benders_subproblem", False):
+            # Master-only copy of the project/zone mapping and the capacity
+            # aggregate used by the allocation constraint (the operational
+            # module that normally holds them is not loaded in the master).
+            m.BENDERS_PERFORMANCE_STANDARD_PRJ_ZONES = Set(
+                dimen=2, within=m.PROJECTS * m.PERFORMANCE_STANDARD_ZONES
+            )
+            m.BENDERS_PERFORMANCE_STANDARD_PRJS_BY_ZONE = Set(
+                m.PERFORMANCE_STANDARD_ZONES,
+                within=m.PROJECTS,
+                initialize=lambda mod, ps_z: [
+                    prj
+                    for (prj, z) in mod.BENDERS_PERFORMANCE_STANDARD_PRJ_ZONES
+                    if z == ps_z
+                ],
+            )
+
+            def _ps_capacity_rule(mod, z, p):
+                return sum(
+                    mod.Capacity_MW[prj, p]
+                    for prj in mod.BENDERS_PERFORMANCE_STANDARD_PRJS_BY_ZONE[z]
+                    if (prj, p) in mod.PRJ_OPR_PRDS
+                )
+
+            m.Benders_Performance_Standard_Capacity_MW = Expression(
+                m.PERFORMANCE_STANDARD_MW_ZONE_PERIODS,
+                rule=_ps_capacity_rule,
+            )
 
     if hasattr(m, "CARBON_CAP_ZONE_PERIODS_WITH_CARBON_CAP"):
         m.CARBON_CAP_ZONE_SUBPROBLEMS_BY_PERIOD = Set(
@@ -549,16 +590,33 @@ def add_model_components(
     # Constraint rules
     # ============================================================
 
-    def _stor_soc_chain_rule(mod, prj, bt, hz, sp):
-        sps = sorted(mod.SUBPROBLEMS_BY_PERIOD[hz], key=int)
-        nxt = sps[(sps.index(sp) + 1) % len(sps)]       # last day wraps to the first
-        return (mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, sp]
-                == mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, nxt])
+    def _stor_soc_period_balance_rule(mod, prj, bt, hz):
+        """
+        Period approach: the storage must return to its starting SOC over the
+        whole period, i.e. the day-weighted net SOC change of the representative
+        days sums to zero. Each day's start and end SOC are free (within the
+        energy capacity), so a day can be a net charging or discharging day.
+        """
+        return (
+            sum(
+                subproblem_day_weight[(hz, str(sp))]
+                * (
+                    mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, str(sp)]
+                    - mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, str(sp)]
+                )
+                for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
+            )
+            == 0
+        )
 
     def _stor_soc_capacity_rule(mod, prj, bt, hz, sp):
         return (STOR_SOC_ALLOCATION_UNIT_MWH * mod.STOR_START_SOC_ALLOCATION[prj, bt, hz, sp]
                 <= mod.Energy_Storage_Capacity_MWh[prj, hz])
-    
+
+    def _stor_soc_end_capacity_rule(mod, prj, bt, hz, sp):
+        return (STOR_SOC_ALLOCATION_UNIT_MWH * mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, sp]
+                <= mod.Energy_Storage_Capacity_MWh[prj, hz])
+
     def cap_factor_min_allocation_rule(mod, prj, bt, h):
         return sum(
             mod.CAP_FACTOR_MIN_ALLOCATION[prj, bt, h, str(sp)]
@@ -645,12 +703,20 @@ def add_model_components(
         )
 
     def period_performance_standard_allocation_mw_rule(mod, z, p):
+        # Every subproblem carries the full capacity-based allowance
+        # (rate * Capacity) on its own left-hand side, so summing the K
+        # subproblem constraints counts it K times. The allocations must
+        # therefore sum to -(K-1) * rate * Capacity so that the decomposed
+        # constraint equals the monolithic one (allowance counted once).
+        k = len(mod.SUBPROBLEMS_BY_PERIOD[p])
         return (
             sum(
                 mod.PERFORMANCE_STANDARD_MW_ALLOCATION[z, p, w]
                 for w in mod.SUBPROBLEMS_BY_PERIOD[p]
             )
-            == 0
+            == -(k - 1)
+            * mod.performance_standard_tco2_per_mw[z, p]
+            * mod.Benders_Performance_Standard_Capacity_MW[z, p]
         )
 
     def carbon_credit_demand_allocation_rule(mod, z, p):
@@ -697,8 +763,11 @@ def add_model_components(
 
     if not getattr(m, "_is_benders_subproblem", False):
         
-        m.Stor_SOC_Chain_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_chain_rule)
+        m.Stor_SOC_Period_Balance_Constraint = Constraint(
+            m.STOR_SOC_ALLOCATION_TARGETS, rule=_stor_soc_period_balance_rule
+        )
         m.Stor_SOC_Capacity_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_capacity_rule)
+        m.Stor_SOC_End_Capacity_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_end_capacity_rule)
         
         if hasattr(m, "CAP_FACTOR_MIN_ALLOCATION_TARGETS"):
             m.Cap_Factor_Min_Allocation_Constraint = Constraint(
@@ -814,6 +883,31 @@ def load_model_data(
     subproblem,
     stage,
 ):
+    if hasattr(m, "BENDERS_PERFORMANCE_STANDARD_PRJ_ZONES"):
+        ps_candidates = []
+        try:
+            ps_candidates.append(
+                os.path.join(
+                    scenario_directory, weather_iteration, hydro_iteration,
+                    availability_iteration, subproblem, stage, "inputs",
+                    "project_performance_standard_zones.tab",
+                )
+            )
+        except TypeError:
+            pass
+        ps_candidates.append(
+            os.path.join(
+                scenario_directory, "inputs",
+                "project_performance_standard_zones.tab",
+            )
+        )
+        for ps_file in ps_candidates:
+            if os.path.exists(ps_file):
+                data_portal.load(
+                    filename=ps_file,
+                    set=m.BENDERS_PERFORMANCE_STANDARD_PRJ_ZONES,
+                )
+                break
     if hasattr(m, "benders_carbon_credits_demand_tco2"):
         input_file = os.path.join(
             scenario_directory,

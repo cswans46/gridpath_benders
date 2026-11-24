@@ -81,6 +81,17 @@ def define_benders_modules(modules_to_use):
         "objective.system.water.aggregate_reservoir_violation_penalty_costs",
         "objective.system.water.aggregate_flow_violation_penalty_costs",
         "objective.op_npv_benders",
+        # Modules that used to be in neither list (silently dropped from a
+        # Benders run). They only involve operations, so they belong in the
+        # operational subproblems.
+        "objective.transmission.aggregate_tx_curtailment_costs",
+        "transmission.operations.tx_curtailment_costs",
+        "transmission.operations.energy_target_contributions",
+        "system.policy.energy_targets.aggregate_period_energy_target_tx_losses",
+        "system.policy.energy_targets.aggregate_horizon_energy_target_tx_losses",
+        "transmission.policy.policy_contribution",
+        "system.policy.generic_policy.aggregate_transmission_policy_contributions",
+        "system.water.consolidate_results",
         "project.fuels",
         "project.operations",
         "project.operations.operational_types",

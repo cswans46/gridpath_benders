@@ -284,6 +284,73 @@ def load_plan(path):
     return {str(k): float(v) for k, v in values.items()}
 
 
+# Policy allocation variables: the master splits a period budget over the
+# representative days. They are seeded by share, not driven to a bound.
+ALLOCATION_COMPONENTS = (
+    "CARBON_CAP_ALLOCATION",
+    "PERIOD_ENERGY_TARGET_ALLOCATION",
+    "PERFORMANCE_STANDARD_MWH_ALLOCATION",
+    "PERFORMANCE_STANDARD_MW_ALLOCATION",
+    "BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION",
+    "BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION",
+    "BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION",
+    "TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION",
+    "TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION",
+    "TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION",
+    "TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION",
+    "FUEL_BURN_MIN_ABS_ALLOCATION",
+    "FUEL_BURN_MAX_ABS_ALLOCATION",
+    "CAP_FACTOR_MIN_ALLOCATION",
+    "CAP_FACTOR_MAX_ALLOCATION",
+)
+
+
+def _is_allocation_name(name):
+    return any(name.startswith(prefix + "[") or name == prefix
+               for prefix in ALLOCATION_COMPONENTS)
+
+
+def allocation_share_groups(instance):
+    """Return [(variable names, shares)] for every allocation family/key.
+
+    Each group is the set of per-day allocations that share one period
+    budget; the share of a day is its represented number of days over the
+    period total (an equal split when every day weighs the same).
+    """
+    weights = getattr(instance, "_benders_subproblem_day_weight", None) or {}
+    if not weights:
+        return []
+    groups = []
+    for component in ALLOCATION_COMPONENTS:
+        var = getattr(instance, component, None)
+        if var is None or not var.is_indexed():
+            continue
+        by_key = {}
+        for index, data in var.items():
+            if not isinstance(index, tuple) or len(index) < 2:
+                continue
+            period = None
+            for element in index[:-1]:
+                try:
+                    if (int(element), str(index[-1])) in weights:
+                        period = int(element)
+                        break
+                except (TypeError, ValueError):
+                    continue
+            if period is None or data.fixed:
+                continue
+            by_key.setdefault(index[:-1], []).append(
+                (data.name, weights[(period, str(index[-1]))])
+            )
+        for members in by_key.values():
+            total = sum(w for _, w in members)
+            if len(members) > 1 and total > 0:
+                groups.append(
+                    ([n for n, _ in members], [w / total for _, w in members])
+                )
+    return groups
+
+
 def resolve_seed_targets(instance, seed_setting, scenario_directory,
                          continuous_names):
     """Return ({name: target value}, description) or ({}, reason).
@@ -298,6 +365,8 @@ def resolve_seed_targets(instance, seed_setting, scenario_directory,
     def lower_targets():
         targets = {}
         for name in continuous_names:
+            if _is_allocation_name(name):
+                continue
             var = instance.find_component(name)
             if var is None or var.fixed:
                 continue
@@ -333,7 +402,8 @@ def _file_targets(instance, path, continuous_names):
     )
 
 
-def project_onto_master(instance, optimiser, targets):
+def project_onto_master(instance, optimiser, targets, share_groups=None,
+                        share_weight=1e-6):
     """Return the feasible master point closest (weighted L1) to ``targets``.
 
     One LP over the master's constraints and bounds (cuts included, so a
@@ -343,6 +413,12 @@ def project_onto_master(instance, optimiser, targets):
     """
     if not targets:
         return {}, "no targets"
+    # Groups already described by the plan keep the plan's values; the rest
+    # are pulled toward their day-weighted share of the (feasible) budget.
+    share_groups = [
+        (names, shares) for names, shares in (share_groups or [])
+        if not any(n in targets for n in names)
+    ]
 
     objective = instance.MasterObjective
     saved_expr = objective.expr
@@ -363,6 +439,16 @@ def project_onto_master(instance, optimiser, targets):
             block.link.add(var - target == block.pos[i] - block.neg[i])
             weight = 1.0 / max(1.0, abs(target))
             terms.append(weight * (block.pos[i] + block.neg[i]))
+        block.share_link = pyo.ConstraintList()
+        block.share_pos = pyo.VarList(domain=pyo.NonNegativeReals)
+        block.share_neg = pyo.VarList(domain=pyo.NonNegativeReals)
+        for group_names, shares in share_groups:
+            variables = [instance.find_component(n) for n in group_names]
+            total = sum(variables)
+            for var, share in zip(variables, shares):
+                pos, neg = block.share_pos.add(), block.share_neg.add()
+                block.share_link.add(var - share * total == pos - neg)
+                terms.append(share_weight * (pos + neg))
         objective.set_value(sum(terms))
         objective.sense = pyo.minimize
 

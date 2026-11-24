@@ -133,6 +133,30 @@ def write_pyomo_mosek_task(
         key, lower, upper = task.getvarbound(column)
         native_bounds[str(column)] = [_mosek_enum_name(key), float(lower), float(upper)]
 
+    # Row -> constraint-group map (compressed to row ranges) so the native
+    # Phase-I diagnostic can report which constraint families are violated.
+    row_groups = {}
+    try:
+        by_group = {}
+        for constraint, row in con_map.items():
+            by_group.setdefault(
+                constraint.parent_component().local_name, []
+            ).append(int(row))
+        for group, rows in by_group.items():
+            rows.sort()
+            ranges = []
+            start = previous = rows[0]
+            for row in rows[1:]:
+                if row != previous + 1:
+                    ranges.append([start, previous + 1])
+                    start = row
+                previous = row
+            ranges.append([start, previous + 1])
+            row_groups[group] = ranges
+        del by_group
+    except Exception:
+        row_groups = {}
+
     task.writedata(str(task_path))
     metadata = {
         "version": METADATA_VERSION,
@@ -145,6 +169,7 @@ def write_pyomo_mosek_task(
         "linking_bounds": linking_bounds,
         "integer_columns": integer_columns,
         "native_bounds": native_bounds,
+        "row_groups": row_groups,
     }
     temporary_metadata = Path(str(metadata_path) + ".tmp")
     temporary_metadata.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
@@ -201,6 +226,7 @@ class MosekTaskRuntime:
         self.linking_bounds = dict(metadata["linking_bounds"])
         self.integer_columns = dict(metadata["integer_columns"])
         self.native_bounds = dict(metadata["native_bounds"])
+        self.row_groups = dict(metadata.get("row_groups") or {})
         self._touched_columns = sorted(int(c) for c in self.native_bounds)
         if self.task is not None:
             self._apply_params({})
@@ -396,6 +422,186 @@ class MosekTaskRuntime:
 
     def objective_value(self):
         return float(self.task.getprimalobj(self.solution_type)) * self.objective_scale
+
+    def phase_one(self, active_names, point, key_label="", diag_groups=8):
+        """Native Phase-I on the loaded task (replaces the Pyomo restoration).
+
+        The loaded task must be an LP whose linking rows are already fixed at
+        the master's trial point (``set_linking_values``) and whose integer
+        columns are relaxed. It is modified IN PLACE and disposed before
+        returning, so the next trial re-reads the pristine task from disk.
+
+        Elastic LP: every non-linking row ``l <= a x <= u`` gets non-negative
+        slack columns, ``l <= a x + p - n <= u`` (``p`` only if a lower bound
+        exists, ``n`` only if an upper bound exists), and the objective is
+        ``min sum_i w_i (p_i + n_i)`` with ``w_i = 1 / max(1, |l_i|, |u_i|)``.
+        Linking rows and column bounds are kept exact, so the optimum ``v`` is
+        a convex, piecewise-linear function of the linking right-hand sides
+        that is zero exactly when the subproblem is feasible. The duals of the
+        linking rows are therefore a valid sub-gradient and give the
+        feasibility cut ``v + sum_j lambda_j (x_j - xbar_j) <= 0``.
+
+        Returns the cut dictionary, or ``None`` when the Phase-I optimum is
+        not trustworthy (not optimal, zero violation, or a poor duality gap),
+        in which case the caller falls back to the Pyomo restoration.
+        """
+        import logging
+
+        mosek = self.mosek
+        task = self.task
+        bk = mosek.boundkey
+        n_var = task.getnumvar()
+        n_con = task.getnumcon()
+        if n_con == 0:
+            return None
+
+        keys, lowers, uppers = task.getconboundslice(0, n_con)
+        lower = np.array(lowers, dtype=float)
+        upper = np.array(uppers, dtype=float)
+        has_lower = np.array([k in (bk.lo, bk.ra, bk.fx) for k in keys])
+        has_upper = np.array([k in (bk.up, bk.ra, bk.fx) for k in keys])
+        del keys, lowers, uppers
+        lower[~has_lower] = -np.inf
+        upper[~has_upper] = np.inf
+        is_linking = np.zeros(n_con, dtype=bool)
+        for row in self.linking_rows.values():
+            is_linking[int(row)] = True
+        has_lower &= ~is_linking
+        has_upper &= ~is_linking
+
+        magnitude = np.maximum.reduce([
+            np.ones(n_con),
+            np.where(np.isfinite(lower), np.abs(lower), 0.0),
+            np.where(np.isfinite(upper), np.abs(upper), 0.0),
+        ])
+        weight = 1.0 / magnitude
+
+        rows_p = np.flatnonzero(has_lower)
+        rows_n = np.flatnonzero(has_upper)
+        n_p, n_n = len(rows_p), len(rows_n)
+        if n_p + n_n == 0:
+            return None
+
+        # Replace the objective by the total weighted slack.
+        task.putcslice(0, n_var, np.zeros(n_var))
+        task.putcfix(0.0)
+        task.putobjsense(mosek.objsense.minimize)
+        task.appendvars(n_p + n_n)
+        task.putvarboundsliceconst(n_var, n_var + n_p + n_n, bk.lo, 0.0, 0.0)
+        cols_p = np.arange(n_var, n_var + n_p)
+        cols_n = np.arange(n_var + n_p, n_var + n_p + n_n)
+        cost = np.concatenate([weight[rows_p], weight[rows_n]])
+        task.putcslice(n_var, n_var + n_p + n_n, cost)
+        if n_p:
+            task.putaijlist(rows_p, cols_p, np.ones(n_p))
+        if n_n:
+            task.putaijlist(rows_n, cols_n, -np.ones(n_n))
+
+        self.set_stage_params({})
+        try:
+            if not self.optimize(mixed_integer=False):
+                logging.getLogger(__name__).warning(
+                    "Native Phase-I for %s did not solve to optimality (%s).",
+                    key_label, self.status_summary(),
+                )
+                return None
+            sol = self.solution_type
+            primal = float(task.getprimalobj(sol))
+            try:
+                dual = float(task.getdualobj(sol))
+            except Exception:
+                dual = primal
+            if not (math.isfinite(primal) and math.isfinite(dual)):
+                return None
+            intercept = min(primal, dual)
+            gap = abs(primal - dual) / max(1.0, abs(primal))
+            if intercept <= 1e-9:
+                # Feasible after all (numerical trouble in the original LP).
+                return None
+            if gap > 1e-6:
+                logging.getLogger(__name__).warning(
+                    "Native Phase-I for %s: duality gap %.3g too large.",
+                    key_label, gap,
+                )
+                return None
+            y = np.asarray(task.gety(sol), dtype=float)
+            lambdas = {}
+            for name in active_names:
+                value = float(y[int(self.linking_rows[name])])
+                if not math.isfinite(value):
+                    return None
+                lambdas[name] = value
+
+            if os.environ.get("GRIDPATH_BENDERS_PHASE1_DIAG", "1") != "0":
+                try:
+                    self._log_phase_one_diagnostic(
+                        key_label, intercept, np.asarray(task.getxx(sol), dtype=float),
+                        n_var, n_con, rows_p, rows_n, weight, lambdas, diag_groups,
+                    )
+                except Exception as error:  # diagnostic only
+                    logging.getLogger(__name__).warning(
+                        "Phase-I diagnostic failed for %s: %s", key_label, error
+                    )
+        finally:
+            # The task now carries the elastic LP; never reuse it.
+            self.close()
+
+        cut_scale = max(1.0, 1.0 / intercept)
+        scaled = {n: v * cut_scale for n, v in lambdas.items()}
+        return {
+            "feasible": False,
+            "op_cost": intercept * cut_scale,
+            "benders_lambda": scaled,
+            "continuous_lambda": dict(scaled),
+            "continuous_point": dict(point),
+            "theta_coeff": 0.0,
+            "restoration_slack": intercept,
+            "restoration_cut_scale": cut_scale,
+            "restoration_dual_gap": gap,
+        }
+
+    def _log_phase_one_diagnostic(
+        self, key_label, intercept, x, n_var, n_con, rows_p, rows_n, weight,
+        lambdas, top,
+    ):
+        """Log which constraint families (and linking variables) drive Phase-I."""
+        import logging
+
+        n_p = len(rows_p)
+        slack_p = x[n_var:n_var + n_p]
+        slack_n = x[n_var + n_p:n_var + n_p + len(rows_n)]
+        violation = np.zeros(n_con)
+        np.add.at(violation, rows_p, slack_p)
+        np.add.at(violation, rows_n, slack_n)
+        weighted = violation * weight
+        report = []
+        if self.row_groups:
+            for group, ranges in self.row_groups.items():
+                total = 0.0
+                count = 0
+                worst = 0.0
+                for start, end in ranges:
+                    block = weighted[start:end]
+                    total += float(block.sum())
+                    count += int((block > 1e-9).sum())
+                    if block.size:
+                        worst = max(worst, float(block.max()))
+                if total > 1e-9:
+                    report.append((total, group, count, worst))
+            report.sort(reverse=True)
+            groups_text = "; ".join(
+                "{} (sum {:.3g}, {} rows, max {:.3g})".format(g, t, c, w)
+                for t, g, c, w in report[:top]
+            ) or "none above tolerance"
+        else:
+            groups_text = "row groups unavailable (re-export the task)"
+        ranked = sorted(lambdas.items(), key=lambda item: -abs(item[1]))[:5]
+        links_text = "; ".join("{}: {:.3g}".format(n, v) for n, v in ranked)
+        logging.getLogger(__name__).warning(
+            "Phase-I diagnostic %s: violation %.6g. Violated constraint groups: "
+            "%s. Linking variables with largest |sensitivity|: %s",
+            key_label, intercept, groups_text, links_text,
+        )
 
     def primal_violation(self, tolerance=1e-7):
         """Native replacement for the Pyomo ``primal_violations`` check.

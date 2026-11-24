@@ -1112,6 +1112,37 @@ def _native_task_trial(
                     if runtime.proved_infeasible():
                         break
                 runtime.set_stage_params(_retry_restore_params(runtime, lp_optimizer))
+            if not recovered and operational_state is None and os.getenv(
+                "GRIDPATH_BENDERS_NATIVE_PHASE1", "1"
+            ) != "0":
+                # Native Phase-I on the already-loaded task: no Pyomo rebuild,
+                # no model clone. Falls through to the Pyomo restoration only
+                # when it cannot produce a trustworthy certificate.
+                phase_one_cut = runtime.phase_one(
+                    active, {name: values[name] for name in active},
+                    key_label=str(getattr(key, "subproblem", key)),
+                )
+                if phase_one_cut is not None:
+                    discrete_cut_phase = bool(all_discrete_linking_names) and (
+                        (master_method == "pj_relax" and restored)
+                        or master_method in ("linearized", "djc")
+                    )
+                    master_state = None
+                    if discrete_cut_phase:
+                        master_state = {
+                            "binary": {n: int(round(values[n])) for n in linking_vars_by_type["binary"] if n in values},
+                            "integer": {n: int(round(values[n])) for n in linking_vars_by_type["integer"] if n in values},
+                        }
+                    return dict(
+                        result_common,
+                        native_infeasible=False,
+                        native_validation_ok=True,
+                        native_worst_violation=0.0,
+                        operational_discrete_state=None,
+                        master_discrete_state=master_state,
+                        is_mip=was_operational_mip,
+                        **phase_one_cut,
+                    )
             if not recovered:
                 proved = runtime.proved_infeasible()
                 log.warning(

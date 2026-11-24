@@ -32,6 +32,7 @@ from gridpath.benders.master_start import (
     artificial_cap_count,
     enlarge_artificial_caps,
     family_of,
+    allocation_share_groups,
     plan_file_path,
     project_onto_master,
     register_artificial_cap,
@@ -958,7 +959,8 @@ def benders(
         print("Benders seed plan: %s." % seed_note)
         if seed_targets:
             projected, projection_note = project_onto_master(
-                planning_problem, optimiser, seed_targets
+                planning_problem, optimiser, seed_targets,
+                share_groups=allocation_share_groups(planning_problem),
             )
             if projected:
                 seed_sol = process_planning_sol(

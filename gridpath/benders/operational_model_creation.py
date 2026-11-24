@@ -20,6 +20,14 @@ def define_linking_vars(m):
         "Tx_Max_Capacity_MW",
         "TxNewLin_Capacity_MW",
         "Energy_Storage_Capacity_MWh",
+        # Other capacity-dependent expressions that operations can use.
+        # Scanned only if the expression exists in the model.
+        "Hyb_Gen_Capacity_MW",
+        "Hyb_Stor_Capacity_MW",
+        "Energy_MWh",
+        "Fuel_Production_Capacity_FuelUnitPerHour",
+        "Fuel_Release_Capacity_FuelUnitPerHour",
+        "Fuel_Storage_Capacity_FuelUnit",
     ]
 
     budgeted_policy_components = (
@@ -54,7 +62,9 @@ def define_linking_vars(m):
     # Variables identified through investment expressions
     for expr_name in investment_exprs:
 
-        expr_component = getattr(m, expr_name)
+        expr_component = getattr(m, expr_name, None)
+        if expr_component is None:
+            continue
 
         if expr_component.is_indexed():
             expressions = (
@@ -184,7 +194,42 @@ def create_operational_problem_benders(
         loaded_modules["Operational"],
     )
 
+    _warn_unallocated_policy_constraints(instance)
+
     return instance
+
+
+def _warn_unallocated_policy_constraints(instance):
+    """
+    The generic-policy requirement constraints have no master allocation. A
+    requirement that spans several subproblems (annual horizon or
+    month-hour) is therefore enforced in full by every subproblem, which is
+    too restrictive and can make subproblems infeasible.
+    """
+    try:
+        problems = []
+        con = getattr(instance, "Policy_Requirement_Constraint", None)
+        if con is not None:
+            annual = [i for i in con if i[2] == "year"]
+            if annual:
+                problems.append(
+                    "%d annual Policy_Requirement_Constraint rows" % len(annual)
+                )
+        mh = getattr(instance, "Policy_Month_Hour_Requirement_Constraint", None)
+        if mh is not None and len(mh) > 0:
+            problems.append(
+                "%d Policy_Month_Hour_Requirement_Constraint rows" % len(mh)
+            )
+        if problems:
+            logger.warning(
+                "Generic-policy requirements have no Benders allocation and are "
+                "enforced in full in every subproblem (%s). Allow violation for "
+                "these policies or expect infeasible subproblems.",
+                "; ".join(problems),
+            )
+    except Exception:  # diagnostic only
+        pass
+
 
 def _get_carbon_cap_zone_periods(
         scenario_directory,

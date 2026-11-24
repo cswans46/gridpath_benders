@@ -20,7 +20,7 @@ The document covers the Benders code in `gridpath/benders/`, its entry points in
 | `benders/regularization.py` | Level-set (stabilisation) problem, L1 and L2 |
 | `benders/operational_model_creation.py` | Operational model and linking-variable identification |
 | `benders/soc_allocation.py` | Shared SOC allocation targets and variables used by master and operational subproblems |
-| `system/policy/benders_policy_constraint.py` | Master-side policy allocation constraints, including cyclic storage SOC chaining and capacity limits |
+| `system/policy/benders_policy_constraint.py` | Master-side policy allocation constraints, including the period-wide storage SOC balance and capacity limits |
 | `benders/{gurobi,mosek,gams}_*.py` | Solver wrappers (MOSEK adds native L2 cones and disjunctive constraints) |
 
 ## 2. Problem structure and notation
@@ -81,7 +81,7 @@ $$
 
 For yearly-balanced storage, `soc_allocation.py` defines the shared SOC allocation targets and variables used by both the master and operational subproblems. It applies to projects with `operational_type == "stor"` and `balancing_type_project == "year"`, and creates nonnegative start- and end-SOC allocation variables for each project, period and subproblem.
 
-The master-side constraints are implemented in `gridpath/system/policy/benders_policy_constraint.py`. For each project, balancing type, period and subproblem, `Stor_SOC_Chain_Constraint` equates the end-SOC allocation of the current subproblem to the start-SOC allocation of the next subproblem (cyclic constraint). Subproblems are sorted numerically, and the final subproblem is connected back to the first, so the sequence is cyclic. `Stor_SOC_Capacity_Constraint` also limits each allocated start SOC, converted to MWh, to the project's energy-storage capacity (storage capacity constraint). These two constraints are added to the master only along with non-negativity constraints; the operational models receive the corresponding allocation variables through `add_stor_soc_allocation_components` in `soc_allocation.py` to provide the starting and ending SOC of each subproblem.
+The master-side constraints are implemented in `gridpath/system/policy/benders_policy_constraint.py`. For each project, balancing type and period, `Stor_SOC_Period_Balance_Constraint` requires the day-weighted net SOC change of the representative days to be zero, `sum_w n_w (END_w - START_w) = 0`, where `n_w` is the number of days subproblem `w` represents (its average timepoint weight). Each day's start and end SOC are otherwise free, so a day may be a net charging or discharging day. `Stor_SOC_Capacity_Constraint` and `Stor_SOC_End_Capacity_Constraint` limit the allocated start and end SOC, converted to MWh, to the project's energy-storage capacity. (This replaces the earlier cyclic chain that tied the end SOC of one subproblem to the start SOC of the next in index order.) These two constraints are added to the master only along with non-negativity constraints; the operational models receive the corresponding allocation variables through `add_stor_soc_allocation_components` in `soc_allocation.py` to provide the starting and ending SOC of each subproblem.
 
 Each worker keeps only the linking variables that exist in its model (`classify_linking_vars`) and splits them into continuous, binary and integer sets.
 
@@ -1130,6 +1130,22 @@ The bound strategy and `F` are part of the bounds-cache fingerprint, so changing
 * *Fix.* The wait timeout in `BendersMemoryCoordinator.set_reservation` now restarts whenever the total reserved memory changes. A worker waiting its turn behind progressing workers no longer fails; only a wait in which no reservation changed for `GRIDPATH_BENDERS_MEMORY_WAIT_TIMEOUT` seconds (a real stall) raises. Checked with a thread-based test: four workers needing 10 GiB each against a 20 GiB budget and a 0.5 s timeout all finish; a holder that never releases still raises.
 * *Not fixed by this.* The restorations still run only a few at a time, because each rebuilds a Pyomo model. The remaining cost is the number of infeasible subproblems and the time of each restoration. See the native Phase-I option in the "Item checked, not built" paragraph above.
 * *Suspected cause of the infeasibility (unconfirmed).* The infeasible subproblems are the periods that carry policy allocation variables (performance standard, and probably carbon cap and energy target). The master splits each policy target across a period's subproblems and has no information about the headroom each needs until feasibility cuts arrive.
+
+### 15.5.19 Decomposition audit fixes, native Phase-I and allocation seeding
+
+**Performance-standard MW allowance.** Every subproblem carries the full capacity-based allowance `rate_MW * Capacity` on its own left-hand side, so summing the K subproblem constraints of a period counted it K times. The master constraint is now `sum_w a_w = -(K-1) * rate_MW * Capacity`, where `Capacity` is the master expression `Benders_Performance_Standard_Capacity_MW` built from `Capacity_MW` and the project/zone mapping read from `project_performance_standard_zones.tab`. The decomposed constraint then equals the monolithic one.
+
+**Modules.** Eight modules that were in neither the master nor the operational list were silently dropped from a Benders run (transmission curtailment costs, transmission energy-target contributions and losses, transmission policy contributions, generic-policy transmission contributions, water results consolidation). They are operational and are now in the operational list. `objective.max_npv` stays excluded because the Benders objective replaces it.
+
+**Linking expressions.** `define_linking_vars` now also scans `Hyb_Gen_Capacity_MW`, `Hyb_Stor_Capacity_MW`, `Energy_MWh` and the three fuel capacity expressions (when present), so a build variable that reaches operations only through one of them is a linking variable.
+
+**Generic policy.** Requirements that span subproblems (annual horizons and month-hour requirements) have no allocation. A warning is logged when a subproblem contains such rows.
+
+**Native Phase-I.** An infeasible native LP is no longer sent to the Pyomo restoration. `MosekTaskRuntime.phase_one` adds non-negative slack columns to every non-linking row of the loaded task (`p` for rows with a lower bound, `n` for rows with an upper bound), replaces the objective by `min sum_i w_i (p_i + n_i)` with `w_i = 1/max(1,|l_i|,|u_i|)`, keeps the linking rows and column bounds exact, and solves. The optimum `v(xbar)` is convex and piecewise linear in the linking right-hand sides and is zero exactly when the subproblem is feasible, so the linking-row duals give the feasibility cut `v + sum_j lambda_j (x_j - xbar_j) <= 0`. The cut is rejected (and the Pyomo restoration used) when the solve is not optimal, the violation is zero, or the relative duality gap exceeds 1e-6. Operational MIP subproblems keep the Pyomo path. Set `GRIDPATH_BENDERS_NATIVE_PHASE1=0` to disable. The task is disposed afterwards, so the next trial re-reads the pristine task.
+
+**Phase-I diagnostic.** For every native Phase-I the log reports the constraint groups with the largest weighted violation (using a row-to-group map stored in the task metadata; re-export the tasks if it is missing) and the five linking variables with the largest sensitivity. Set `GRIDPATH_BENDERS_PHASE1_DIAG=0` to silence it.
+
+**Allocation seeding.** During the seed projection each period budget is pulled toward the day-weighted split `a_w = (n_w / sum n) * sum a` (a weak extra L1 term, so builds keep priority). Allocations found in a saved incumbent plan keep the plan's values. The lower-bound seed no longer drives allocation variables to zero.
 
 ## 16. References
 
