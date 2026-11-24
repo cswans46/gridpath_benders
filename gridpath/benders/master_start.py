@@ -242,6 +242,9 @@ def apply_master_interior_point(optimiser, solver_name):
     if "mosek" in name:
         optimiser.options["MSK_IPAR_OPTIMIZER"] = "MSK_OPTIMIZER_INTPNT"
         optimiser.options["MSK_IPAR_INTPNT_BASIS"] = "MSK_BI_NEVER"
+        # Without crossover there is no basic solution: tell the Pyomo
+        # adapter to read the interior solution (see mosek_benders.py).
+        optimiser._benders_interior_point = True
         return True
     if "gurobi" in name:
         optimiser.options["Method"] = 2

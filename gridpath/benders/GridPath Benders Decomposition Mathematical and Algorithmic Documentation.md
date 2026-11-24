@@ -1121,6 +1121,11 @@ The bound strategy and `F` are part of the bounds-cache fingerprint, so changing
 * *Not a defect.* The repeated warning `Recourse bound LP: 232 linking variable(s) still lack a bound` is the free `PERFORMANCE_STANDARD_MW_ALLOCATION` variables (no finite lower bound by design, tied by a sum constraint).
 * *Verification.* Compiled and tested only on a small Pyomo model; not run with MOSEK.
 
+**Addendum to 15.5.18: interior-point master read the wrong solution.** In the second real run the workers built and the first master solve (with 44,983 artificial bounds) failed with `mosek.Error: rescode.err_undef_solution(22000): The solution with code 1 is not defined`, raised by Pyomo's `getsolsta`.
+* *Cause.* Pyomo's MOSEK adapter reads the *basic* solution (`soltype.bas`) for a linear problem. With `--benders_master_interior_point` MOSEK runs the interior-point method with crossover off (`MSK_IPAR_INTPNT_BASIS = MSK_BI_NEVER`), so no basic solution exists and reading it fails. Quadratic and conic problems (the level-set master) already read the interior solution, which is why only the linear master failed.
+* *Fix.* `MosekBendersDirect._set_whichsol` now reads the interior solution (`soltype.itr`) for a continuous linear master when the interior-point option is on (`apply_master_interior_point` sets the flag on the optimiser). Mixed-integer masters are unchanged. Checked only against a stand-in for the MOSEK task: the default still selects `bas`, the interior option selects `itr`.
+* *Earlier start-up failure.* The first log of this run ended with a worker waiting 600 s for a memory reservation. The run after it, with the same settings, built all workers, so that failure was about memory pressure at start-up and not about the new options.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.

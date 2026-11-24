@@ -37,6 +37,21 @@ class MosekBendersDirect(MOSEKDirect):
 
         self._add_benders_djcs(model)
 
+    # Set by master_start.apply_master_interior_point. With the interior-point
+    # optimiser and no crossover (MSK_IPAR_INTPNT_BASIS = never) MOSEK holds no
+    # basic solution, so reading the "bas" solution fails with
+    # "The solution with code 1 is not defined". Read the interior solution.
+    _benders_interior_point = False
+
+    def _set_whichsol(self):
+        super()._set_whichsol()
+        if (
+            self._benders_interior_point
+            and self._solver_model.getnumintvar() < 1
+            and self._whichsol == mosek.soltype.bas
+        ):
+            self._whichsol = mosek.soltype.itr
+
     def _apply_solver(self):
 
         return super()._apply_solver()
