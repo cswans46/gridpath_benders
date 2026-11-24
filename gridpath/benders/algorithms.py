@@ -102,12 +102,22 @@ class BendersMemoryCoordinator:
                 )
 
             deadline = time.monotonic() + self.wait_timeout
+            # Waiting in a queue is not a failure while other workers are
+            # still taking and releasing memory: the deadline restarts every
+            # time the total reserved amount changes. Only a wait during
+            # which nothing moved for ``wait_timeout`` seconds is an error.
+            last_total = sum(self.persistent) + sum(self.temporary)
             while requested_total > self.budget_bytes:
+                total_now = sum(self.persistent) + sum(self.temporary)
+                if total_now != last_total:
+                    last_total = total_now
+                    deadline = time.monotonic() + self.wait_timeout
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise MemoryError(
                         f"Worker {worker_index} could not obtain its memory "
-                        f"reservation within {self.wait_timeout:.0f} seconds. "
+                        f"reservation: no reservation changed for "
+                        f"{self.wait_timeout:.0f} seconds. "
                         "The resident worker models may collectively exceed "
                         "the configured Benders memory budget."
                     )
