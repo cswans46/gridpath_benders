@@ -620,11 +620,9 @@ def add_model_components(
                 index_name,
                 Set(
                     dimen=4,
-                    initialize=lambda mod, target_set=target_set: [
-                        (z, bt, hz, str(sp))
-                        for z, bt, hz in target_set
-                        for sp in mod.SUBPROBLEMS_BY_PERIOD[hz]
-                    ],
+                    initialize=_make_period_allocation_index_rule(
+                        target_set_name
+                    ),
                 ),
             )
 
