@@ -326,6 +326,41 @@ def get_benders_flag_parser():
         "options. Defaults to False.",
     )
     parser.add_argument(
+        "--benders_elastic_allocations",
+        default=False,
+        type=str2bool,
+        help="During the first --benders_elastic_iterations iterations let "
+        "each operational subproblem violate the constraints that use a "
+        "policy allocation, at a penalty that grows every iteration. The "
+        "subproblems are then always feasible (relatively complete "
+        "recourse), so the master gets optimality cuts instead of "
+        "Phase-I cuts while it still knows nothing about each day. Cuts "
+        "stay valid and only violation-free evaluations update the lower "
+        "bound. Native MOSEK workers only. Defaults to False.",
+    )
+    parser.add_argument(
+        "--benders_elastic_iterations",
+        default=10,
+        type=int,
+        help="Number of iterations that use elastic allocations before the "
+        "constraints become strict again. Defaults to 10.",
+    )
+    parser.add_argument(
+        "--benders_elastic_penalty",
+        default=0.1,
+        type=float,
+        help="Penalty in the first elastic iteration, as a multiple of the "
+        "sum of absolute objective coefficients of the subproblem per unit "
+        "of relative violation. Defaults to 0.1.",
+    )
+    parser.add_argument(
+        "--benders_elastic_growth",
+        default=2.0,
+        type=float,
+        help="Factor by which the elastic penalty grows every iteration. "
+        "Defaults to 2.",
+    )
+    parser.add_argument(
         "--benders_operational_solver",
         default="automatic",
         choices=("automatic", "interior_point", "primal_simplex"),

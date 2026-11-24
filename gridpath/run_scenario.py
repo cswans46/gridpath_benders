@@ -2631,6 +2631,18 @@ def solve(instance,
             "MasterInteriorPoint": getattr(
                 parsed_arguments, "benders_master_interior_point", False
             ),
+            "ElasticAllocations": getattr(
+                parsed_arguments, "benders_elastic_allocations", False
+            ),
+            "ElasticIterations": getattr(
+                parsed_arguments, "benders_elastic_iterations", 10
+            ),
+            "ElasticPenalty": getattr(
+                parsed_arguments, "benders_elastic_penalty", 0.1
+            ),
+            "ElasticGrowth": getattr(
+                parsed_arguments, "benders_elastic_growth", 2.0
+            ),
         }
 
         # Optional override of the Benders setup, e.g. for permutation tests:

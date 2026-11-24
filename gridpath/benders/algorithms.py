@@ -989,6 +989,16 @@ def benders(
         # ---------------------------------------------------------
 
         _iteration_planning_sol = planning_sol
+        # Elastic allocations (relatively complete recourse): in the first
+        # iterations the allocation-dependent rows may be violated at a
+        # penalty that grows geometrically. None = strict constraints.
+        _elastic_penalty = None
+        if setup.get("ElasticAllocations", False) and k < int(
+            setup.get("ElasticIterations", 10)
+        ):
+            _elastic_penalty = float(setup.get("ElasticPenalty", 0.1)) * (
+                float(setup.get("ElasticGrowth", 2.0)) ** k
+            )
         subop_sol = _dispatch_window(
             worker_keys,
             lambda key: {
@@ -998,6 +1008,7 @@ def benders(
                 "master_discrete_method": master_discrete_method,
                 "operational_discrete_method": operational_discrete_method,
                 "master_integrality_restored": master_integrality_restored,
+                "elastic_penalty": _elastic_penalty,
             },
             worker_batch_size,
             input_queues,
@@ -1315,8 +1326,12 @@ def benders(
         # Evaluate feasible incumbent
         # ---------------------------------------------------------
 
+        # An evaluation that used elastic violation is not a feasible plan:
+        # its cuts are valid (penalised cost <= true cost) but it must not
+        # set the lower bound.
         if all(
             result["feasible"]
+            and float(result.get("elastic_violation") or 0.0) <= 1e-6
             for result in subop_sol.values()
         ):
             LB_new = compute_incumbent_npv(

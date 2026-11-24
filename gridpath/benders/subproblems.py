@@ -1054,8 +1054,11 @@ def _native_task_trial(
     }
 
     runtime.open()
+    elastic_penalty = message.get("elastic_penalty")
     try:
         runtime.set_linking_values(values)
+        if elastic_penalty is not None:
+            runtime.add_elastic_allocations(float(elastic_penalty))
         operational_state = None
         if op_method == "fixed_z" and was_operational_mip:
             runtime.set_stage_params({"MSK_IPAR_OPTIMIZER": base_optimizer})
@@ -1170,6 +1173,7 @@ def _native_task_trial(
                 runtime, key_for_log=key, lp_optimizer=lp_optimizer,
                 first_violation=worst_violation,
             )
+        elastic_violation = runtime.elastic_violation()
         lambdas_all = runtime.linking_duals()
         lambdas = {name: lambdas_all[name] for name in active}
         op_cost = -runtime.objective_value()
@@ -1194,6 +1198,7 @@ def _native_task_trial(
             continuous_lambda=dict(lambdas),
             continuous_point={name: values[name] for name in active},
             theta_coeff=1.0,
+            elastic_violation=elastic_violation,
             operational_discrete_state=operational_state,
             master_discrete_state=master_state,
             is_mip=was_operational_mip,
@@ -1660,7 +1665,9 @@ def _benders_subproblem_worker_impl(
                             "feasible", "op_cost", "benders_lambda", "continuous_lambda",
                             "continuous_point", "theta_coeff", "operational_discrete_state",
                             "master_discrete_state", "is_mip", "operational_mip_variables",
+                            "elastic_violation",
                         )
+                        if key_ in native_result
                     }
             finally:
                 monitor_stop.set()

@@ -47,6 +47,7 @@ def define_linking_vars(m):
         "FUEL_BURN_MAX_ABS_ALLOCATION",
         "CAP_FACTOR_MIN_ALLOCATION",
         "CAP_FACTOR_MAX_ALLOCATION",
+        "GENERIC_POLICY_ALLOCATION",
         "STOR_START_SOC_ALLOCATION",
         "STOR_END_SOC_ALLOCATION",
     )
@@ -201,31 +202,20 @@ def create_operational_problem_benders(
 
 def _warn_unallocated_policy_constraints(instance):
     """
-    The generic-policy requirement constraints have no master allocation. A
-    requirement that spans several subproblems (annual horizon or
-    month-hour) is therefore enforced in full by every subproblem, which is
-    too restrictive and can make subproblems infeasible.
+    Annual generic-policy requirements are allocated by the master
+    (GENERIC_POLICY_ALLOCATION). Month-hour requirements are not yet: each
+    subproblem still enforces the full requirement against its own
+    contributions, which is too restrictive.
     """
     try:
-        problems = []
-        con = getattr(instance, "Policy_Requirement_Constraint", None)
-        if con is not None:
-            annual = [i for i in con if i[2] == "year"]
-            if annual:
-                problems.append(
-                    "%d annual Policy_Requirement_Constraint rows" % len(annual)
-                )
         mh = getattr(instance, "Policy_Month_Hour_Requirement_Constraint", None)
         if mh is not None and len(mh) > 0:
-            problems.append(
-                "%d Policy_Month_Hour_Requirement_Constraint rows" % len(mh)
-            )
-        if problems:
             logger.warning(
-                "Generic-policy requirements have no Benders allocation and are "
-                "enforced in full in every subproblem (%s). Allow violation for "
-                "these policies or expect infeasible subproblems.",
-                "; ".join(problems),
+                "Generic-policy month-hour requirements (%d rows) have no "
+                "Benders allocation and are enforced in full in every "
+                "subproblem. Allow violation for these policies or expect "
+                "infeasible subproblems.",
+                len(mh),
             )
     except Exception:  # diagnostic only
         pass

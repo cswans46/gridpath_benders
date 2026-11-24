@@ -229,6 +229,11 @@ def define_benders_modules(modules_to_use):
         "system.policy.energy_targets",
         "system.policy.energy_targets.period_energy_target",
         "system.policy.performance_standard.performance_standard",
+        # Parameter-only modules whose targets the master must also know in
+        # order to allocate fuel-burn and transmission targets across the
+        # subproblems.
+        "system.policy.fuel_burn_limits.fuel_burn_limits",
+        "system.policy.transmission_targets.transmission_target",
         "system.policy.energy_targets.consolidate_results",
         "system.policy.carbon_cap.consolidate_results",
     ]

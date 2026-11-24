@@ -227,6 +227,8 @@ class MosekTaskRuntime:
         self.integer_columns = dict(metadata["integer_columns"])
         self.native_bounds = dict(metadata["native_bounds"])
         self.row_groups = dict(metadata.get("row_groups") or {})
+        self._elastic_first = None
+        self._elastic_weights = None
         self._touched_columns = sorted(int(c) for c in self.native_bounds)
         if self.task is not None:
             self._apply_params({})
@@ -276,7 +278,9 @@ class MosekTaskRuntime:
 
     def end_trial(self):
         """Called after every trial: dispose (offload) or reset touched columns."""
-        if self.offload:
+        if self.offload or self._elastic_first is not None:
+            # An elastic trial adds columns; never reuse that task.
+            self._elastic_first = None
             self.close()
         else:
             self.reset_touched()
@@ -422,6 +426,88 @@ class MosekTaskRuntime:
 
     def objective_value(self):
         return float(self.task.getprimalobj(self.solution_type)) * self.objective_scale
+
+    def _rows_of_column(self, column):
+        """Row indices with a non-zero in ``column`` (API-version tolerant)."""
+        result = self.task.getacol(int(column))
+        if len(result) == 3:      # (nzj, subj, valj)
+            return [int(i) for i in result[1]]
+        return [int(i) for i in result[0]]   # (subj, valj)
+
+    def add_elastic_allocations(self, multiplier):
+        """Let rows that use a policy allocation be violated at a penalty.
+
+        Every non-linking row with a non-zero in an allocation column gets
+        non-negative slack columns (``p`` for a lower bound, ``n`` for an
+        upper bound), priced in the objective at
+        ``multiplier * ||c||_1 * w_i`` per unit with
+        ``w_i = 1 / max(1, |l_i|, |u_i|)``. The recourse problem is then
+        always feasible with respect to the allocations. Returns the number
+        of rows made elastic. The task is flagged so ``end_trial`` disposes
+        it (the next trial re-reads the pristine task).
+        """
+        from gridpath.benders.allocation_names import is_allocation_name
+
+        mosek = self.mosek
+        task = self.task
+        bk = mosek.boundkey
+        columns = [
+            int(c) for n, c in self.linking_columns.items()
+            if is_allocation_name(n)
+        ]
+        if not columns:
+            return 0
+        rows = set()
+        for column in columns:
+            rows.update(self._rows_of_column(column))
+        rows.difference_update(int(r) for r in self.linking_rows.values())
+        if not rows:
+            return 0
+        rows = np.array(sorted(rows), dtype=np.int64)
+        n_var = task.getnumvar()
+        n_con = task.getnumcon()
+        keys, lowers, uppers = task.getconboundslice(0, n_con)
+        lower = np.array(lowers, dtype=float)[rows]
+        upper = np.array(uppers, dtype=float)[rows]
+        has_lower = np.array([keys[i] in (bk.lo, bk.ra, bk.fx) for i in rows])
+        has_upper = np.array([keys[i] in (bk.up, bk.ra, bk.fx) for i in rows])
+        del keys, lowers, uppers
+        lower[~has_lower] = -np.inf
+        upper[~has_upper] = np.inf
+        weight = 1.0 / np.maximum.reduce([
+            np.ones(len(rows)),
+            np.where(np.isfinite(lower), np.abs(lower), 0.0),
+            np.where(np.isfinite(upper), np.abs(upper), 0.0),
+        ])
+        c_norm = float(np.sum(np.abs(np.asarray(task.getc(), dtype=float))))
+        if not math.isfinite(c_norm) or c_norm <= 0.0:
+            c_norm = 1.0
+        rows_p, w_p = rows[has_lower], weight[has_lower]
+        rows_n, w_n = rows[has_upper], weight[has_upper]
+        n_new = len(rows_p) + len(rows_n)
+        if n_new == 0:
+            return 0
+        task.appendvars(n_new)
+        task.putvarboundsliceconst(n_var, n_var + n_new, bk.lo, 0.0, 0.0)
+        weights = np.concatenate([w_p, w_n])
+        task.putcslice(n_var, n_var + n_new, float(multiplier) * c_norm * weights)
+        if len(rows_p):
+            task.putaijlist(rows_p, np.arange(n_var, n_var + len(rows_p)),
+                            np.ones(len(rows_p)))
+        if len(rows_n):
+            task.putaijlist(rows_n, np.arange(n_var + len(rows_p), n_var + n_new),
+                            -np.ones(len(rows_n)))
+        self._elastic_first = n_var
+        self._elastic_weights = weights
+        return int(len(rows))
+
+    def elastic_violation(self):
+        """Total relative violation used by the last elastic solve (0 if none)."""
+        if self._elastic_first is None or self.solution_type is None:
+            return 0.0
+        x = np.asarray(self.task.getxx(self.solution_type), dtype=float)
+        slack = x[self._elastic_first:self._elastic_first + len(self._elastic_weights)]
+        return float(np.dot(self._elastic_weights, np.maximum(slack, 0.0)))
 
     def phase_one(self, active_names, point, key_label="", diag_groups=8):
         """Native Phase-I on the loaded task (replaces the Pyomo restoration).

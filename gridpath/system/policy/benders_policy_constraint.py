@@ -410,6 +410,57 @@ def add_model_components(
     )
     
     # ============================================================
+    # Fuel-burn and transmission-target allocation targets (master only)
+    # ============================================================
+    # The target sets are normally declared by the balance modules, which
+    # cannot be loaded in the master. Declare them here from the
+    # parameter-only modules (loaded in both models).
+    if not getattr(m, "_is_benders_subproblem", False):
+        if hasattr(m, "fuel_burn_min_unit"):
+            from gridpath.system.policy.fuel_burn_limits.fuel_burn_limit_balance import (
+                _add_annual_fuel_burn_allocation_target_sets,
+            )
+
+            _add_annual_fuel_burn_allocation_target_sets(m)
+        if hasattr(m, "transmission_target_pos_dir_min_mwh"):
+            from gridpath.system.policy.transmission_targets.transmission_target_balance import (
+                _add_annual_allocation_target_sets,
+            )
+
+            _add_annual_allocation_target_sets(m)
+
+    # ============================================================
+    # Generic-policy annual requirement allocation (master only)
+    # ============================================================
+    # The generic-policy module cannot be loaded in the master (its
+    # requirement expression needs load), so the scalar requirements are
+    # read here straight from policy_requirements.tab.
+    if not getattr(m, "_is_benders_subproblem", False):
+        m.BENDERS_GENERIC_POLICY_REQ_ROWS = Set(dimen=4, within=Any)
+        m.benders_generic_policy_requirement = Param(
+            m.BENDERS_GENERIC_POLICY_REQ_ROWS, within=Reals, default=0
+        )
+        m.GENERIC_POLICY_ALLOCATION_TARGETS = Set(
+            dimen=4,
+            initialize=lambda mod: [
+                (policy, zone, bt, h)
+                for (policy, zone, bt, h) in mod.BENDERS_GENERIC_POLICY_REQ_ROWS
+                if bt == "year" and h in mod.PERIODS
+            ],
+        )
+        m.GENERIC_POLICY_ALLOCATION_INDEX = Set(
+            dimen=5,
+            initialize=lambda mod: [
+                (policy, zone, bt, h, str(sp))
+                for (policy, zone, bt, h) in mod.GENERIC_POLICY_ALLOCATION_TARGETS
+                for sp in mod.SUBPROBLEMS_BY_PERIOD[h]
+            ],
+        )
+        m.GENERIC_POLICY_ALLOCATION = Var(
+            m.GENERIC_POLICY_ALLOCATION_INDEX, within=NonNegativeReals
+        )
+
+    # ============================================================
     # Storage SOC allocation variables (master only)
     # ============================================================
     
@@ -617,6 +668,12 @@ def add_model_components(
         return (STOR_SOC_ALLOCATION_UNIT_MWH * mod.STOR_END_SOC_ALLOCATION[prj, bt, hz, sp]
                 <= mod.Energy_Storage_Capacity_MWh[prj, hz])
 
+    def generic_policy_allocation_rule(mod, policy, zone, bt, h):
+        return sum(
+            mod.GENERIC_POLICY_ALLOCATION[policy, zone, bt, h, str(sp)]
+            for sp in mod.SUBPROBLEMS_BY_PERIOD[h]
+        ) >= mod.benders_generic_policy_requirement[policy, zone, bt, h]
+
     def cap_factor_min_allocation_rule(mod, prj, bt, h):
         return sum(
             mod.CAP_FACTOR_MIN_ALLOCATION[prj, bt, h, str(sp)]
@@ -769,6 +826,10 @@ def add_model_components(
         m.Stor_SOC_Capacity_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_capacity_rule)
         m.Stor_SOC_End_Capacity_Constraint = Constraint(m.STOR_SOC_ALLOCATION_INDEX, rule=_stor_soc_end_capacity_rule)
         
+        m.Generic_Policy_Allocation_Constraint = Constraint(
+            m.GENERIC_POLICY_ALLOCATION_TARGETS,
+            rule=generic_policy_allocation_rule,
+        )
         if hasattr(m, "CAP_FACTOR_MIN_ALLOCATION_TARGETS"):
             m.Cap_Factor_Min_Allocation_Constraint = Constraint(
                 m.CAP_FACTOR_MIN_ALLOCATION_TARGETS,
@@ -883,6 +944,39 @@ def load_model_data(
     subproblem,
     stage,
 ):
+    if hasattr(m, "BENDERS_GENERIC_POLICY_REQ_ROWS"):
+        requirement_file = None
+        for candidate in (
+            os.path.join(scenario_directory, "inputs", "policy_requirements.tab"),
+        ):
+            if os.path.exists(candidate):
+                requirement_file = candidate
+        try:
+            nested = os.path.join(
+                scenario_directory, weather_iteration, hydro_iteration,
+                availability_iteration, subproblem, stage, "inputs",
+                "policy_requirements.tab",
+            )
+            if os.path.exists(nested):
+                requirement_file = nested
+        except TypeError:
+            pass
+        if requirement_file is not None:
+            data_portal.load(
+                filename=requirement_file,
+                index=m.BENDERS_GENERIC_POLICY_REQ_ROWS,
+                param=m.benders_generic_policy_requirement,
+                select=(
+                    "policy_name",
+                    "policy_zone",
+                    "balancing_type",
+                    "horizon",
+                    "policy_requirement",
+                ),
+            )
+        else:
+            data_portal.data()["BENDERS_GENERIC_POLICY_REQ_ROWS"] = {None: []}
+
     if hasattr(m, "BENDERS_PERFORMANCE_STANDARD_PRJ_ZONES"):
         ps_candidates = []
         try:

@@ -284,30 +284,10 @@ def load_plan(path):
     return {str(k): float(v) for k, v in values.items()}
 
 
-# Policy allocation variables: the master splits a period budget over the
-# representative days. They are seeded by share, not driven to a bound.
-ALLOCATION_COMPONENTS = (
-    "CARBON_CAP_ALLOCATION",
-    "PERIOD_ENERGY_TARGET_ALLOCATION",
-    "PERFORMANCE_STANDARD_MWH_ALLOCATION",
-    "PERFORMANCE_STANDARD_MW_ALLOCATION",
-    "BENDERS_CARBON_CREDIT_DEMAND_ALLOCATION",
-    "BENDERS_CARBON_CREDIT_SUPPLY_ALLOCATION",
-    "BENDERS_PROJECT_CARBON_CREDIT_ABSOLUTE_THRESHOLD_ALLOCATION",
-    "TRANSMISSION_TARGET_POS_DIR_MIN_ALLOCATION",
-    "TRANSMISSION_TARGET_POS_DIR_MAX_ALLOCATION",
-    "TRANSMISSION_TARGET_NEG_DIR_MIN_ALLOCATION",
-    "TRANSMISSION_TARGET_NEG_DIR_MAX_ALLOCATION",
-    "FUEL_BURN_MIN_ABS_ALLOCATION",
-    "FUEL_BURN_MAX_ABS_ALLOCATION",
-    "CAP_FACTOR_MIN_ALLOCATION",
-    "CAP_FACTOR_MAX_ALLOCATION",
+from gridpath.benders.allocation_names import (  # noqa: E402
+    ALLOCATION_COMPONENTS,
+    is_allocation_name as _is_allocation_name,
 )
-
-
-def _is_allocation_name(name):
-    return any(name.startswith(prefix + "[") or name == prefix
-               for prefix in ALLOCATION_COMPONENTS)
 
 
 def allocation_share_groups(instance):

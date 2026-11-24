@@ -15,7 +15,9 @@
 
 """ """
 
-from pyomo.environ import Var, Constraint, NonNegativeReals, Expression, value
+from pyomo.environ import (
+    Var, Constraint, NonNegativeReals, Expression, value, Set,
+)
 
 from gridpath.auxiliary.dynamic_components import (
     policy_balance_contribution_components,
@@ -45,6 +47,37 @@ def add_model_components(
     :param d:
     :return:
     """
+
+    # Benders: an annual requirement spans every representative-day
+    # subproblem of the period. Its fixed (scalar) part is split by the
+    # master across the subproblems; the percent-of-load part is already
+    # per-subproblem because each subproblem only sees its own load.
+    def _generic_policy_allocation_targets(mod):
+        if not getattr(mod, "_is_benders_subproblem", False):
+            return []
+        return [
+            (policy, zone, bt, h)
+            for (policy, zone, bt, h) in mod.POLICIES_ZONE_BLN_TYPE_HRZS_WITH_REQ
+            if bt == "year" and h in mod.PERIODS
+        ]
+
+    m.GENERIC_POLICY_ALLOCATION_TARGETS = Set(
+        dimen=4, initialize=_generic_policy_allocation_targets
+    )
+    if getattr(m, "_is_benders_subproblem", False):
+        if not hasattr(m, "SUBPROBLEM"):
+            m.SUBPROBLEM = Set(initialize=[str(subproblem)])
+        m.GENERIC_POLICY_ALLOCATION_INDEX = Set(
+            dimen=5,
+            initialize=lambda mod: [
+                (policy, zone, bt, h, str(sp))
+                for (policy, zone, bt, h) in mod.GENERIC_POLICY_ALLOCATION_TARGETS
+                for sp in mod.SUBPROBLEM
+            ],
+        )
+        m.GENERIC_POLICY_ALLOCATION = Var(
+            m.GENERIC_POLICY_ALLOCATION_INDEX, within=NonNegativeReals
+        )
 
     m.Policy_Target_Shortage = Var(
         m.POLICIES_ZONE_BLN_TYPE_HRZS_WITH_REQ, within=NonNegativeReals, initialize=0
@@ -97,12 +130,18 @@ def add_model_components(
         :param h:
         :return:
         """
+        target = mod.Policy_Zone_Horizon_Requirement[policy, zone, bt, h]
+        if (policy, zone, bt, h) in mod.GENERIC_POLICY_ALLOCATION_TARGETS:
+            target = sum(
+                mod.GENERIC_POLICY_ALLOCATION[policy, zone, bt, h, str(sp)]
+                for sp in mod.SUBPROBLEM
+            ) + (target - mod.policy_requirement[policy, zone, bt, h])
         return (
             mod.Total_Policy_Zone_Tmp_Contributions_from_All_Sources_Expression[
                 policy, zone, bt, h
             ]
             + mod.Policy_Requirement_Shortage_Expression[policy, zone, bt, h]
-            >= mod.Policy_Zone_Horizon_Requirement[policy, zone, bt, h]
+            >= target
         )
 
     m.Policy_Requirement_Constraint = Constraint(
