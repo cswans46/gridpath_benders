@@ -76,7 +76,17 @@ def solve_planning_problem(
     status = results.solver.status
     termination = results.solver.termination_condition
 
-    if status != SolverStatus.ok or termination != TerminationCondition.optimal:
+    # A fresh stock solver cannot read the interior solution that the
+    # interior-point master relies on (no basic solution without
+    # crossover), and re-solving an infeasible model cannot change the
+    # answer, so only retry other failures with the configured solver.
+    _retry_with_fresh_solver = not (
+        getattr(optimiser, "_benders_interior_point", False)
+        or termination == TerminationCondition.infeasible
+    )
+    if _retry_with_fresh_solver and (
+        status != SolverStatus.ok or termination != TerminationCondition.optimal
+    ):
         solver_name = getattr(optimiser, "name", None)
 
         if solver_name and solver_name != "gams":

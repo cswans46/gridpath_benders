@@ -1168,6 +1168,16 @@ Tuning. A penalty that is too small returns cheap but uninformative cuts (the su
 
 **Phase-I row weights.** The Phase-I weights use only the row bounds, not the row coefficients. Using the coefficients would improve scaling but would not make the Phase-I solve cheaper (same number of rows and columns), so it was left unchanged. The cost reduction comes from running Phase-I natively and, with elastic allocations, from running it less often.
 
+### 15.5.21 Master infeasible inside the artificial caps (`err_undef_solution`)
+
+*Symptom.* The first master solve printed `Problem is primal infeasible` and the run then stopped with `mosek.Error: rescode.err_undef_solution(22000): The solution with code 1 is not defined` raised from `solve_planning_problem` (`planning.py`, the retry line).
+
+*Cause.* Two things. (1) The scaled caps on the unbounded allocation variables (`PERFORMANCE_STANDARD_MW_ALLOCATION`, which has no natural bound) start from a fallback of 1e6 per variable, and the corrected master constraint `sum_w a_w = -(K-1) * rate * Capacity` can require a total larger than K times that, so the first master is infeasible inside the caps. That is the situation the cap-enlargement loop is for. (2) Before enlarging, `solve_planning_problem` retried every non-optimal result with a fresh stock `SolverFactory` solver. A stock solver reads the basic solution, which does not exist when the master is solved with the interior-point method and no crossover, hence the undefined-solution error. The retry crashed before the enlargement loop could run.
+
+*Fix.* (a) The fresh-solver retry is skipped when the configured optimiser is the interior-point master or when the result is already `infeasible` (re-solving cannot change an infeasibility proof). (b) `MosekBendersDirect._postsolve` now catches `err_undef_solution` and reports it as an infeasible result (or `unknown` if MOSEK reports no infeasibility status), so presolve-detected infeasibility reaches the cap-enlargement loop instead of raising. The caps are then enlarged by `--benders_cap_factor` up to eight times and the master re-solved.
+
+*Note.* The log also shows `Recourse bound LP: N linking variable(s) still lack a bound` for `PERFORMANCE_STANDARD_MW_ALLOCATION`. That is expected: the allocation has no natural bound and the warning is informational.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.

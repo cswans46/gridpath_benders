@@ -52,6 +52,50 @@ class MosekBendersDirect(MOSEKDirect):
         ):
             self._whichsol = mosek.soltype.itr
 
+    def _postsolve(self):
+        # With presolve (or an infeasibility proof) MOSEK may leave no
+        # solution of the requested type, and reading its status raises
+        # err_undef_solution. For the master that simply means "infeasible"
+        # (all variables carry bounds, so it cannot be unbounded); report it
+        # as such so the caller can enlarge the artificial caps.
+        try:
+            return super()._postsolve()
+        except mosek.Error as error:
+            if getattr(error, "errno", None) != mosek.rescode.err_undef_solution:
+                raise
+            from pyomo.opt import (
+                SolverResults,
+                SolverStatus,
+                TerminationCondition,
+            )
+
+            task = self._solver_model
+            infeasible = False
+            for which in (mosek.soltype.bas, mosek.soltype.itr):
+                try:
+                    status = task.getprosta(which)
+                except mosek.Error:
+                    continue
+                if status in (
+                    mosek.prosta.prim_infeas,
+                    mosek.prosta.prim_and_dual_infeas,
+                    mosek.prosta.prim_infeas_or_unbounded,
+                ):
+                    infeasible = True
+            results = SolverResults()
+            results.solver.name = self._name
+            results.solver.status = SolverStatus.warning
+            results.solver.termination_condition = (
+                TerminationCondition.infeasible
+                if infeasible
+                else TerminationCondition.unknown
+            )
+            results.solver.message = (
+                "MOSEK returned no defined solution (err_undef_solution)."
+            )
+            self.results = results
+            return results
+
     def _apply_solver(self):
 
         return super()._apply_solver()
