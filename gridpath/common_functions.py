@@ -279,6 +279,53 @@ def get_benders_flag_parser():
         "<scenario directory>/benders_bounds_cache.",
     )
     parser.add_argument(
+        "--benders_bound_strategy",
+        default="legacy",
+        choices=("legacy", "scaled_caps"),
+        type=str,
+        help="How unbounded continuous master variables are handled. "
+        "legacy: FBBT, optional OBBT, then a blanket 1e8 cap. scaled_caps: "
+        "FBBT only (no OBBT solves), then caps sized from each variable's "
+        "own family (--benders_cap_factor times the family's largest known "
+        "bound); before Benders may stop, any cap active at the master "
+        "optimum is enlarged and the master re-solved. Defaults to legacy.",
+    )
+    parser.add_argument(
+        "--benders_cap_factor",
+        default=10.0,
+        type=float,
+        help="Multiplier for scaled caps and for each enlargement of an "
+        "active cap (must exceed 1). Defaults to 10.",
+    )
+    parser.add_argument(
+        "--benders_seed_plan",
+        default="none",
+        type=str,
+        help="Evaluate a seed plan before the first master optimum. none "
+        "(default); lower_bounds (every continuous variable at its lower "
+        "bound); auto (the saved plan benders_incumbent_plan.json in the "
+        "scenario directory if present, else lower_bounds); or a path to a "
+        "plan JSON file. The plan is projected onto the master's feasible "
+        "set first.",
+    )
+    parser.add_argument(
+        "--benders_save_plan",
+        default=True,
+        type=str2bool,
+        help="Write the incumbent plan to "
+        "<scenario directory>/benders_incumbent_plan.json whenever the "
+        "lower bound improves, so a later run can seed from it. Defaults "
+        "to True.",
+    )
+    parser.add_argument(
+        "--benders_master_interior_point",
+        default=False,
+        type=str2bool,
+        help="Solve the master with the interior-point method and no "
+        "crossover (MOSEK or Gurobi). Can be combined with the other "
+        "options. Defaults to False.",
+    )
+    parser.add_argument(
         "--benders_operational_solver",
         default="automatic",
         choices=("automatic", "interior_point", "primal_simplex"),

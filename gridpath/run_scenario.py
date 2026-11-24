@@ -2616,6 +2616,21 @@ def solve(instance,
             "BoundsCacheDir": getattr(
                 parsed_arguments, "benders_bounds_cache_dir", None
             ),
+            "BoundStrategy": getattr(
+                parsed_arguments, "benders_bound_strategy", "legacy"
+            ),
+            "CapFactor": getattr(
+                parsed_arguments, "benders_cap_factor", 10.0
+            ),
+            "SeedPlan": getattr(
+                parsed_arguments, "benders_seed_plan", "none"
+            ),
+            "SavePlan": getattr(
+                parsed_arguments, "benders_save_plan", True
+            ),
+            "MasterInteriorPoint": getattr(
+                parsed_arguments, "benders_master_interior_point", False
+            ),
         }
 
         # Optional override of the Benders setup, e.g. for permutation tests:

@@ -20,6 +20,26 @@ from pyomo.repn.standard_repn import generate_standard_repn
 # from gridpath.benders.regularization import solve_int_level_set_problem
 # from gridpath.benders.subproblems import solve_subproblem
 from gridpath.benders.planning import *
+import statistics
+from gridpath.benders.master_start import (
+    DEFAULT_CAP_FACTOR,
+    MAX_CAP_ENLARGEMENTS,
+    MAX_REFERENCE_BOUND,
+    BOUND_STRATEGIES,
+    active_artificial_caps,
+    apply_master_interior_point,
+    apply_scaled_caps,
+    artificial_cap_count,
+    enlarge_artificial_caps,
+    family_of,
+    plan_file_path,
+    project_onto_master,
+    register_artificial_cap,
+    resolve_seed_targets,
+    save_plan,
+    scaled_cap_value,
+    validate_artificial_caps,
+)
 from gridpath.benders.linking_bounds import (
     apply_zero_linking_bounds,
     bounds_cache_path,
@@ -554,6 +574,34 @@ def benders(
     elif "gurobi" in solver_name:
         optimiser.options["OutputFlag"] = 0
 
+    # Optional: interior-point master without crossover (independent of the
+    # bound strategy and the seeded start).
+    if setup.get("MasterInteriorPoint", False):
+        if apply_master_interior_point(optimiser, parsed_arguments.solver):
+            print(
+                "Benders: master solves use the interior-point method "
+                "without crossover (--benders_master_interior_point)."
+            )
+        else:
+            logger.warning(
+                "--benders_master_interior_point is not supported for "
+                "solver %r; ignored.", parsed_arguments.solver,
+            )
+
+    bound_strategy = str(setup.get("BoundStrategy", "legacy")).lower()
+    if bound_strategy not in BOUND_STRATEGIES:
+        raise ValueError(
+            "Invalid BoundStrategy=%r. Expected one of %s."
+            % (bound_strategy, list(BOUND_STRATEGIES))
+        )
+    cap_factor = float(setup.get("CapFactor", DEFAULT_CAP_FACTOR))
+    if cap_factor <= 1.0:
+        raise ValueError("--benders_cap_factor must be greater than 1.")
+    planning_problem._benders_cap_strategy = bound_strategy
+    planning_problem._benders_cap_factor = cap_factor
+    print("Benders: --benders_bound_strategy = %s (cap factor %g)"
+          % (bound_strategy, cap_factor))
+
     # ---------------------------------------------------------
     # Create and Solve Subproblem in assigning processors
     # ---------------------------------------------------------
@@ -601,6 +649,8 @@ def benders(
                 setup.get("BoundsCacheDir")
                 or os.path.join(scenario_directory, "benders_bounds_cache")
             ),
+            bound_strategy=bound_strategy,
+            cap_factor=cap_factor,
         )
 
     print("Building subproblems for Benders decomposition...")
@@ -798,6 +848,20 @@ def benders(
         if not hasattr(planning_problem, "eLowerBoundOperatingCost"):
             planning_problem.ThetaLowerBound.clear()
 
+    if bound_strategy == "scaled_caps":
+        # Cap every remaining unbounded continuous master variable with a
+        # scaled artificial cap, so the first master is bounded and
+        # meaningful. The caps are validated before Benders may stop.
+        n_capped = apply_scaled_caps(
+            planning_problem, planning_variables, cap_factor
+        )
+        print(
+            "Benders scaled caps: %d further master bound(s) set; %d "
+            "artificial bound(s) in total." % (
+                n_capped, artificial_cap_count(planning_problem)
+            )
+        )
+
     planning_sol, master_obj, planning_results = solve_planning_problem(
         planning_problem,
         planning_variable_names,
@@ -866,6 +930,42 @@ def benders(
                 "DJC: %d binary linking variables exceed DjcSeedMaxStates; "
                 "no state seeding.", len(seed_names),
             )
+    # Seeded start (--benders_seed_plan): project a sensible plan onto the
+    # master's feasible set and evaluate it first, so the first cuts are
+    # taken at a meaningful point rather than at a capped optimum.
+    seed_setting = setup.get("SeedPlan", "none")
+    if str(seed_setting or "none").strip().lower() not in ("", "none"):
+        continuous_seed_names = [
+            v.name for v in planning_variables
+            if not v.is_binary() and not v.is_integer()
+            and not v.fixed
+            and v.name in required_planning_variable_names
+        ]
+        seed_targets, seed_note = resolve_seed_targets(
+            planning_problem, seed_setting, scenario_directory,
+            continuous_seed_names,
+        )
+        print("Benders seed plan: %s." % seed_note)
+        if seed_targets:
+            projected, projection_note = project_onto_master(
+                planning_problem, optimiser, seed_targets
+            )
+            if projected:
+                seed_sol = process_planning_sol(
+                    planning_problem,
+                    planning_variable_names,
+                    required_variables=required_planning_variable_names,
+                )
+                print("Benders seed plan projected onto the master: %s."
+                      % projection_note)
+                djc_seeds.insert(0, seed_sol)
+            else:
+                logger.warning(
+                    "Seed plan skipped: %s.", projection_note
+                )
+    save_plan_enabled = bool(setup.get("SavePlan", True))
+    incumbent_plan_path = plan_file_path(scenario_directory)
+
     n_seeds = len(djc_seeds)
     if djc_seeds:
         planning_sol = djc_seeds.pop(0)
@@ -1217,6 +1317,12 @@ def benders(
             if LB_new > LB:
                 LB = LB_new
                 planning_sol_best = deepcopy(planning_sol)
+                if save_plan_enabled:
+                    save_plan(
+                        incumbent_plan_path,
+                        planning_sol_best.values,
+                        objective=LB,
+                    )
                 # Shallow copy is enough: every iteration builds a fresh subop_sol
                 # from newly unpickled worker results, which are not mutated
                 # after the incumbent check
@@ -1327,6 +1433,113 @@ def benders(
                 LB,
                 UB,
             )
+
+        # ---------------------------------------------------------
+        # Validate artificial caps before accepting convergence
+        # ---------------------------------------------------------
+        # A cap that is active at the master optimum may have shaped the
+        # optimum, so the bound is not yet a bound for the uncapped master.
+        # Enlarge the active caps and re-solve; earlier UBs were computed
+        # over the smaller box and are discarded.
+        if converged and pj_initialization_complete:
+            if bound_strategy != "scaled_caps":
+                active = active_artificial_caps(
+                    planning_problem, unst_planning_sol.values
+                )
+                if active:
+                    logger.warning(
+                        "%d artificial bound(s) are active at the final "
+                        "master optimum (for example %s); the upper bound "
+                        "holds only within those caps. Use "
+                        "--benders_bound_strategy scaled_caps to have "
+                        "them validated automatically.",
+                        len(active), sorted(active)[:3],
+                    )
+                enlargements = 0
+            else:
+                def _resolve_master():
+                    sol, obj, _ = solve_planning_problem(
+                        planning_problem,
+                        planning_variable_names,
+                        optimiser,
+                        required_variables=required_planning_variable_names,
+                    )
+                    return sol, obj
+
+                n_active_before = len(active_artificial_caps(
+                    planning_problem, unst_planning_sol.values
+                ))
+                (
+                    unst_planning_sol, UB_validated, enlargements,
+                    cap_changed, cap_valid,
+                ) = validate_artificial_caps(
+                    planning_problem, _resolve_master, unst_planning_sol,
+                    UB_new, cap_factor, conv_tol,
+                )
+                if enlargements:
+                    print(
+                        "Benders cap validation: %d artificial bound(s) "
+                        "were active at the master optimum; %d "
+                        "enlargement(s) of x%g; master bound %s (%.6g -> "
+                        "%.6g)%s." % (
+                            n_active_before, enlargements, cap_factor,
+                            "rose" if cap_changed else "unchanged",
+                            UB_new, UB_validated,
+                            "" if cap_valid else "; STILL ACTIVE after the "
+                            "maximum number of enlargements",
+                        )
+                    )
+                    if not cap_valid:
+                        logger.warning(
+                            "Artificial caps are still active after %d "
+                            "enlargements; the master may be unbounded in "
+                            "those directions.", enlargements,
+                        )
+                    # Bounds from smaller boxes are not bounds of the
+                    # enlarged master unless the value did not rise.
+                    UB = UB_validated if cap_changed else min(UB, UB_validated)
+                    if UB != math.inf and LB != -math.inf:
+                        gap = abs(UB - LB) / max(abs(UB), 1e-10)
+                        absolute_gap = abs(UB - LB)
+                    converged = (
+                        gap <= conv_tol
+                        and LB <= UB + conv_tol * abs(UB)
+                    )
+                    # The next trial point is the new master optimum.
+                    planning_sol = deepcopy(unst_planning_sol)
+            if (
+                converged
+                and bound_strategy == "scaled_caps"
+                and not use_pj_initialization
+            ):
+                # The recourse lower bounds were computed inside the caps
+                # the workers were given. They are only trustworthy if they
+                # do not shape the final master optimum.
+                at_theta_bound = [
+                    key for key, lower in recourse_cost_lower_bounds.items()
+                    if planning_problem.vTHETA[key].value is not None
+                    and planning_problem.vTHETA[key].value
+                    <= float(lower) / BENDERS_THETA_SCALE
+                    + 1e-9 * max(1.0, abs(float(lower)) / BENDERS_THETA_SCALE)
+                ]
+                if at_theta_bound:
+                    logger.warning(
+                        "%d recourse cost lower bound(s) are active at the "
+                        "final master optimum (for example %s). They were "
+                        "derived inside the scaled caps and are not "
+                        "validated beyond them.",
+                        len(at_theta_bound), at_theta_bound[:2],
+                    )
+            if enlargements and not converged:
+                print(
+                    "Benders cap validation: the enlarged master raised the "
+                    "upper bound to %.6g (gap %.3e); continuing." % (UB, gap)
+                )
+            elif enlargements:
+                print(
+                    "Benders cap validation: converged on the enlarged "
+                    "master (gap %.3e)." % gap
+                )
 
         LB_hist.append(LB)
         UB_hist.append(UB)
@@ -3112,6 +3325,8 @@ def compute_linking_variable_bounds(
     use_propagation=True,
     use_cache=True,
     cache_dir=None,
+    bound_strategy="legacy",
+    cap_factor=DEFAULT_CAP_FACTOR,
 ):
     """
     Return {name: (lb, ub)} for every continuous linking variable that
@@ -3148,7 +3363,13 @@ def compute_linking_variable_bounds(
         "use_propagation": bool(use_propagation),
         "variable_cap": BENDERS_MASTER_VARIABLE_CAP,
         "linking_vars": sorted(candidate_names),
+        "bound_strategy": bound_strategy,
+        "cap_factor": float(cap_factor),
     }
+    scaled = bound_strategy == "scaled_caps"
+    if scaled:
+        # Scaled caps replace OBBT: no master solve is spent on bounds.
+        allow_obbt = False
 
     # -----------------------------------------------------------------
     # On-disk cache
@@ -3278,6 +3499,11 @@ def compute_linking_variable_bounds(
     bounds = {}
     skipped = list(no_lower_bound)
 
+    if scaled:
+        planning_problem._benders_scaled_caps = _scaled_linking_caps(
+            planning_problem, candidates, cap_factor
+        )
+
     for name, var in candidates:
         try:
             bounds[name] = get_continuous_variable_bounds(
@@ -3292,6 +3518,7 @@ def compute_linking_variable_bounds(
 
     # The capacity index is only needed while bounds are derived.
     planning_problem._benders_capacity_index = None
+    planning_problem._benders_scaled_caps = None
 
     _enforce_assumed_bounds(planning_problem, bounds)
     assumed = getattr(planning_problem, "_benders_assumed_bounds", set())
@@ -3330,6 +3557,53 @@ def compute_linking_variable_bounds(
 
     return bounds
 
+def _scaled_linking_caps(planning_problem, candidates, cap_factor):
+    """{name: cap} for linking variables no cheap tier can bound.
+
+    The scale of a variable is the largest bound that explicit bounds,
+    GridPath capacity constraints, earlier results or FBBT gave to any
+    variable of its own family (see master_start.scaled_cap_references).
+    """
+    fbbt_ub = getattr(planning_problem, "_benders_fbbt_ub", {})
+    persisted = getattr(planning_problem, "_benders_persisted_bounds", None) or {}
+
+    resolved_ub = {}
+    unresolved = []
+    for name, var in candidates:
+        if var.has_ub():
+            resolved_ub[name] = float(pyo.value(var.ub))
+            continue
+        gp = find_gridpath_capacity_upper_bound(planning_problem, var)
+        if gp is not None:
+            resolved_ub[name] = float(gp)
+        elif var.name in persisted:
+            resolved_ub[name] = float(persisted[var.name][1])
+        elif var.name in fbbt_ub:
+            resolved_ub[name] = float(fbbt_ub[var.name])
+        else:
+            unresolved.append((name, var))
+
+    family_ref = {}
+    for name, ub in resolved_ub.items():
+        if math.isfinite(ub) and abs(ub) <= MAX_REFERENCE_BOUND:
+            fam = family_of(name)
+            family_ref[fam] = max(family_ref.get(fam, 0.0), abs(ub))
+    positive = [v for v in family_ref.values() if v > 0]
+    global_ref = statistics.median(positive) if positive else None
+
+    caps = {
+        name: scaled_cap_value(name, family_ref, global_ref, cap_factor)
+        for name, _ in unresolved
+    }
+    if caps:
+        print(
+            "Benders scaled caps: %d linking variable(s) get a cap of "
+            "%g x their family bound (smallest %g, largest %g)."
+            % (len(caps), cap_factor, min(caps.values()), max(caps.values()))
+        )
+    return caps
+
+
 def _register_linking_bounds(planning_problem, candidates, bounds):
     """Make loaded bounds visible to get_continuous_variable_bounds."""
     if not hasattr(planning_problem, "_benders_variable_bounds"):
@@ -3351,6 +3625,8 @@ def _enforce_assumed_bounds(planning_problem, bounds):
         var = planning_problem.find_component(name)
         if var is not None and not var.has_ub():
             var.setub(bounds[name][1])
+        if var is not None:
+            register_artificial_cap(planning_problem, name, "ub", bounds[name][1])
 
 def get_variable_lower_bound(var):
     """
@@ -3508,14 +3784,20 @@ def get_continuous_variable_bounds(
             BENDERS_MASTER_VARIABLE_CAP,
         )
 
-        logger.warning(
-            "Using assumed Benders upper bound %g for %s. "
-            "This bound has not been independently verified.",
-            BENDERS_MASTER_VARIABLE_CAP,
-            var.name,
-        )
+        scaled_caps = getattr(planning_problem, "_benders_scaled_caps", None)
+        if scaled_caps is not None and var.name in scaled_caps:
+            # --benders_bound_strategy scaled_caps: sized from the variable's
+            # own family; validated before the algorithm may stop.
+            ub = scaled_caps[var.name]
+        else:
+            logger.warning(
+                "Using assumed Benders upper bound %g for %s. "
+                "This bound has not been independently verified.",
+                BENDERS_MASTER_VARIABLE_CAP,
+                var.name,
+            )
 
-        ub = BENDERS_MASTER_VARIABLE_CAP
+            ub = BENDERS_MASTER_VARIABLE_CAP
 
         if not hasattr(
             planning_problem,

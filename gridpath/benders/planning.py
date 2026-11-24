@@ -15,6 +15,13 @@ from pyomo.environ import (
 )
 from pyomo.opt import SolverStatus, TerminationCondition
 
+from gridpath.benders.master_start import (
+    MAX_CAP_ENLARGEMENTS,
+    apply_scaled_caps,
+    enlarge_artificial_caps,
+    register_artificial_cap,
+)
+
 logger = logging.getLogger(__name__)
 BENDERS_THETA_SCALE = 1e9
 
@@ -90,24 +97,73 @@ def solve_planning_problem(
         # value far above any physical one and re-solve.
         capped = 0
         names = set(planning_variables)
-        for var in instance.component_data_objects(Var, active=True):
+        strategy = getattr(instance, "_benders_cap_strategy", "legacy")
+        factor = getattr(instance, "_benders_cap_factor", 10.0)
+        to_cap = [
+            var
+            for var in instance.component_data_objects(Var, active=True)
             if (
                 var.name in names
                 and not var.is_integer()
                 and not var.is_binary()
                 and not var.has_ub()
-            ):
+            )
+        ]
+        if strategy == "scaled_caps":
+            capped = apply_scaled_caps(
+                instance,
+                to_cap,
+                factor,
+                reference_variables=list(
+                    instance.component_data_objects(Var, active=True)
+                ),
+            )
+        else:
+            for var in to_cap:
                 var.setub(BENDERS_MASTER_VARIABLE_CAP)
+                register_artificial_cap(
+                    instance, var.name, "ub", BENDERS_MASTER_VARIABLE_CAP
+                )
                 capped += 1
         if capped:
             logger.warning(
-                "Planning problem unbounded; capped %d variable(s) at %g.",
+                "Planning problem unbounded; capped %d variable bound(s) "
+                "(strategy %s; legacy cap %g).",
                 capped,
+                strategy,
                 BENDERS_MASTER_VARIABLE_CAP,
             )
             results = optimiser.solve(instance, tee=False)
             status = results.solver.status
             termination = results.solver.termination_condition
+    if (
+        termination == TerminationCondition.infeasible
+        and getattr(instance, "_benders_cap_strategy", "legacy")
+        == "scaled_caps"
+    ):
+        # A scaled cap may be too small for a requirement of the master
+        # (for example a reserve margin). Enlarge every artificial bound and
+        # retry before declaring the master infeasible.
+        factor = getattr(instance, "_benders_cap_factor", 10.0)
+        for attempt in range(MAX_CAP_ENLARGEMENTS):
+            reg = getattr(instance, "_benders_artificial_caps", None)
+            if not reg or not (reg["ub"] or reg["lb"]):
+                break
+            everything = {
+                **{n: ("ub", c) for n, c in reg["ub"].items()},
+                **{n: ("lb", c) for n, c in reg["lb"].items()},
+            }
+            enlarge_artificial_caps(instance, everything, factor)
+            logger.warning(
+                "Planning problem infeasible inside the artificial caps; "
+                "enlarged %d bound(s) x%g (attempt %d).",
+                len(everything), factor, attempt + 1,
+            )
+            results = optimiser.solve(instance, tee=False)
+            status = results.solver.status
+            termination = results.solver.termination_condition
+            if termination == TerminationCondition.optimal:
+                break
     if status != SolverStatus.ok or termination != TerminationCondition.optimal:
         failed_master_path = os.environ.get(
             "GRIDPATH_BENDERS_FAILURE_LP"
