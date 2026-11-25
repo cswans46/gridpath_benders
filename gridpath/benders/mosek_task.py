@@ -452,36 +452,73 @@ class MosekTaskRuntime:
         return None
 
     def unbounded_ray_report(self, top=8):
-        """Describe the primal ray of an unbounded LP, by variable family."""
+        """Describe the primal ray of an unbounded LP, by variable family.
+
+        The ray's scale is arbitrary, so everything is judged relative to the
+        largest ray entry and to the total cost along the ray, never against
+        an absolute tolerance.
+        """
         which = self.dual_infeasible()
         if which is None:
             return "no dual-infeasibility certificate"
         x = np.asarray(self.task.getxx(which), dtype=float)
         n_var = len(x)
         c = np.asarray(self.task.getc(), dtype=float)
-        parts = []
+        contribution = c * x
+        total = float(contribution.sum())
+        xmax = float(np.abs(x).max()) if n_var else 0.0
+        parts = [
+            "total cost along ray {:.6g}, max|ray| {:.3g}, "
+            "{} of {} columns nonzero".format(
+                total, xmax, int((np.abs(x) > 1e-12 * max(xmax, 1e-300)).sum()), n_var
+            )
+        ]
         if self.column_groups:
             ranked = []
+            covered = np.zeros(n_var, dtype=bool)
             for group, ranges in self.column_groups.items():
-                weight = 0.0
                 cost = 0.0
                 count = 0
+                weight = 0.0
                 for start, end in ranges:
                     end = min(end, n_var)
-                    block = x[start:end]
-                    weight += float(np.abs(block).sum())
-                    cost += float(np.dot(c[start:end], block))
-                    count += int((np.abs(block) > 1e-9).sum())
-                if weight > 1e-9:
-                    ranked.append((weight, group, count, cost))
+                    if end <= start:
+                        continue
+                    covered[start:end] = True
+                    cost += float(contribution[start:end].sum())
+                    weight += float(np.abs(x[start:end]).sum())
+                    count += int((np.abs(x[start:end]) > 1e-9 * max(xmax, 1e-300)).sum())
+                if count:
+                    ranked.append((abs(cost), group, count, weight, cost))
             ranked.sort(reverse=True)
-            parts.append("; ".join(
-                "{} (sum|ray| {:.3g}, {} cols, cost along ray {:.3g})".format(g, w, k, cst)
-                for w, g, k, cst in ranked[:top]
-            ) or "no column above tolerance")
+            parts.append("by family (largest |cost along ray| first): " + "; ".join(
+                "{} ({} cols, sum|ray| {:.3g}, cost {:.3g})".format(g, k, w, cst)
+                for _, g, k, w, cst in ranked[:top]
+            ))
+            extra = float(contribution[~covered].sum()) if (~covered).any() else 0.0
+            if abs(extra) > 0:
+                parts.append("columns outside any family: cost {:.3g}".format(extra))
         else:
             parts.append("column groups unavailable (re-export the task)")
-        parts.append("total cost along ray {:.6g}".format(float(np.dot(c, x))))
+        order = np.argsort(-np.abs(contribution))[:top]
+        try:
+            bk, bl, bu = self.task.getvarboundslice(0, n_var)
+        except Exception:
+            bl = bu = None
+        details = []
+        for j in order:
+            if contribution[j] == 0.0:
+                continue
+            family = "?"
+            for group, ranges in self.column_groups.items():
+                if any(st <= j < en for st, en in ranges):
+                    family = group
+                    break
+            bound = "" if bl is None else " bounds [{:.3g}, {:.3g}]".format(bl[j], bu[j])
+            details.append("col {} {} ray {:.3g} cost {:.3g}{}".format(
+                int(j), family, x[j], c[j], bound))
+        if details:
+            parts.append("top columns: " + "; ".join(details))
         return " | ".join(parts)
 
     def primal_values(self, names):

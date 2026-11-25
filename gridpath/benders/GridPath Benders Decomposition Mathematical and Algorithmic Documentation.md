@@ -1190,6 +1190,10 @@ The cap is the usual `--benders_cap_factor` times that reference (default 10x). 
 * **Array format.** `putaijlist` in `phase_one` and `add_elastic_allocations` now receives contiguous `int32` index arrays and `float64` values, which removes the "Incorrect array format causing data to be copied" warnings. Behaviour is unchanged.
 * **Limitation.** The root cause of the unbounded recourse in the scenario-18 run is not established yet; the ray report is intended to identify it.
 
+#### 15.5.23 Scale-free unbounded-ray report (patch 26)
+
+The first run of the 15.5.22 diagnostic printed "no column above tolerance" although the cost along the ray was non-zero (332 on a maximisation task). A primal ray from MOSEK has an arbitrary scale, so an absolute threshold on `|x|` can discard every entry. The report now (i) states the total cost along the ray, `max|ray|` and the number of non-zero columns; (ii) ranks variable families by `|c'x|` with a threshold relative to `max|ray|`; (iii) lists the top columns by `|c_j x_j|` with their index, family, ray value, cost and variable bounds, which shows directly whether the ray runs along an unbounded column.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.
