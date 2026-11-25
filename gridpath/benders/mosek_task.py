@@ -601,7 +601,13 @@ class MosekTaskRuntime:
         task.appendvars(n_new)
         task.putvarboundsliceconst(n_var, n_var + n_new, bk.lo, 0.0, 0.0)
         weights = np.concatenate([w_p, w_n])
-        task.putcslice(n_var, n_var + n_new, float(multiplier) * c_norm * weights)
+        # A violation must COST: positive in a minimisation task, negative in a
+        # maximisation task. (A positive coefficient under "maximize" turns the
+        # slack into an unbounded reward.)
+        sense = -1.0 if task.getobjsense() == self.mosek.objsense.maximize else 1.0
+        task.putcslice(
+            n_var, n_var + n_new, sense * float(multiplier) * c_norm * weights
+        )
         if len(rows_p):
             task.putaijlist(_i32(rows_p), _i32(np.arange(n_var, n_var + len(rows_p))),
                             np.ones(len(rows_p), dtype=np.float64))

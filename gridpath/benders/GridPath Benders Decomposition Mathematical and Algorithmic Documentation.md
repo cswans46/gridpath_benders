@@ -1194,6 +1194,10 @@ The cap is the usual `--benders_cap_factor` times that reference (default 10x). 
 
 The first run of the 15.5.22 diagnostic printed "no column above tolerance" although the cost along the ray was non-zero (332 on a maximisation task). A primal ray from MOSEK has an arbitrary scale, so an absolute threshold on `|x|` can discard every entry. The report now (i) states the total cost along the ray, `max|ray|` and the number of non-zero columns; (ii) ranks variable families by `|c'x|` with a threshold relative to `max|ray|`; (iii) lists the top columns by `|c_j x_j|` with their index, family, ray value, cost and variable bounds, which shows directly whether the ray runs along an unbounded column.
 
+#### 15.5.24 Elastic-slack sign under a maximisation task (patch 27)
+
+The patch-26 report identified the unbounded ray in the scenario-18 run: a single column (index 219555 of 219586, bounds `[0, +inf)`, outside every Pyomo variable family) with cost coefficient +244 to +410 and ray value 1. That column is one of the elastic slacks of section 15.5.20. The exported recourse task is a **maximisation** (NPV), but `add_elastic_allocations` priced the slacks with a positive coefficient, which is the correct sign only for a minimisation. Under `maximize` a positive coefficient is a *reward* for violation, so the LP is unbounded as soon as one slack can grow without limit. The slack coefficient is now `sense * multiplier * ||c||_1 * w_i` with `sense = -1` for a maximisation task and `+1` for a minimisation task (read with `getobjsense`). With the corrected sign a violation always lowers the maximised objective, so the penalised recourse value stays at or below the true recourse value, which is what keeps the cuts valid (as in 15.5.20). The native Phase-I is unaffected: it sets its own `minimize` objective.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.
