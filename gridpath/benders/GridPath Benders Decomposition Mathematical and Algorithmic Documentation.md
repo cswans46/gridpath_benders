@@ -1184,6 +1184,12 @@ The cap is the usual `--benders_cap_factor` times that reference (default 10x). 
 
 *Note.* The log also shows `Recourse bound LP: N linking variable(s) still lack a bound` for `PERFORMANCE_STANDARD_MW_ALLOCATION`. That is expected: the allocation has no natural bound and the warning is informational.
 
+#### 15.5.22 Unbounded recourse diagnostic and `putaijlist` format (patch 25)
+
+* **Unbounded subproblems.** MOSEK status `dual_infeas_cer` on the minimisation LP is a certificate that the primal is *unbounded*: there is a direction `d` with `A d` feasible and `c'd < 0`. No feasibility cut can repair this, because the cut family only removes infeasibility. The native trial therefore no longer runs Phase-I (which returns a zero optimum for an unbounded LP) or the 700-900 s Pyomo restoration. It reads the ray `x` from `getxx`, aggregates `|x|` and `c'x` per Pyomo variable family (`column_groups` in the task metadata, built like `row_groups`), logs the dominant families, and raises. `GRIDPATH_BENDERS_CONTINUE_ON_UNBOUNDED=1` restores the old fall-through.
+* **Array format.** `putaijlist` in `phase_one` and `add_elastic_allocations` now receives contiguous `int32` index arrays and `float64` values, which removes the "Incorrect array format causing data to be copied" warnings. Behaviour is unchanged.
+* **Limitation.** The root cause of the unbounded recourse in the scenario-18 run is not established yet; the ray report is intended to identify it.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.

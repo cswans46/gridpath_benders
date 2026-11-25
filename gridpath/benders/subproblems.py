@@ -1115,6 +1115,21 @@ def _native_task_trial(
                     if runtime.proved_infeasible():
                         break
                 runtime.set_stage_params(_retry_restore_params(runtime, lp_optimizer))
+            if not recovered and runtime.dual_infeasible() is not None:
+                # The LP is UNBOUNDED, not infeasible: no feasibility cut can
+                # repair that. Name the variable families on the ray.
+                report = runtime.unbounded_ray_report()
+                log.error(
+                    "Recourse LP for %s is UNBOUNDED (MOSEK dual-infeasibility "
+                    "certificate). Unbounded direction: %s", key, report,
+                )
+                if os.getenv("GRIDPATH_BENDERS_CONTINUE_ON_UNBOUNDED", "0") != "1":
+                    raise RuntimeError(
+                        "Operational subproblem {} is unbounded; the Benders "
+                        "decomposition cannot continue. Unbounded direction: {}. "
+                        "Set GRIDPATH_BENDERS_CONTINUE_ON_UNBOUNDED=1 to fall back "
+                        "to the Pyomo restoration anyway.".format(key, report)
+                    )
             if not recovered and operational_state is None and os.getenv(
                 "GRIDPATH_BENDERS_NATIVE_PHASE1", "1"
             ) != "0":

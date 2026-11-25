@@ -43,6 +43,11 @@ def _finite_value(value):
     return result if math.isfinite(result) else None
 
 
+def _i32(values):
+    """Contiguous int32 array: what MOSEK's putaijlist expects (no copy warning)."""
+    return np.ascontiguousarray(values, dtype=np.int32)
+
+
 def _mosek_enum_name(value):
     return str(value).split(".")[-1]
 
@@ -157,6 +162,30 @@ def write_pyomo_mosek_task(
     except Exception:
         row_groups = {}
 
+    # Column -> variable-group map, same idea as the row groups: it lets the
+    # unbounded-ray diagnostic name the variable families involved.
+    column_groups = {}
+    try:
+        by_group = {}
+        for variable, column in var_map.items():
+            by_group.setdefault(
+                variable.parent_component().local_name, []
+            ).append(int(column))
+        for group, columns in by_group.items():
+            columns.sort()
+            ranges = []
+            start = previous = columns[0]
+            for column in columns[1:]:
+                if column != previous + 1:
+                    ranges.append([start, previous + 1])
+                    start = column
+                previous = column
+            ranges.append([start, previous + 1])
+            column_groups[group] = ranges
+        del by_group
+    except Exception:
+        column_groups = {}
+
     task.writedata(str(task_path))
     metadata = {
         "version": METADATA_VERSION,
@@ -170,6 +199,7 @@ def write_pyomo_mosek_task(
         "integer_columns": integer_columns,
         "native_bounds": native_bounds,
         "row_groups": row_groups,
+        "column_groups": column_groups,
     }
     temporary_metadata = Path(str(metadata_path) + ".tmp")
     temporary_metadata.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
@@ -227,6 +257,7 @@ class MosekTaskRuntime:
         self.integer_columns = dict(metadata["integer_columns"])
         self.native_bounds = dict(metadata["native_bounds"])
         self.row_groups = dict(metadata.get("row_groups") or {})
+        self.column_groups = dict(metadata.get("column_groups") or {})
         self._elastic_first = None
         self._elastic_weights = None
         self._touched_columns = sorted(int(c) for c in self.native_bounds)
@@ -410,6 +441,49 @@ class MosekTaskRuntime:
                 continue
         return False
 
+    def dual_infeasible(self):
+        """True when MOSEK holds a dual-infeasibility certificate (primal ray)."""
+        for candidate in (self.mosek.soltype.bas, self.mosek.soltype.itr):
+            try:
+                if self.task.getsolsta(candidate) == self.mosek.solsta.dual_infeas_cer:
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    def unbounded_ray_report(self, top=8):
+        """Describe the primal ray of an unbounded LP, by variable family."""
+        which = self.dual_infeasible()
+        if which is None:
+            return "no dual-infeasibility certificate"
+        x = np.asarray(self.task.getxx(which), dtype=float)
+        n_var = len(x)
+        c = np.asarray(self.task.getc(), dtype=float)
+        parts = []
+        if self.column_groups:
+            ranked = []
+            for group, ranges in self.column_groups.items():
+                weight = 0.0
+                cost = 0.0
+                count = 0
+                for start, end in ranges:
+                    end = min(end, n_var)
+                    block = x[start:end]
+                    weight += float(np.abs(block).sum())
+                    cost += float(np.dot(c[start:end], block))
+                    count += int((np.abs(block) > 1e-9).sum())
+                if weight > 1e-9:
+                    ranked.append((weight, group, count, cost))
+            ranked.sort(reverse=True)
+            parts.append("; ".join(
+                "{} (sum|ray| {:.3g}, {} cols, cost along ray {:.3g})".format(g, w, k, cst)
+                for w, g, k, cst in ranked[:top]
+            ) or "no column above tolerance")
+        else:
+            parts.append("column groups unavailable (re-export the task)")
+        parts.append("total cost along ray {:.6g}".format(float(np.dot(c, x))))
+        return " | ".join(parts)
+
     def primal_values(self, names):
         solution = self.task.getxx(self.solution_type)
         return {
@@ -492,11 +566,11 @@ class MosekTaskRuntime:
         weights = np.concatenate([w_p, w_n])
         task.putcslice(n_var, n_var + n_new, float(multiplier) * c_norm * weights)
         if len(rows_p):
-            task.putaijlist(rows_p, np.arange(n_var, n_var + len(rows_p)),
-                            np.ones(len(rows_p)))
+            task.putaijlist(_i32(rows_p), _i32(np.arange(n_var, n_var + len(rows_p))),
+                            np.ones(len(rows_p), dtype=np.float64))
         if len(rows_n):
-            task.putaijlist(rows_n, np.arange(n_var + len(rows_p), n_var + n_new),
-                            -np.ones(len(rows_n)))
+            task.putaijlist(_i32(rows_n), _i32(np.arange(n_var + len(rows_p), n_var + n_new)),
+                            -np.ones(len(rows_n), dtype=np.float64))
         self._elastic_first = n_var
         self._elastic_weights = weights
         return int(len(rows))
@@ -579,9 +653,9 @@ class MosekTaskRuntime:
         cost = np.concatenate([weight[rows_p], weight[rows_n]])
         task.putcslice(n_var, n_var + n_p + n_n, cost)
         if n_p:
-            task.putaijlist(rows_p, cols_p, np.ones(n_p))
+            task.putaijlist(_i32(rows_p), _i32(cols_p), np.ones(n_p, dtype=np.float64))
         if n_n:
-            task.putaijlist(rows_n, cols_n, -np.ones(n_n))
+            task.putaijlist(_i32(rows_n), _i32(cols_n), -np.ones(n_n, dtype=np.float64))
 
         self.set_stage_params({})
         try:
