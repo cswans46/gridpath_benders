@@ -74,6 +74,91 @@ def family_of(name):
     return name.split("[", 1)[0]
 
 
+def _day_weights(instance):
+    """{(period, subproblem): days represented}; equal weights if unknown."""
+    weights = getattr(instance, "_benders_subproblem_day_weight", None)
+    if weights:
+        return weights
+    by_period = getattr(instance, "SUBPROBLEMS_BY_PERIOD", None)
+    if by_period is None:
+        return {}
+    try:
+        return {
+            (int(period), str(sp)): 1.0
+            for period in by_period
+            for sp in by_period[period]
+        }
+    except Exception:
+        return {}
+
+
+def allocation_required_totals(instance):
+    """Largest period total each allocation family must carry, {family: total}.
+
+    An allocation variable without a natural bound is capped from a family
+    reference; the fallback (1e6) can be far below the budget it has to
+    carry (for example (K-1) * rate * Capacity for the performance-standard
+    MW allocation), which makes the first master infeasible inside the caps.
+    The totals below come from the master's own sum constraints.
+    """
+    totals = {}
+
+    def note(family, value):
+        try:
+            value = abs(float(value))
+        except (TypeError, ValueError):
+            return
+        if math.isfinite(value) and value > 0:
+            totals[family] = max(totals.get(family, 0.0), value)
+
+    weights = _day_weights(instance)
+
+    def n_sub(period):
+        return len([1 for (p, _sp) in weights if p == period])
+
+    expr = getattr(instance, "Benders_Performance_Standard_Capacity_MW", None)
+    if expr is not None:
+        try:
+            from pyomo.contrib.fbbt.fbbt import compute_bounds_on_expr
+
+            for (zone, period) in expr:
+                rate = pyo.value(
+                    instance.performance_standard_tco2_per_mw[zone, period]
+                )
+                if not math.isfinite(rate):
+                    continue
+                _lb, ub = compute_bounds_on_expr(expr[zone, period].expr)
+                if ub is None or not math.isfinite(ub):
+                    continue
+                note(
+                    "PERFORMANCE_STANDARD_MW_ALLOCATION",
+                    max(n_sub(period) - 1, 1) * rate * ub,
+                )
+        except Exception:
+            pass
+
+    for family, param_name in (
+        ("PERIOD_ENERGY_TARGET_ALLOCATION", "Period_Energy_Target"),
+        ("CARBON_CAP_ALLOCATION", "carbon_cap_target"),
+    ):
+        param = getattr(instance, param_name, None)
+        if param is None:
+            continue
+        try:
+            for index in param:
+                note(family, pyo.value(param[index]))
+        except Exception:
+            pass
+    requirement = getattr(instance, "benders_generic_policy_requirement", None)
+    if requirement is not None:
+        try:
+            for index in requirement:
+                note("GENERIC_POLICY_ALLOCATION", pyo.value(requirement[index]))
+        except Exception:
+            pass
+    return totals
+
+
 def scaled_cap_references(instance, variables):
     """Return ({family: reference}, global_reference).
 
@@ -91,8 +176,13 @@ def scaled_cap_references(instance, variables):
             continue
         fam = family_of(var.name)
         family_ref[fam] = max(family_ref.get(fam, 0.0), abs(float(ub)))
+    # The global reference (used for families with no reference of their
+    # own) must not be inflated by the allocation budgets.
     positive = [v for v in family_ref.values() if v > 0]
     global_ref = statistics.median(positive) if positive else None
+    # Allocation families must be able to carry their period budget.
+    for fam, total in allocation_required_totals(instance).items():
+        family_ref[fam] = max(family_ref.get(fam, 0.0), total)
     return family_ref, global_ref
 
 
@@ -297,7 +387,7 @@ def allocation_share_groups(instance):
     budget; the share of a day is its represented number of days over the
     period total (an equal split when every day weighs the same).
     """
-    weights = getattr(instance, "_benders_subproblem_day_weight", None) or {}
+    weights = _day_weights(instance)
     if not weights:
         return []
     groups = []

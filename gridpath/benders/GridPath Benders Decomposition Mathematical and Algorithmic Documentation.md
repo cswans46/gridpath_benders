@@ -1176,6 +1176,12 @@ Tuning. A penalty that is too small returns cheap but uninformative cuts (the su
 
 *Fix.* (a) The fresh-solver retry is skipped when the configured optimiser is the interior-point master or when the result is already `infeasible` (re-solving cannot change an infeasibility proof). (b) `MosekBendersDirect._postsolve` now catches `err_undef_solution` and reports it as an infeasible result (or `unknown` if MOSEK reports no infeasibility status), so presolve-detected infeasibility reaches the cap-enlargement loop instead of raising. The caps are then enlarged by `--benders_cap_factor` up to eight times and the master re-solved.
 
+*Better starting caps for allocation variables.* To avoid spending enlargement rounds on this, `scaled_cap_references` now takes the budget each allocation family has to carry from the master's own sum constraints (`allocation_required_totals` in `master_start.py`):
+- `PERFORMANCE_STANDARD_MW_ALLOCATION`: `max over (zone, period) of (K-1) * rate_MW * UB(Capacity)`, where `UB(Capacity)` is the upper bound of `Benders_Performance_Standard_Capacity_MW` from interval arithmetic (`pyomo.contrib.fbbt`) on the current build-variable bounds. Skipped if the capacity has no finite upper bound.
+- `PERIOD_ENERGY_TARGET_ALLOCATION`, `CARBON_CAP_ALLOCATION`: the largest `Period_Energy_Target` / `carbon_cap_target`.
+- `GENERIC_POLICY_ALLOCATION`: the largest scalar requirement.
+The cap is the usual `--benders_cap_factor` times that reference (default 10x). These totals are used only as family references: they do not enter the global reference that other unbounded families fall back to, so builds and similar variables are not capped more loosely because of them. If the day weights are not available on the instance, equal weights over `SUBPROBLEMS_BY_PERIOD` are used.
+
 *Note.* The log also shows `Recourse bound LP: N linking variable(s) still lack a bound` for `PERFORMANCE_STANDARD_MW_ALLOCATION`. That is expected: the allocation has no natural bound and the warning is informational.
 
 ## 16. References
