@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from dataclasses import dataclass
 # from pyomo.environ import Expression
@@ -292,10 +293,35 @@ def add_approximate_variable_cost(instance, benders_subproblems):
 def set_recourse_cost_lower_bounds(instance, recourse_cost_lower_bounds):
     """Set valid lower bounds on net operational cost theta variables."""
     instance.ThetaLowerBound.clear()
+    finite = {}
     for subproblem_key, lower_bound in recourse_cost_lower_bounds.items():
+        if lower_bound is not None and math.isfinite(float(lower_bound)):
+            finite[subproblem_key] = float(lower_bound)
+    for subproblem_key, lower_bound in finite.items():
         instance.ThetaLowerBound.add(
-            instance.vTHETA[subproblem_key] >= float(lower_bound)
-            / BENDERS_THETA_SCALE
+            instance.vTHETA[subproblem_key] >= lower_bound / BENDERS_THETA_SCALE
+        )
+
+    # A subproblem whose relaxation bound could not be computed (for instance
+    # because free policy-allocation columns make the bound LP unbounded) would
+    # leave its theta without any lower bound. Until that subproblem has an
+    # optimality cut, the master (a maximisation of -theta) is then UNBOUNDED
+    # (seen in the scenario-18 run: vTHETA[1] free, cost -1e9, ray 1). Give
+    # such thetas a conservative floor: 1e3 times the largest finite bound found
+    # for the other subproblems, or 1e15 if none exists. It is only a numerical
+    # guard: real optimality cuts bind long before it does.
+    missing = [key for key in instance.vTHETA if key not in finite]
+    if missing:
+        reference = max((abs(v) for v in finite.values()), default=1.0e12)
+        floor = -1.0e3 * max(reference, 1.0e12)
+        for subproblem_key in missing:
+            instance.ThetaLowerBound.add(
+                instance.vTHETA[subproblem_key] >= floor / BENDERS_THETA_SCALE
+            )
+        logger.warning(
+            "Benders: %d subproblem(s) have no relaxation lower bound on their "
+            "recourse cost (e.g. %s); their theta gets the floor %.3g.",
+            len(missing), missing[:3], floor,
         )
 
 

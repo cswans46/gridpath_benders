@@ -643,6 +643,28 @@ def _export_final_subproblem(
             sys.stderr = stderr_original
 
 
+def _trim_process_memory():
+    """Hand freed heap back to the OS (Windows: empty the working set; glibc:
+    malloc_trim). After a native Phase-I a worker's RSS stayed ~1 GiB above its
+    start value although the Phase-I task had been disposed; with ~70 resident
+    workers that inflated every persistent reservation until the coordinator
+    deadlocked ("could not obtain its memory reservation")."""
+    try:
+        if os.name == "nt":
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            psapi = ctypes.windll.psapi
+            handle = kernel32.GetCurrentProcess()
+            psapi.EmptyWorkingSet(handle)
+        else:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:  # best effort only
+        pass
+
+
 def _is_memory_error(exc):
     """True for Python MemoryError and for libraries that re-raise out-of-memory
     as another type (pandas: ParserError "C error: out of memory")."""
@@ -1689,6 +1711,9 @@ def _benders_subproblem_worker_impl(
                 memory_monitor.join()
             gc.collect()
             current_rss = process_memory_rss()
+            if current_rss > 1.25 * operation_start_rss:
+                _trim_process_memory()
+                current_rss = process_memory_rss()
             # Adapt the temporary (load + solve + check) reservation to what
             # this worker actually needed above its idle footprint.
             if used_pyomo_fallback:
