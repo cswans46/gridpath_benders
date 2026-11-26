@@ -143,11 +143,36 @@ class MosekBendersDirect(MOSEKDirect):
                 )
             import logging
 
+            # Rows that touch the leading ray column: shows which constraints
+            # fail to bound it (or bound it the wrong way).
+            row_names = {}
+            try:
+                for con, index in self._pyomo_con_to_solver_con_map.items():
+                    row_names[int(index)] = con.name
+            except Exception:
+                row_names = {}
+            row_lines = []
+            lead = [int(j) for j in order if contribution[j] != 0.0][:2]
+            for j in lead:
+                try:
+                    subs, vals = task.getacol(j)
+                except Exception:
+                    continue
+                shown = []
+                for row, value in list(zip(subs, vals))[:6]:
+                    key, lo, up = task.getconbound(int(row))
+                    shown.append("%s coef %.3g rhs [%.3g, %.3g]" % (
+                        row_names.get(int(row), "row %d" % int(row)), value, lo, up))
+                row_lines.append("col %d in %d rows: %s" % (j, len(subs), "; ".join(shown)))
+
             logging.getLogger(__name__).error(
                 "Benders MASTER is UNBOUNDED (dual-infeasibility certificate); "
-                "total cost along ray %.6g, max|ray| %.3g. Top columns: %s",
-                float(contribution.sum()), float(np.abs(x).max()) if len(x) else 0.0,
-                "; ".join(lines),
+                "objective sense %s, total cost along ray %.6g, max|ray| %.3g, "
+                "%d nonzero ray entries. Top columns: %s. Rows: %s",
+                task.getobjsense(), float(contribution.sum()),
+                float(np.abs(x).max()) if len(x) else 0.0,
+                int((np.abs(x) > 1e-12 * max(float(np.abs(x).max()), 1e-300)).sum()),
+                "; ".join(lines), " || ".join(row_lines),
             )
         except Exception as exc:  # diagnostics must never break the solve
             import logging
