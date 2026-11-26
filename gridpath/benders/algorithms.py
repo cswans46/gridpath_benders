@@ -4376,7 +4376,11 @@ def print_convergence_graph(
     rule = "=" * (width + 14)
 
     def fmt(x):
-        return "inf" if x in (math.inf, -math.inf) else f"{x:,.6g}"
+        if x == math.inf:
+            return "inf"
+        if x == -math.inf:
+            return "-inf"
+        return f"{x:,.6g}"
 
     print(rule)
     print(f" BENDERS CONVERGENCE - iteration {iteration}")

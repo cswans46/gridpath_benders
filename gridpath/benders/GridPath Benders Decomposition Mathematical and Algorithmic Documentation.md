@@ -1198,6 +1198,16 @@ The first run of the 15.5.22 diagnostic printed "no column above tolerance" alth
 
 The patch-26 report identified the unbounded ray in the scenario-18 run: a single column (index 219555 of 219586, bounds `[0, +inf)`, outside every Pyomo variable family) with cost coefficient +244 to +410 and ray value 1. That column is one of the elastic slacks of section 15.5.20. The exported recourse task is a **maximisation** (NPV), but `add_elastic_allocations` priced the slacks with a positive coefficient, which is the correct sign only for a minimisation. Under `maximize` a positive coefficient is a *reward* for violation, so the LP is unbounded as soon as one slack can grow without limit. The slack coefficient is now `sense * multiplier * ||c||_1 * w_i` with `sense = -1` for a maximisation task and `+1` for a minimisation task (read with `getobjsense`). With the corrected sign a violation always lowers the maximised objective, so the penalised recourse value stays at or below the true recourse value, which is what keeps the cuts valid (as in 15.5.20). The native Phase-I is unaffected: it sets its own `minimize` objective.
 
+#### 15.5.25 Display of an undefined lower bound (patch 28)
+
+The convergence report printed `LB : inf` before any violation-free plan had been evaluated. The value held by the algorithm is `-inf` (this is a maximisation: LB is the best violation-free evaluated NPV, initialised to `-inf`); only the printing function mapped both infinities to the text `inf`. It now prints `-inf`. No algorithmic change.
+
+#### 15.5.26 Elastic penalty scale, Phase-I memory, unbounded-master report (patch 29)
+
+* **Penalty scale.** After patch 27 the subproblems solved, but the penalised recourse cost was 1e15-7e15 against an NPV of about -6.6e12. The elastic penalty was `multiplier * ||c||_1 * w_i`; the L1 norm adds about 10^5 coefficients, so one unit of violation cost 10^5 times more than any real marginal cost. It is now `multiplier * ||c||_inf * w_i`, the largest single coefficient (the scale of the marginal price of one unit of violation). The cuts remain valid (penalised value <= true value).
+* **Phase-I memory.** `phase_one` reads all row bounds before it modifies the task. With about 35 workers entering Phase-I together this read raised `MemoryError` and killed a worker 2.7 h into a run. The read is now retried (default 6 attempts, 10 s backoff steps, `GRIDPATH_BENDERS_PHASE1_ATTEMPTS`) after `gc.collect()`; the row-kind tests no longer build large Python lists.
+* **Unbounded master.** In the same log every master solve after iteration 1 ended "Problem is dual infeasible" and the master objective stayed at -6.60124e+12, i.e. the cuts never moved the plan. `MosekBendersDirect` now reports, for an unbounded master, the Pyomo variables with the largest cost along the primal ray (name, ray value, cost, bounds). The cause is not yet established.
+
 ## 16. References
 
 The references below cover the mathematical foundations of Benders decomposition and the specific algorithmic ideas used in this implementation. The notes indicate the connection to the code; they do not imply that every implementation detail is copied verbatim from a cited paper.

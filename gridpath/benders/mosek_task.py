@@ -590,7 +590,10 @@ class MosekTaskRuntime:
             np.where(np.isfinite(lower), np.abs(lower), 0.0),
             np.where(np.isfinite(upper), np.abs(upper), 0.0),
         ])
-        c_norm = float(np.sum(np.abs(np.asarray(task.getc(), dtype=float))))
+        # Largest single cost coefficient: the scale of the marginal price of one
+        # unit of violation. (The L1 norm summed ~1e5 coefficients and made the
+        # penalised recourse cost ~1e15 against an NPV of ~1e12.)
+        c_norm = float(np.max(np.abs(np.asarray(task.getc(), dtype=float)), initial=0.0))
         if not math.isfinite(c_norm) or c_norm <= 0.0:
             c_norm = 1.0
         rows_p, w_p = rows[has_lower], weight[has_lower]
@@ -658,11 +661,30 @@ class MosekTaskRuntime:
         if n_con == 0:
             return None
 
-        keys, lowers, uppers = task.getconboundslice(0, n_con)
+        import gc
+        import time
+
+        # Up to ~35 workers may reach Phase-I together; a MemoryError here (seen
+        # at 2.7 h into a run) used to kill the worker and the run. Nothing has
+        # been modified yet, so the read can simply be retried after the other
+        # workers have released memory.
+        attempts = max(1, int(os.getenv("GRIDPATH_BENDERS_PHASE1_ATTEMPTS", "6")))
+        for attempt in range(1, attempts + 1):
+            try:
+                keys, lowers, uppers = task.getconboundslice(0, n_con)
+                break
+            except MemoryError:
+                gc.collect()
+                if attempt == attempts:
+                    raise
+                time.sleep(min(60, 10 * attempt))
         lower = np.array(lowers, dtype=float)
         upper = np.array(uppers, dtype=float)
-        has_lower = np.array([k in (bk.lo, bk.ra, bk.fx) for k in keys])
-        has_upper = np.array([k in (bk.up, bk.ra, bk.fx) for k in keys])
+        n_keys = len(keys)
+        lower_kinds = {bk.lo, bk.ra, bk.fx}
+        upper_kinds = {bk.up, bk.ra, bk.fx}
+        has_lower = np.fromiter((k in lower_kinds for k in keys), dtype=bool, count=n_keys)
+        has_upper = np.fromiter((k in upper_kinds for k in keys), dtype=bool, count=n_keys)
         del keys, lowers, uppers
         lower[~has_lower] = -np.inf
         upper[~has_upper] = np.inf

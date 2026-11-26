@@ -59,7 +59,9 @@ class MosekBendersDirect(MOSEKDirect):
         # (all variables carry bounds, so it cannot be unbounded); report it
         # as such so the caller can enlarge the artificial caps.
         try:
-            return super()._postsolve()
+            results = super()._postsolve()
+            self._report_unbounded_master(results)
+            return results
         except mosek.Error as error:
             if getattr(error, "errno", None) != mosek.rescode.err_undef_solution:
                 raise
@@ -95,6 +97,64 @@ class MosekBendersDirect(MOSEKDirect):
             )
             self.results = results
             return results
+
+    def _report_unbounded_master(self, results):
+        """Name the Pyomo variables on the primal ray when the master is unbounded."""
+        try:
+            from pyomo.opt import TerminationCondition
+
+            if results.solver.termination_condition != TerminationCondition.unbounded:
+                return
+            import numpy as np
+
+            task = self._solver_model
+            which = None
+            for candidate in (mosek.soltype.bas, mosek.soltype.itr):
+                try:
+                    if task.getsolsta(candidate) == mosek.solsta.dual_infeas_cer:
+                        which = candidate
+                        break
+                except mosek.Error:
+                    continue
+            if which is None:
+                return
+            x = np.asarray(task.getxx(which), dtype=float)
+            c = np.asarray(task.getc(), dtype=float)
+            contribution = c * x
+            order = np.argsort(-np.abs(contribution))[:12]
+            by_index = {}
+            wanted = set(int(j) for j in order)
+            for var, index in self._pyomo_var_to_solver_var_map.items():
+                if int(index) in wanted:
+                    by_index[int(index)] = var
+            lines = []
+            for j in order:
+                if contribution[j] == 0.0:
+                    continue
+                var = by_index.get(int(j))
+                lb, ub = (None, None)
+                if var is not None:
+                    lb, ub = var.lb, var.ub
+                lines.append(
+                    "%s ray %.3g cost %.3g bounds [%s, %s]" % (
+                        var.name if var is not None else "col %d" % int(j),
+                        x[j], c[j], lb, ub,
+                    )
+                )
+            import logging
+
+            logging.getLogger(__name__).error(
+                "Benders MASTER is UNBOUNDED (dual-infeasibility certificate); "
+                "total cost along ray %.6g, max|ray| %.3g. Top columns: %s",
+                float(contribution.sum()), float(np.abs(x).max()) if len(x) else 0.0,
+                "; ".join(lines),
+            )
+        except Exception as exc:  # diagnostics must never break the solve
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Could not describe the unbounded master ray: %r", exc
+            )
 
     def _apply_solver(self):
 
