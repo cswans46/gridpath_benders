@@ -81,6 +81,28 @@ class BendersMemoryCoordinator:
         self.temporary = context.Array("q", worker_count, lock=False)
         self.condition = context.Condition(context.RLock())
 
+    def _overcommit_allowed(self, requested_total, worker_index):
+        """True if the OS reports enough free memory to exceed the soft budget."""
+        if os.getenv("GRIDPATH_BENDERS_MEMORY_OVERCOMMIT", "1") == "0":
+            return False
+        try:
+            excess = requested_total - self.budget_bytes
+            available = psutil.virtual_memory().available
+            keep_free = float(
+                os.getenv("GRIDPATH_BENDERS_OVERCOMMIT_KEEP_FREE_GB", "16")
+            ) * 1024**3
+            allowed = available - excess >= keep_free
+            if allowed:
+                print(
+                    "[benders-mem] worker %d admitted %.2f GiB over the soft "
+                    "budget after a stalled wait (OS available %.1f GiB)." % (
+                        worker_index, excess / 1024**3, available / 1024**3),
+                    flush=True,
+                )
+            return allowed
+        except Exception:
+            return False
+
     def set_reservation(self, worker_index, persistent=None, temporary=None):
         """Atomically replace one worker's reservation, waiting for capacity."""
         worker_index = int(worker_index)
@@ -114,6 +136,15 @@ class BendersMemoryCoordinator:
                     last_total = total_now
                     deadline = time.monotonic() + self.wait_timeout
                 remaining = deadline - time.monotonic()
+                if remaining <= 0 and self._overcommit_allowed(
+                    requested_total, worker_index
+                ):
+                    # Nothing moved for ``wait_timeout`` seconds, yet the
+                    # machine still has the memory: the budget is a planning
+                    # estimate and every resident worker's persistent
+                    # reservation had ratcheted up (e.g. after a Phase-I),
+                    # which deadlocked all of them. Admit this one.
+                    break
                 if remaining <= 0:
                     raise MemoryError(
                         f"Worker {worker_index} could not obtain its memory "
@@ -1690,10 +1721,15 @@ def benders(
 
         else:
 
+            # The level-set bound UB - gamma (UB - LB) is meaningless (and the
+            # level-set master unbounded) while LB is still -inf, i.e. before
+            # any violation-free plan has been evaluated.
             use_level_set = (
                     gamma != 0
                     and LB is not None
                     and UB is not None
+                    and math.isfinite(LB)
+                    and math.isfinite(UB)
                     and UB > LB
             )
 
