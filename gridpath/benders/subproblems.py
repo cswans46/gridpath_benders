@@ -26,6 +26,7 @@ from gridpath.benders.operational_model_creation import (
     create_operational_problem_benders
 )
 import os
+import sys
 import logging
 import psutil
 import gc
@@ -825,6 +826,67 @@ def _enable_worker_crash_log(key, scenario_directory):
         )
 
 
+class _WorkerTee:
+    """Write to the original stream and to the worker's own log file."""
+
+    def __init__(self, stream, handle):
+        self._stream = stream
+        self._handle = handle
+
+    def write(self, text):
+        try:
+            self._stream.write(text)
+        except Exception:
+            pass
+        try:
+            self._handle.write(text)
+        except Exception:
+            pass
+        return len(text)
+
+    def flush(self):
+        for target in (self._stream, self._handle):
+            try:
+                target.flush()
+            except Exception:
+                pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+_WORKER_LOG_HANDLE = None
+
+
+def _enable_worker_output_log(key, scenario_directory):
+    """Keep a worker's stdout/stderr (native-LP messages, Phase-I diagnostics,
+    Pyomo warnings and tracebacks) in ``<scenario>/benders_crash_logs/``.
+
+    Spawned workers write to the console only; the scenario log is written by
+    the parent, so a worker's traceback (e.g. the Pyomo-restoration crash of
+    subproblem 31) never reached any log file. Disable with
+    GRIDPATH_BENDERS_WORKER_LOG=0.
+    """
+    global _WORKER_LOG_HANDLE
+    if os.getenv("GRIDPATH_BENDERS_WORKER_LOG", "1") != "1":
+        return
+    try:
+        directory = os.path.join(scenario_directory, "benders_crash_logs")
+        os.makedirs(directory, exist_ok=True)
+        label = str(getattr(key, "subproblem", "") or "sub")
+        path = os.path.join(
+            directory, "worker_%s_pid%d.out.log" % (label, os.getpid())
+        )
+        _WORKER_LOG_HANDLE = open(path, "a", buffering=1, encoding="utf-8",
+                                  errors="replace")
+        sys.stdout = _WorkerTee(sys.stdout, _WORKER_LOG_HANDLE)
+        sys.stderr = _WorkerTee(sys.stderr, _WORKER_LOG_HANDLE)
+    except Exception as exc:  # diagnostics must never stop a worker
+        logging.getLogger(__name__).warning(
+            "Could not enable the worker output log: %r", exc
+        )
+
+
 def benders_subproblem_worker(
     key,
     planning_constraint_names,
@@ -849,6 +911,7 @@ def benders_subproblem_worker(
     startup fails. That lets the parent start all workers at once while
     bounding how many build/solve at the same time.
     """
+    _enable_worker_output_log(key, scenario_directory)
     _enable_worker_crash_log(key, scenario_directory)
     guard = _StartupGuard(startup_semaphore)
     process = psutil.Process(os.getpid())

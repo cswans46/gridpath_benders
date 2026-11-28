@@ -743,7 +743,7 @@ class MosekTaskRuntime:
             if intercept <= 1e-9:
                 # Feasible after all (numerical trouble in the original LP).
                 return None
-            if gap > 1e-6:
+            if gap > float(os.getenv("GRIDPATH_BENDERS_PHASE1_GAP_TOL", "1e-4")):
                 logging.getLogger(__name__).warning(
                     "Native Phase-I for %s: duality gap %.3g too large.",
                     key_label, gap,
@@ -820,12 +820,27 @@ class MosekTaskRuntime:
             ) or "none above tolerance"
         else:
             groups_text = "row groups unavailable (re-export the task)"
+        # Name the worst individual rows (the families above only say which kind).
+        rows_text = ""
+        try:
+            for r in np.argsort(-weighted)[:5]:
+                if weighted[r] <= 1e-9:
+                    break
+                try:
+                    name = self.task.getconname(int(r))
+                except Exception:
+                    name = "row %d" % int(r)
+                bkey, lo, up = self.task.getconbound(int(r))
+                rows_text += "%s%s violation %.4g bounds [%.4g, %.4g]" % (
+                    "; " if rows_text else "", name, weighted[r], lo, up)
+        except Exception:
+            rows_text = ""
         ranked = sorted(lambdas.items(), key=lambda item: -abs(item[1]))[:5]
         links_text = "; ".join("{}: {:.3g}".format(n, v) for n, v in ranked)
         logging.getLogger(__name__).warning(
             "Phase-I diagnostic %s: violation %.6g. Violated constraint groups: "
-            "%s. Linking variables with largest |sensitivity|: %s",
-            key_label, intercept, groups_text, links_text,
+            "%s. Worst rows: %s. Linking variables with largest |sensitivity|: %s",
+            key_label, intercept, groups_text, rows_text or "n/a", links_text,
         )
 
     def primal_violation(self, tolerance=1e-7):
