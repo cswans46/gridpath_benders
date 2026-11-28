@@ -61,6 +61,7 @@ class MosekBendersDirect(MOSEKDirect):
         try:
             results = super()._postsolve()
             self._report_unbounded_master(results)
+            self._report_infeasible_master(results)
             return results
         except mosek.Error as error:
             if getattr(error, "errno", None) != mosek.rescode.err_undef_solution:
@@ -96,7 +97,85 @@ class MosekBendersDirect(MOSEKDirect):
                 "MOSEK returned no defined solution (err_undef_solution)."
             )
             self.results = results
+            self._report_infeasible_master(results)
             return results
+
+    def _report_infeasible_master(self, results):
+        """Name the constraints of the Farkas certificate when the master is infeasible.
+
+        The certificate ``y`` (MOSEK ``gety``) is a combination of rows that
+        cannot be satisfied: the rows with large ``|y|`` form an infeasible
+        core. Reporting them by Pyomo constraint name and family shows which
+        constraints contradict each other (the scenario-18 master is infeasible
+        even inside caps enlarged 100-fold).
+        """
+        try:
+            from pyomo.opt import TerminationCondition
+
+            if results.solver.termination_condition != TerminationCondition.infeasible:
+                return
+            import numpy as np
+
+            task = self._solver_model
+            which = None
+            for candidate in (mosek.soltype.bas, mosek.soltype.itr):
+                try:
+                    if task.getsolsta(candidate) == mosek.solsta.prim_infeas_cer:
+                        which = candidate
+                        break
+                except mosek.Error:
+                    pass
+                try:
+                    if task.getprosta(candidate) in (
+                        mosek.prosta.prim_infeas,
+                        mosek.prosta.prim_and_dual_infeas,
+                    ):
+                        which = candidate
+                        break
+                except mosek.Error:
+                    continue
+            if which is None:
+                return
+            y = np.asarray(task.gety(which), dtype=float)
+            scale = float(np.abs(y).max()) if len(y) else 0.0
+            if scale <= 0.0:
+                return
+            names = {}
+            families = {}
+            for con, index in self._pyomo_con_to_solver_con_map.items():
+                names[int(index)] = con
+            order = np.argsort(-np.abs(y))
+            keep = [int(i) for i in order[:400] if abs(y[i]) > 1e-9 * scale]
+            for i in keep:
+                con = names.get(i)
+                family = con.parent_component().local_name if con is not None else "?"
+                entry = families.setdefault(family, [0, 0.0])
+                entry[0] += 1
+                entry[1] += abs(y[i]) / scale
+            top_lines = []
+            for i in keep[:10]:
+                con = names.get(i)
+                key, lo, up = task.getconbound(i)
+                top_lines.append("%s y=%.3g rhs [%.4g, %.4g]" % (
+                    con.name if con is not None else "row %d" % i,
+                    y[i] / scale, lo, up))
+            family_text = "; ".join(
+                "%s (%d rows, sum|y| %.3g)" % (k, v[0], v[1])
+                for k, v in sorted(families.items(), key=lambda kv: -kv[1][1])[:10]
+            )
+            import logging
+
+            logging.getLogger(__name__).error(
+                "Benders MASTER is INFEASIBLE (Farkas certificate): %d rows with "
+                "|y| > 1e-9 max in the top 400. Families: %s. Top rows: %s",
+                len(keep), family_text, "; ".join(top_lines),
+            )
+        except Exception as exc:  # diagnostics must never break the solve
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "Could not describe the infeasible master: %r", exc
+            )
 
     def _report_unbounded_master(self, results):
         """Name the Pyomo variables on the primal ray when the master is unbounded."""
